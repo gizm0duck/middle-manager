@@ -531,3 +531,60 @@ manager UX and live multi-repo dogfooding rather than the resume/interrupt matri
 Next: **M5 is the final planned milestone.** Follow-ups (not gating): the
 interactive `mm start` manager loop, real Treehouse/`gh-axi`/`lavish-axi`
 provisioning to replace the built-in fallbacks, and live multi-repo dogfood runs.
+
+## Conversational entry point — `mm start` (2026-08-29)
+
+User correction: everything (configuration and delegation) must be done by
+**talking to the manager** from within a harness, not by the user running `mm`
+subcommands. This delivers the goals' central promise — "make multi-agent
+development feel like delegating to a capable engineering organization, not
+operating a collection of terminals" — as the actual front door.
+
+What changed and why:
+
+- **`mm start` / `mm manager`** ([`manager/launch.py`](../src/middle_manager/manager/launch.py),
+  wired in [`cli.py`](../src/middle_manager/cli.py)). Launches the configured
+  manager harness (Claude or Codex) **interactively** in the repo root, with:
+  the repo `bin/` prepended to PATH so the manager calls `mm` directly; the
+  runtime role injected (Claude via `--append-system-prompt`, both via the seed
+  prompt) pointing at the authoritative runtime contract; `mm` pre-allowed for
+  Claude (`--allowedTools "Bash(mm:*)"`) so the manager operates fluidly while
+  `mm` itself remains the authority gate; and an optional objective seeded as the
+  first message. `--provider/--model/--reasoning` override the configured profile;
+  `--dry-run` prints the invocation. `build_launch` is a pure function so the argv/
+  env/seed are unit-tested without spawning a harness.
+- **Runtime contract** ([`docs/manager-runtime.md`](manager-runtime.md)). A
+  dedicated contract for a *runtime* manager session (distinct from the repo
+  development contract in `AGENTS.md`/`CLAUDE.md`, which it overrides for the
+  session). Its one rule: never ask the user to run a command — drive `mm`
+  yourself for setup, delegation, review, delivery, memory, and cost; on first
+  run, walk the user through configuration conversationally. Includes an
+  intent→command reference so the manager knows the surface.
+- **Docs**: README now leads with "talk to the manager" (`mm start`) and demotes
+  the raw CLI to a "what the manager runs for you" reference; `bin/install`
+  points at `mm start`.
+
+Example (the user only does the first line):
+
+```
+./bin/mm start "add a health endpoint to my-service"
+# ...then converse; the manager runs mm doctor/setup/repo add/dispatch/wait/
+# answer/review/deliver itself and reports back in prose.
+```
+
+Verified by 91 hermetic tests (argv/env/seed for both providers, provider
+override not inheriting a mismatched model, explicit-override precedence,
+objective + unconfigured seeds, no-provider error, and a CLI `--dry-run`) plus a
+live smoke: a launched Claude manager, given only the runtime role and `mm`
+allowlisted, ran `mm doctor` on its own and reported state in one sentence, then
+in a second run ran `mm setup` + `mm repo add` + `mm repo list` itself — the
+persisted `config.toml` and registered repo confirm it operated the real control
+plane, not a hallucination. Lint/format clean.
+
+Drift note: no goal or plan sentence is now wrong; this closes the "front door"
+the goals imply and the technical plan deferred. The manager still cannot exceed
+ceilings or bypass the review gate — those remain enforced by `mm`, which the
+manager merely invokes. Interactive-harness process handoff (`os.execvpe`) is the
+one untested-by-unit path (it replaces the process); it is covered by the live
+smoke and kept trivial. Real companion-binary provisioning and multi-repo dogfood
+remain the open follow-ups.

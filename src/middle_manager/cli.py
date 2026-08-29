@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from middle_manager import __version__
@@ -408,6 +409,59 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_start(args: argparse.Namespace) -> int:
+    from middle_manager.config import ConfigError, load_config
+    from middle_manager.manager import ManagerLaunchError, build_launch, start
+
+    try:
+        config = load_config()
+    except ConfigError:
+        config = None
+
+    provider = args.provider
+    if provider is None and config is None:
+        # Unconfigured and no override: pick a detected, authenticated harness so
+        # the manager can launch and walk the user through setup conversationally.
+        from middle_manager.setup.discovery import discover, usable_harnesses
+
+        usable = usable_harnesses(discover())
+        if not usable:
+            print(
+                "no authenticated Claude/Codex harness detected; install one and "
+                "sign in, then run `mm start` (see `mm doctor`)",
+                file=sys.stderr,
+            )
+            return 1
+        provider = usable[0]
+
+    try:
+        launch = build_launch(
+            config=config,
+            provider=provider,
+            model=args.model,
+            reasoning=args.reasoning,
+            objective=args.objective,
+        )
+    except ManagerLaunchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print(f"provider: {launch.provider}")
+        print(f"model:    {launch.model or '(harness default)'}")
+        print(f"cwd:      {launch.cwd}")
+        print("PATH:     " + launch.env["PATH"].split(os.pathsep)[0] + " (prepended)")
+        print("argv:     " + " ".join(launch.argv))
+        return 0
+
+    try:
+        start(launch)  # replaces this process; does not return on success
+    except ManagerLaunchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     from middle_manager.paths import config_path, mm_home
     from middle_manager.repos import list_repos
@@ -595,6 +649,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="show a compact runtime summary")
     status.set_defaults(func=_cmd_status)
+
+    for name in ("start", "manager"):
+        start = sub.add_parser(
+            name,
+            help="talk to the manager: launch the harness and let it drive mm for you",
+        )
+        start.add_argument(
+            "objective",
+            nargs="?",
+            default=None,
+            help="optional objective to hand the manager as the first message",
+        )
+        start.add_argument(
+            "--provider",
+            default=None,
+            choices=["claude", "codex"],
+            help="enter as this harness (default: configured manager provider)",
+        )
+        start.add_argument("--model", default=None, help="override the manager model")
+        start.add_argument("--reasoning", default=None, help="override the manager reasoning")
+        start.add_argument(
+            "--dry-run",
+            dest="dry_run",
+            action="store_true",
+            help="print the harness invocation instead of launching it",
+        )
+        start.set_defaults(func=_cmd_start)
 
     return parser
 

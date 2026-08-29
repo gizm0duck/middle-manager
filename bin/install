@@ -38,6 +38,5 @@ say "provisioning the local Python environment with uv"
 uv sync
 
 say "environment ready"
-say "next: ./bin/mm setup   (configure the manager profile and worker ceiling)"
-say "then: ./bin/mm repo add <url-or-path>"
+say "next: ./bin/mm start   (talk to the manager; it configures itself and drives the rest)"
 say "check: ./bin/mm doctor"
