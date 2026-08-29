@@ -76,6 +76,41 @@ def test_dispatch_wires_repo_memory_into_worker(server, source_repo, monkeypatch
     assert memory.repo_tasks_path(added.name).exists()
 
 
+def test_run_and_task_snapshots_are_nonblocking(server, source_repo, capsys) -> None:
+    from middle_manager.cli import main
+
+    srv, client = server
+    added = repos.add_repo(source_repo)
+    resp = client.dispatch_task(repo=added.name, title="snap it")
+    task_id, run_id = resp["task_id"], resp["run_id"]
+    assert _wait_terminal(client, task_id) == "worker_done"
+
+    # `mm run` is a non-blocking snapshot: run + tasks + actionable events.
+    assert main(["run", str(run_id)]) == 0
+    out = capsys.readouterr().out
+    assert f"run {run_id}" in out
+    assert f"task {task_id}" in out
+    assert "worker_done" in out  # actionable event surfaced without waiting
+
+    # `mm task` is a non-blocking single-task snapshot.
+    assert main(["task", str(task_id)]) == 0
+    out = capsys.readouterr().out
+    assert f"task {task_id}" in out
+    assert "worker_done" in out
+
+
+def test_wait_timeout_zero_returns_immediately(server, source_repo) -> None:
+    """The blocking primitive drains without blocking when --timeout 0."""
+    from middle_manager.cli import main
+
+    srv, client = server
+    added = repos.add_repo(source_repo)
+    run_id = client.dispatch_task(repo=added.name, title="drain")["run_id"]
+    start = time.monotonic()
+    assert main(["wait", str(run_id), "--timeout", "0"]) == 0
+    assert time.monotonic() - start < 2.0  # did not sit in a long poll
+
+
 def test_reconcile_reports_nothing_when_clean(server, source_repo) -> None:
     srv, client = server
     added = repos.add_repo(source_repo)

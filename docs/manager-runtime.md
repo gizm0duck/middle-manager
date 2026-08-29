@@ -351,7 +351,8 @@ readable at a glance by someone who just wants to know if it's done.
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` |
-| Await | `mm wait <run_id> [--timeout]` |
+| Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>`, `mm status` — snapshot; returns immediately |
+| Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...`, `mm resume <task_id> [--message]` |
 | Review | `mm review show|approve|request-changes|status <task_id>` |

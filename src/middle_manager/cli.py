@@ -237,10 +237,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(json.dumps(snap, indent=2))
         return 0
     run = snap["run"]
-    print(f"run {run['id']} \"{run.get('title', '')}\" — {run.get('status', '?')}")
+    print(f'run {run["id"]} "{run.get("title", "")}" — {run.get("status", "?")}')
     for t in snap.get("tasks", []):
         prov = t.get("provider") or "?"
-        print(f"  task {t['id']} \"{t.get('title', '')}\" [{prov}] {t.get('status', '?')}")
+        print(f'  task {t["id"]} "{t.get("title", "")}" [{prov}] {t.get("status", "?")}')
     actionable = snap.get("actionable", [])
     if actionable:
         marks = ", ".join(f"{e['kind']}(seq {e['seq']})" for e in actionable)
@@ -273,7 +273,7 @@ def _cmd_task(args: argparse.Namespace) -> int:
     prov = task.get("provider") or "?"
     model = task.get("model")
     label = f"{prov}/{model}" if model else prov
-    line = f"task {task['id']} \"{task.get('title', '')}\" [{label}] {task.get('status', '?')}"
+    line = f'task {task["id"]} "{task.get("title", "")}" [{label}] {task.get("status", "?")}'
     if task.get("branch"):
         line += f"  branch {task['branch']}"
     print(line)

@@ -44,9 +44,11 @@ works end to end right now:
 - **Real Claude & Codex workers, on a leash.** Smallest-eligible-worker routing
   with a hard, code-enforced cost ceiling you set. Mixed-provider runs are fine —
   Claude running the floor, Codex on the tools, whatever you like.
-- **I don't do one thing at a time.** Workers run in parallel, each in its own
-  isolated worktree, across the same repo *and* across different repos. Nobody
-  steps on anybody.
+- **I don't do one thing at a time — and I never make you wait on me.** Workers run
+  in parallel in a background daemon, each in its own isolated worktree, across the
+  same repo *and* across different repos. Nobody steps on anybody. I check their
+  status without freezing: I glance at a live snapshot and hand the conversation
+  right back to you. The only thing I ever block on is talking to you.
 - **Steering that actually works.** Interrupt and resume, validated live against
   both CLIs ([`docs/provider-capabilities.md`](docs/provider-capabilities.md)).
 - **Autonomous completion.** Durable, scoped decisions (answer me once, I remember

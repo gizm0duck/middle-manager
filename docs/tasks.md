@@ -1098,3 +1098,36 @@ pass."* Closed the loop from *passive* status to *active* steering, reusing the 
   capability line ("review the approach early, catch a wrong turn while it's cheap").
 - **Tests.** `test_worker_context_*` now asserts the plan cue is present; full suite
   still **123 green**. Lint/format clean.
+
+**Refinement — the manager never blocks; non-blocking status snapshots (2026-08-29).**
+User: *"Is there a background poll the mm uses to track status of workers? The mm should
+NEVER BLOCK unless it is responding to the user."* Answer + fix:
+
+- **Background tracking already exists.** The supervisor
+  ([`supervisor/core.py`](../src/middle_manager/supervisor/core.py),
+  [`server.py`](../src/middle_manager/supervisor/server.py)) is a daemon: each dispatched
+  worker runs in its own daemon thread (`_run_task`) and streams events/status into
+  `.mm/state.db` continuously, and each socket request is handled in its own thread so a
+  wait never stalls others. So the "background poll" is the supervisor itself; the
+  manager just needs to *read* the snapshot.
+- **The gap:** the manager's only run/task-status CLI was `mm wait`, which **blocks**
+  (long-poll, `sleep(0.1)` to a timeout) — and both the contract and always-on role said
+  *"the only thing you block on is `mm wait`,"* contradicting the rule. The non-blocking
+  snapshot APIs (`run_status`, `task_status`) existed on the supervisor/client but were
+  never wired to the CLI.
+- **Fix — non-blocking snapshot commands.** Added
+  [`mm run <run_id>`](../src/middle_manager/cli.py) (run status + per-task states +
+  actionable events + usage) and `mm task <task_id>` (single-task snapshot), both
+  `--json`-able, both returning immediately via the existing `client.run_status` /
+  `client.task_status`. `mm wait` is now documented as a scripting/test primitive; use
+  `--timeout 0` for a non-blocking drain.
+- **Docs/role realigned to "never block."** The runtime contract (progress step 4, the
+  "never block" blockquote, and the capability table), the always-on role
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)), and the README now
+  say the same thing: workers run in the background daemon; the manager tracks them with
+  a non-blocking snapshot (`mm run`/`mm task`/`mm status`/the per-repo progress log) and
+  hands the turn back — **the only thing it ever blocks on is producing its reply to the
+  user.**
+- **Tests** ([`test_supervisor.py`](../tests/test_supervisor.py)): `mm run`/`mm task`
+  render the live snapshot after a fake task completes, and `mm wait --timeout 0` returns
+  in under 2s (proves non-blocking). Full suite **125 green**; lint/format clean.
