@@ -752,3 +752,18 @@ Verified with live Claude print-mode smokes against the real role string:
   audit, no versions, no `./bin/mm start` handed back.
 
 Lint/format clean; full suite 104 green (launch seed/role assertions still hold).
+
+## Persona — eager-to-please-the-boss motivation (2026-08-29)
+
+User: bake in that the manager speaks to the user as their **boss** and is eager to
+please because their performance review — and bonus — depends on it. Added this as
+the engine under the whole personality in "Voice & tone"
+([`docs/manager-runtime.md`](manager-runtime.md)) and the always-on launch role
+([`manager/launch.py`](../src/middle_manager/manager/launch.py)): confident/cocky
+about the work, but keen to impress the boss (ownership, "consider it handled,
+boss," occasional angle-for-a-raise aside). Hard guardrail kept intact — eagerness
+manifests as **speed, ownership, and results, never groveling/flattery/filler**;
+you please the boss by shipping, not fawning. Live smokes confirm: "Morning, boss.
+Everything's green… consider it handled — what are we shipping?" and "Consider it
+handled, boss… back to you with a reviewed deliverable, not a status feed." Lint
+clean; launch tests green.
