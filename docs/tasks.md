@@ -441,3 +441,93 @@ autonomous completion.
 Next milestone: **M5 — hardening** (crash/replay/CLI-drift recovery tests,
 decision-staleness/memory controls, usage reports, `mm doctor` polish, docs, and
 the post-M0 re-estimate the technical plan requires).
+
+## M5 — hardening (2026-08-29)
+
+The final milestone makes the system safe to leave running: durable state
+survives restarts, half-alive runners are reconciled fail-closed, decisions can
+go stale and be managed, usage is auditable, and `mm doctor` surfaces the two
+things that silently rot (capability-matrix drift and schema version).
+
+What changed and why:
+
+- **Restart / replay / reconcile recovery**
+  ([`tests/test_recovery.py`](../tests/test_recovery.py)). Proven: a fresh
+  supervisor over the same `.mm` reconstructs a completed run and its actionable
+  events from SQLite; the append-only spool mirrors the streamed worker events
+  one-to-one and each spool line is a valid record (replayable); a runner whose
+  process vanished without a result is marked `orphaned` and its task
+  `needs_recovery` with an `error` event — never assumed successful (goal 7).
+- **Decision staleness + memory controls**
+  ([`decisions.py`](../src/middle_manager/decisions.py),
+  [`state/db.py`](../src/middle_manager/state/db.py) schema v3). Decisions now
+  carry an optional premise `context` and an `invalidated_at`. On reuse,
+  `find_matching(context=...)` raises `StaleDecision` when the winning decision
+  was recorded under a different non-null premise, so the manager asks only for
+  the delta instead of silently reusing a timeless preference (goal 6). The
+  supervisor computes a task's context from its repo base SHA and escalates a
+  stale premise as `blocked`. `mm decision list [--all] | invalidate | forget`
+  lets the user inspect, invalidate (history preserved), or hard-delete (goal 8).
+  A forward-only migration adds the columns to pre-existing databases.
+- **Usage reports** ([`state/store.py`](../src/middle_manager/state/store.py),
+  `mm usage <run>`). Per provider/model/reasoning token totals and call counts,
+  plus a run total — the auditable "how much usage was incurred" the goals ask
+  for.
+- **`mm doctor` polish** ([`setup/doctor.py`](../src/middle_manager/setup/doctor.py)).
+  Compares each provider's recorded probe version against the installed CLI and
+  flags drift ("re-probe before trusting steering"), and reports the state-DB
+  schema version against the expected one.
+
+Example commands:
+
+```
+mm doctor                          # now includes capability drift + schema version
+mm usage 1                         # tokens by provider/model, plus a total
+mm decision list --all             # includes superseded/invalidated
+mm decision invalidate 3           # stop reusing a decision (history kept)
+mm reconcile                       # mark vanished runners needs_recovery
+```
+
+Verified by 83 hermetic tests (recovery/replay/reconcile, decision
+staleness/invalidate/forget/list, usage aggregation, doctor drift+schema, semver
+drift extraction) plus a live CLI smoke: `doctor` drift/schema output, the
+`answer → decision list → invalidate` memory loop, and `usage`. Lint/format clean.
+
+### M5 drift review (2026-08-29)
+
+What was proven: killing and restarting the supervisor loses no obligations,
+live events, or open decisions; the spool replays; vanished runners fail closed;
+decisions can go stale on a changed premise and be invalidated/forgotten; usage
+and capability/schema drift are inspectable. This closes goal 7 (survive
+interruptions), completes goal 6's staleness delta deferred from M4, and delivers
+goal 8's inspect/correct/forget controls and auditable usage.
+
+Substitutions / scope notes:
+
+- The decision premise is a conservative proxy (repo base SHA). Richer validity
+  conditions (contract versions, dependent-decision graphs, time-sensitive facts)
+  can extend `context` later without changing the interface; the staleness gate
+  and `StaleDecision` escalation already exist.
+- CLI-drift coverage is the capability-matrix version check (adapters already
+  fail closed on a version mismatch; `mm doctor` now surfaces it) rather than a
+  broad snapshot of every CLI flag. This matches the plan's "re-probe on CLI
+  version change" contract.
+
+Is any goal or plan sentence now wrong? No. All ten goals are now represented in
+code and tests. The remaining top-level surface is the interactive `mm start`
+manager loop; every subsystem it orchestrates (routing, delegation, decisions,
+review gate, delivery, Lavish, recovery) exists and is tested.
+
+Post-M0 re-estimate: the largest technical uncertainty (interrupted provider
+turns / half-alive processes) resolved favorably — both installed CLIs proved
+resumable after SIGINT/SIGKILL and clean exit, with session survival and
+worktree resume (see [`docs/provider-capabilities.md`](provider-capabilities.md)).
+That removes the biggest schedule risk the technical plan flagged: safe in-flight
+steering did not require a bespoke recovery-only path, and checkpoint + resume
+covers the common case. The hardening band accordingly lands at the lower end of
+the plan's 20–30 day range for this scope; the remaining spend is the `mm start`
+manager UX and live multi-repo dogfooding rather than the resume/interrupt matrix.
+
+Next: **M5 is the final planned milestone.** Follow-ups (not gating): the
+interactive `mm start` manager loop, real Treehouse/`gh-axi`/`lavish-axi`
+provisioning to replace the built-in fallbacks, and live multi-repo dogfood runs.

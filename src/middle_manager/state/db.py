@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     author TEXT NOT NULL DEFAULT 'user',
     standing INTEGER NOT NULL DEFAULT 0,
     fingerprint TEXT,
+    context TEXT,
+    invalidated_at TEXT,
     superseded_by INTEGER REFERENCES decisions(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL
 );
@@ -165,10 +167,29 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Forward-only column additions for databases created by earlier versions.
+
+    ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so new columns
+    on a pre-existing DB are added here. Additions are idempotent (guarded by
+    ``PRAGMA table_info``) so this is safe to run on fresh databases too.
+    """
+    decision_cols = _column_names(conn, "decisions")
+    for col in ("context", "invalidated_at"):
+        if col not in decision_cols:
+            conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT")
+    conn.commit()
+
+
 def init_db(path: Path | None = None) -> sqlite3.Connection:
-    """Create the schema idempotently and stamp the version."""
+    """Create the schema idempotently, migrate, and stamp the version."""
     conn = connect(path)
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn

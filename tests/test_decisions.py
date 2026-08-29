@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from middle_manager import decisions
 from middle_manager.state import init_db, store
 
@@ -48,3 +50,37 @@ def test_supersede_hides_decision(mm_home) -> None:
     hit = decisions.find_matching(conn, "Q?", run_id=run_id)
     assert hit is not None
     assert hit.answer == "new"
+
+
+def test_stale_decision_when_premise_changed(mm_home) -> None:
+    conn = init_db()
+    run_id = _run(conn)
+    decisions.record_decision(
+        conn,
+        question="Which db?",
+        answer="postgres",
+        scope="run",
+        run_id=run_id,
+        context="repo@aaaaaaaaaaaa",
+    )
+    # Same context reuses silently.
+    hit = decisions.find_matching(conn, "which db?", run_id=run_id, context="repo@aaaaaaaaaaaa")
+    assert hit is not None and hit.answer == "postgres"
+    # A changed premise raises rather than silently reusing.
+    with pytest.raises(decisions.StaleDecision):
+        decisions.find_matching(conn, "which db?", run_id=run_id, context="repo@bbbbbbbbbbbb")
+
+
+def test_invalidate_and_forget(mm_home) -> None:
+    conn = init_db()
+    run_id = _run(conn)
+    did = decisions.record_decision(
+        conn, question="Keep?", answer="yes", scope="run", run_id=run_id
+    )
+    decisions.invalidate(conn, did)
+    assert decisions.find_matching(conn, "Keep?", run_id=run_id) is None
+    assert any(d["id"] == did for d in decisions.list_decisions(conn, include_inactive=True))
+    assert not any(d["id"] == did for d in decisions.list_decisions(conn))
+
+    decisions.forget(conn, did)
+    assert not any(d["id"] == did for d in decisions.list_decisions(conn, include_inactive=True))

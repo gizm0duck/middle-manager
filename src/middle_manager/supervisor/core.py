@@ -331,7 +331,27 @@ class Supervisor:
                 task_id=spec.task_id,
             )
             return
-        match = decisions.find_matching(conn, question, run_id=spec.run_id, task_id=spec.task_id)
+        context = _task_context(conn, spec.task_id)
+        try:
+            match = decisions.find_matching(
+                conn, question, run_id=spec.run_id, task_id=spec.task_id, context=context
+            )
+        except decisions.StaleDecision as stale:
+            # A prior answer exists but the premise changed: ask for the delta.
+            store.append_event(
+                conn,
+                kind="blocked",
+                payload={
+                    "task_id": spec.task_id,
+                    "question": question,
+                    "summary": "premise changed since a prior decision; confirmation needed",
+                    "prior_decision_id": stale.decision.id,
+                    "prior_answer": stale.decision.answer,
+                },
+                run_id=spec.run_id,
+                task_id=spec.task_id,
+            )
+            return
         if match is None:
             return  # leave the `question` event actionable for a human
         answered.add(fp)
@@ -374,6 +394,7 @@ class Supervisor:
             run_id=task["run_id"],
             task_id=task_id,
             rationale=rationale,
+            context=_task_context(conn, task_id),
         )
         resumed = self.resume_task(task_id, answer)
         return {"task_id": task_id, "decision_id": decision_id, **resumed}
@@ -484,6 +505,20 @@ class Supervisor:
             runners = list(self._runners.values())
         for runner in runners:
             runner.interrupt()
+
+
+def _task_context(conn, task_id: int) -> str | None:
+    """A compact premise fingerprint for a task's decisions.
+
+    Uses the task's repo base SHA: if the repository state a decision was made
+    under has moved, the decision is treated as premise-changed on reuse. This is
+    a conservative proxy for "relevant repository facts changed".
+    """
+    row = conn.execute("SELECT base_sha FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    base = row["base_sha"]
+    return f"repo@{base[:12]}" if base else None
 
 
 def _last_question(conn, task_id: int) -> str | None:

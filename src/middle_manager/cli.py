@@ -335,6 +335,61 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return 0 if plan.ok else 1
 
 
+def _cmd_decision(args: argparse.Namespace) -> int:
+    from middle_manager import decisions
+    from middle_manager.state import init_db
+
+    conn = init_db()
+    if args.decision_cmd == "list":
+        rows = decisions.list_decisions(conn, include_inactive=args.all)
+        if not rows:
+            print("no decisions recorded")
+            return 0
+        for d in rows:
+            flags = []
+            if d["superseded_by"]:
+                flags.append(f"superseded->{d['superseded_by']}")
+            if d["invalidated"]:
+                flags.append("invalidated")
+            tag = f" [{', '.join(flags)}]" if flags else ""
+            print(f"{d['id']:>3} ({d['scope']}) {d['question']!r} -> {d['answer']!r}{tag}")
+        return 0
+    if args.decision_cmd == "invalidate":
+        decisions.invalidate(conn, args.id)
+        print(f"invalidated decision {args.id}")
+        return 0
+    if args.decision_cmd == "forget":
+        decisions.forget(conn, args.id)
+        print(f"forgot decision {args.id}")
+        return 0
+    print("no decision subcommand given", file=sys.stderr)
+    return 2
+
+
+def _cmd_usage(args: argparse.Namespace) -> int:
+    from middle_manager.state import init_db, store
+
+    conn = init_db()
+    if store.get_run(conn, args.run_id) is None:
+        print(f"run {args.run_id} not found", file=sys.stderr)
+        return 1
+    rows = store.usage_by_profile(conn, args.run_id)
+    totals = store.usage_totals(conn, args.run_id)
+    if not rows:
+        print(f"run {args.run_id}: no usage recorded")
+        return 0
+    print(f"run {args.run_id} usage by profile:")
+    for r in rows:
+        model = r["model"] or "(default)"
+        reasoning = r["reasoning"] or "-"
+        print(
+            f"  {r['provider']}/{model}@{reasoning}: "
+            f"{r['input_tokens']} in / {r['output_tokens']} out ({r['calls']} call(s))"
+        )
+    print(f"total: {totals['input_tokens']} in / {totals['output_tokens']} out")
+    return 0
+
+
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -520,6 +575,20 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="compute cross-repo rollout order for a run")
     plan.add_argument("run_id", type=int)
     plan.set_defaults(func=_cmd_plan)
+
+    decision = sub.add_parser("decision", help="inspect and manage durable decisions")
+    dsub = decision.add_subparsers(dest="decision_cmd", required=True)
+    dlist = dsub.add_parser("list", help="list decisions")
+    dlist.add_argument("--all", action="store_true", help="include superseded/invalidated")
+    dinval = dsub.add_parser("invalidate", help="mark a decision no longer valid")
+    dinval.add_argument("id", type=int)
+    dforget = dsub.add_parser("forget", help="hard-delete a decision")
+    dforget.add_argument("id", type=int)
+    decision.set_defaults(func=_cmd_decision)
+
+    usage = sub.add_parser("usage", help="report model usage for a run")
+    usage.add_argument("run_id", type=int)
+    usage.set_defaults(func=_cmd_usage)
 
     reconcile = sub.add_parser("reconcile", help="recover half-alive runners")
     reconcile.set_defaults(func=_cmd_reconcile)

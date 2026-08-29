@@ -353,6 +353,32 @@ def record_usage(
     conn.commit()
 
 
+def usage_by_profile(conn: sqlite3.Connection, run_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT provider, model, reasoning,
+               COALESCE(SUM(input_tokens),0) AS input,
+               COALESCE(SUM(output_tokens),0) AS output,
+               COUNT(*) AS calls
+        FROM usage WHERE run_id = ?
+        GROUP BY provider, model, reasoning
+        ORDER BY provider, model
+        """,
+        (run_id,),
+    ).fetchall()
+    return [
+        {
+            "provider": r["provider"],
+            "model": r["model"],
+            "reasoning": r["reasoning"],
+            "input_tokens": int(r["input"]),
+            "output_tokens": int(r["output"]),
+            "calls": int(r["calls"]),
+        }
+        for r in rows
+    ]
+
+
 def usage_totals(conn: sqlite3.Connection, run_id: int) -> dict:
     row = conn.execute(
         """

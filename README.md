@@ -18,9 +18,22 @@ and [`docs/tasks.md`](docs/tasks.md)):
 - **M0 (done):** live Claude/Codex interrupt/resume probes. Results:
   [`docs/provider-capabilities.md`](docs/provider-capabilities.md).
 - **M1 (done):** kernel foundation — installer, setup/doctor, SQLite state,
-  `mm repo add`. No live workers yet.
-- Later milestones add the supervisor/runner, real worker adapters, autonomous
-  delivery, and hardening.
+  `mm repo add`.
+- **M2 (done):** kernel runtime — supervisor Unix socket, per-task runner
+  guardian, append-only event spool, worktree leases, `mm dispatch`/`wait`/
+  `reconcile`, and a fake provider.
+- **M3 (done):** real Claude/Codex worker adapters gated by the M0 capability
+  matrix, task/result schemas, ceiling enforcement, and checkpoint/blocked resume.
+- **M4 (done):** autonomous completion — durable scoped decisions, autonomous
+  question routing, the exact-HEAD review gate, gated `gh`/`gh-axi` delivery, the
+  local Lavish review loop, cross-repo rollout ordering, and lifecycle hooks.
+- **M5 (done):** hardening — restart/replay/reconcile recovery, decision
+  staleness and memory controls, usage reports, and `mm doctor` drift/schema
+  checks.
+
+The interactive `mm start` manager loop is the remaining top-level entry point;
+all the delegated-work machinery it drives now exists and is exercised by tests
+and the `mm` subcommands below.
 
 ## Requirements
 
@@ -45,12 +58,36 @@ and [`docs/tasks.md`](docs/tasks.md)):
 ./bin/mm repo add https://github.com/you/your-repo
 
 # 5. Inspect health and state at any time.
-./bin/mm doctor
+./bin/mm doctor               # harnesses, capability-matrix drift, schema version
 ./bin/mm status
 ```
 
-`mm start` (launching the interactive manager) and delegated work arrive in
-later milestones.
+### Delegating and delivering work
+
+```bash
+# Run the local supervisor (per-task runners, durable state) in one terminal.
+./bin/mm supervisor serve
+
+# Dispatch a bounded task to a registered repo; pick a provider and (optionally)
+# a model/reasoning, which are clamped to the configured worker ceiling.
+./bin/mm dispatch --repo your-repo --title "add health endpoint" --provider claude
+./bin/mm wait <run_id>                 # block until an actionable state
+
+# If a worker blocks on a question, answer it once; the answer is recorded as a
+# durable decision and reused for equivalent questions in scope.
+./bin/mm answer <task_id> --answer "use /v2/health" --scope run
+./bin/mm decision list                 # inspect/superseded/invalidate/forget memory
+
+# Review the exact diff, then deliver — refused unless approved at the current head.
+./bin/mm review show <task_id>
+./bin/mm review approve <task_id>
+./bin/mm deliver <task_id>              # pushes the branch; opens a PR via gh/gh-axi
+
+# Optional surfaces.
+./bin/mm artifact <run_id> --title "Design review" --sections '[...]'  # Lavish HTML
+./bin/mm plan <run_id>                  # cross-repo rollout order
+./bin/mm usage <run_id>                 # model token accounting
+```
 
 ## What lives under `.mm/`
 

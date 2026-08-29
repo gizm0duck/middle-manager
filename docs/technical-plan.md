@@ -302,9 +302,11 @@ Supervisor, lifecycle hooks, manager question routing, bounded retry/escalation,
 
 Delivered in M4: durable scoped decisions with supersede (`decisions.py`), autonomous question routing that auto-answers a blocked worker from a matching decision and escalates recurring questions (`supervisor/core.py`, `mm answer`), the exact-HEAD review gate that reopens when the worktree moves past the reviewed SHA (`review.py`, `mm review`), gated GitHub delivery via `gh-axi`/`gh` (`delivery.py`, `mm deliver`), the local Lavish HTML+feedback loop (`artifacts.py`, `mm artifact`/`mm feedback`), cross-repo topological rollout with cycle/dangling detection (`crossrepo.py`, `mm plan`), and lifecycle-hook ingestion (`hooks.py`, `mm hook`). The decision *staleness/validity-condition* check before reuse is scheduled with M5 memory controls (see the M4 drift review in `docs/tasks.md`).
 
-### Phase 4 — hardening and dogfood
+### Phase 4 — hardening and dogfood (done, delivered as M5)
 
 Crash recovery, socket disconnect and event-replay tests, CLI drift tests, fake provider fixtures, end-to-end tests, usage reports, memory controls, doctor command, and concise documentation. Acceptance: killing and restarting the manager or supervisor does not lose obligations, live runner events, or open decisions.
+
+Delivered in M5: restart durability + append-only spool replay + fail-closed reconcile of vanished runners (`tests/test_recovery.py`), decision staleness via a premise `context` with `StaleDecision` escalation plus invalidate/forget/list memory controls and a forward-only schema migration (`decisions.py`, `state/db.py` schema v3, `mm decision`), per-profile usage reports (`mm usage`), and `mm doctor` capability-matrix-drift and schema-version checks. The acceptance test (kill/restart loses no obligations/events/decisions) passes. CLI-drift coverage is the capability-version check the plan's "re-probe on CLI version change" contract requires. Remaining, non-gating: the interactive `mm start` manager loop and live multi-repo dogfood.
 
 ## Delivery estimate
 
@@ -315,6 +317,8 @@ Assuming one experienced engineer working with coding agents, no Windows or cust
 - **Hardened v1: 20–30 working days, or roughly 4–6 calendar weeks.** Safe in-flight steering, provider-version compatibility fixtures, socket/event replay, process and machine-restart reconciliation, decision invalidation, supply-chain verification, failure injection, live integration tests, and polished documentation.
 
 Approximate effort by phase is 4–6 days for the kernel, 5–8 for real provider workers, 5–7 for autonomous delivery, and 6–9 for hardening. Some documentation and test work overlaps implementation, but the recovery/steering matrix should not be compressed: interrupted provider turns and half-alive processes are the largest technical uncertainty. Review the estimate after the first single-provider vertical slice, when the installed Claude/Codex versions have passed real resume and interruption probes.
+
+**Post-M0 re-estimate (2026-08-29).** The probes resolved the largest uncertainty favorably: Claude 2.1.251 and Codex 0.150.1 both resume after SIGINT, SIGKILL, and clean exit, with session survival, worktree resume, and duplicate-resume tolerance (see `docs/provider-capabilities.md`). Consequently the recovery/steering matrix did not need a bespoke recovery-only path — checkpoint steering plus proven resume covers the common case, and interrupt steering is capability-gated per provider (never offered for Codex `exec`, which cannot accept mid-run input). Net effect: the hardening band lands at the lower end of the 20–30 day range for the implemented scope. The remaining spend is the interactive `mm start` manager UX and live multi-repo dogfooding, not the resume/interrupt matrix. Re-probe and revisit on any Claude/Codex CLI version change (`mm doctor` now flags version drift).
 
 ## Acceptance tests
 
