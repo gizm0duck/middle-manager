@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # Middle Manager bootstrap. Small, idempotent, and safe to rerun.
 # Verifies prerequisites, provisions the local Python environment, and points at
-# `mm setup`. It never installs or logs into a model provider without consent.
+# `mm start`. It never installs or logs into a model provider without consent;
+# companion tools are provisioned later by `mm setup`.
 
 set -eu
 
@@ -25,7 +26,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     warn "python3 not found — install Python 3.12+"
     MISSING=1
 fi
-# Node and gh are needed for companion tools and delivery in later milestones.
+# Node and gh are needed for companion tools (provisioned by `mm setup`) and delivery.
 command -v node >/dev/null 2>&1 || warn "node not found — needed for companion tools (Node 22+)"
 command -v gh >/dev/null 2>&1 || warn "gh not found — needed for GitHub delivery"
 

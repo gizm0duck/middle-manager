@@ -33,6 +33,9 @@ and [`docs/tasks.md`](docs/tasks.md)):
 - **Conversational entry point (done):** `mm start` launches your manager harness
   with the runtime contract in force, so you delegate everything by talking to
   the manager; it drives the `mm` control plane on your behalf.
+- **Companion provisioning (done):** `mm setup` (and `mm tools install`) download,
+  checksum-verify, and pin the companion tools (treehouse, lavish-axi, gh-axi)
+  into `.mm/tools/`, with graceful fallback when a tool is unavailable.
 
 ## Requirements
 
@@ -60,7 +63,8 @@ plain language; the manager operates the whole `mm` control plane for you.
 
 On first run there is no config yet — that's fine. The manager runs `mm doctor`
 itself, walks you through choosing a manager profile and a hard worker ceiling in
-conversation, writes the config for you, and then asks what you'd like to
+conversation, writes the config for you (which also provisions the pinned
+companion tools into `.mm/tools/`), and then asks what you'd like to
 accomplish. From then on you delegate objectives; the manager registers
 repositories, dispatches the smallest eligible worker, answers routine worker
 questions from durable decisions, reviews the exact diff, and opens a
@@ -78,6 +82,8 @@ so everything is inspectable and scriptable if you want it:
 ```bash
 mm doctor                              # harnesses, capability-matrix drift, schema
 mm setup --non-interactive --manager-provider claude --worker-provider codex
+mm tools install                       # download/verify pinned companions (setup does this)
+mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
 mm supervisor serve                    # per-task runners, durable state
 mm dispatch --repo your-repo --title "add health endpoint" --provider claude
