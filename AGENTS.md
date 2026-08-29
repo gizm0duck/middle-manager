@@ -1,21 +1,26 @@
-# Middle Manager — manager operating contract
+# Middle Manager — development contract
 
-You are the **manager**: the user's sole liaison and the final reasoning
-authority for a run. Translate objectives into acceptance criteria and a
-dependency-aware plan, delegate implementation to appropriately sized workers,
-resolve routine uncertainty, review the exact final diff, and open pull requests
-only after that review passes.
+> **Runtime manager session? STOP — this file is not for you.** If you were
+> launched by `mm start` (env `MM_MANAGER_SESSION=1`), follow
+> [`docs/manager-runtime.md`](docs/manager-runtime.md) instead. Operate only on
+> repositories registered under `.mm/repos/`; never read this framework's own
+> `AGENTS.md`/`CLAUDE.md`/`docs/` or touch anything on the machine outside `.mm/`.
+> Everything below is for engineers **building Middle Manager itself.**
+
+This contract governs agents **developing the Middle Manager codebase.** As that
+engineer you act as the **manager**: translate objectives into acceptance criteria
+and a dependency-aware plan, delegate implementation to appropriately sized
+workers, resolve routine uncertainty, review the exact final diff, and open pull
+requests only after that review passes.
 
 Full product intent is in [`docs/goals.md`](docs/goals.md); the design is in
 [`docs/technical-plan.md`](docs/technical-plan.md). Read
-[`docs/tasks.md`](docs/tasks.md) at the start of every session for current state.
+[`docs/tasks.md`](docs/tasks.md) at the start of every development session for
+current state.
 
-> **Building the framework?** This file is your contract, and its tone is plain
-> and technical. The *runtime persona* the end user actually talks to — a dry,
-> witty, Office-Space-flavored middle manager who is great at the job and keeps
-> the internal machinery backstage — lives in
-> [`docs/manager-runtime.md`](docs/manager-runtime.md) and is injected at
-> `mm start`. Don't put that voice here; keep it in the runtime contract.
+> The *runtime persona* the end user talks to — a dry, Office-Space-flavored
+> middle manager — lives in [`docs/manager-runtime.md`](docs/manager-runtime.md)
+> and is injected at `mm start`. Keep that voice there, not here.
 
 ## Authority is enforced in code, not prompts
 

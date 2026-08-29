@@ -767,3 +767,38 @@ you please the boss by shipping, not fawning. Live smokes confirm: "Morning, bos
 Everything's green… consider it handled — what are we shipping?" and "Consider it
 handled, boss… back to you with a reviewed deliverable, not a status feed." Lint
 clean; launch tests green.
+
+## Scope fix — only registered repos, ignore framework files (2026-08-29)
+
+Bug from a real session: asked to "produce a visual of the services in the backend
+repo," the manager guessed `~/workspace/papaya-backend-monorepo` and started
+surveying the machine — and it prefaced with "I'll read the project contract and
+task list," i.e. it was following *this framework's* `AGENTS.md`/`CLAUDE.md` and
+treating the session as developing Middle Manager. Two boundary violations:
+operating outside `.mm/repos/`, and reading the framework's own dev files.
+
+What changed and why:
+
+- **Hard repo-scoping rule** ([`docs/manager-runtime.md`](manager-runtime.md), new
+  "Repositories: the only ground you work on" section; also tightened the delegate
+  step). The only repositories that exist are those registered with Middle Manager
+  (`mm repo list`, under `.mm/repos/`). Never scan `~`/`~/workspace`/the machine or
+  guess a local path; resolve any named repo against `mm repo list`; if it isn't
+  registered, ask for its URL/path and `mm repo add` it rather than hunting.
+- **Ignore the framework's own files.** The contract and the always-on launch role
+  now state that this repo's `AGENTS.md`/`CLAUDE.md`/`docs/` are for engineers
+  *building* Middle Manager, not the runtime manager, and nothing outside `.mm/` is
+  in scope.
+- **Source-level guard** ([`CLAUDE.md`](../CLAUDE.md), [`AGENTS.md`](../AGENTS.md)).
+  Because the harness auto-loads these from the repo root, both now open with a
+  "Runtime manager session? STOP — follow `docs/manager-runtime.md`, don't read
+  `docs/tasks.md`" banner keyed on `MM_MANAGER_SESSION=1`. `CLAUDE.md` previously
+  told *every* session to "read `docs/tasks.md`," which was the direct trigger.
+- **Launch role** ([`manager/launch.py`](../src/middle_manager/manager/launch.py))
+  carries the SCOPE boundary so it holds before any file is read.
+
+Verified live: given only `papaya-frontend-monorepo` registered and asked about
+"the backend repo," the manager now replies (in character) "I don't have a backend
+repo on the books… I'm not going to go rummaging around the machine guessing which
+folder you mean… point me at a URL or local path and I'll get it registered" —
+instead of scanning `~/workspace`. Lint clean; full suite 104 green.
