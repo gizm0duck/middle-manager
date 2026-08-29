@@ -713,3 +713,42 @@ the contract explicitly subordinates humor to competence and to dropping the bit
 under pressure. Open follow-up: multi-repo dogfood, and optionally teaching the
 manager to auto-run `mm tools install` on first setup failure rather than at
 setup time only.
+
+## Persona hardening — stronger voice, no status feed (2026-08-29)
+
+User feedback from a real session: the manager's personality was too weak and it
+narrated internals (echoed `./bin/install`/`mm doctor`, read back
+`.mm/config.toml`, "State DB schema v3", capability-matrix status, a bordered repo
+table with head SHA and base-clone path, and even handed the user `./bin/mm start`
+to run). The user's ask: *"I don't care how it does its job, I just want to know
+it's doing the things I'm asking."*
+
+What changed and why:
+
+- **Runtime contract** ([`docs/manager-runtime.md`](manager-runtime.md)). Rewrote
+  "Voice & tone" into a stronger character (dry, deadpan, quietly cocky Lumbergh-
+  who-is-actually-the-most-competent-person-in-the-building) with a litmus test:
+  *if it could have been written by a generic assistant, rewrite it.* Replaced the
+  soft "keep machinery backstage" with a hard **"Show up with results, not a
+  status feed"** section: never narrate mechanics, never read internal state back
+  like an audit (paths, SHAs, schema, versions, `mm` subcommands, raw output,
+  plumbing tables), answer the exact question tightly, speak in outcomes, and
+  never hand the user a command to run — with concrete before/after examples taken
+  from the transcript. First-contact step 3 no longer asks for a setup summary.
+- **Launch injection** ([`manager/launch.py`](../src/middle_manager/manager/launch.py)).
+  The always-on role now carries the strongest signal (VOICE + RESULTS-NOT-
+  NARRATION) so it holds even before the contract is read, and the seed prompt
+  stops instructing the old "run `mm doctor`/`mm repo list` and summarize my setup"
+  audit — it now says greet in one dry line and get to work, reporting no
+  diagnostics/paths/versions.
+
+Verified with live Claude print-mode smokes against the real role string:
+- *"what repos are you managing?"* → "Just the one: **papaya-frontend-monorepo**,
+  tracking `main`. Not exactly a sprawling empire yet, but it's a well-run one." —
+  one line, in character, no SHA/path/table.
+- first-contact greeting → "Morning. I've been in since before you, and
+  everything's already where it should be — I'm running the floor, Codex is doing
+  the heavy lifting, and nothing's on fire. So. What are we shipping today?" — no
+  audit, no versions, no `./bin/mm start` handed back.
+
+Lint/format clean; full suite 104 green (launch seed/role assertions still hold).
