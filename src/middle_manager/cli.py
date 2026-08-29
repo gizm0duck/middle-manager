@@ -209,6 +209,132 @@ def _cmd_steer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_answer(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.answer_question(
+            args.task_id, args.answer, scope=args.scope, rationale=args.rationale
+        )
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not resp.get("ok"):
+        print(f"answer failed: {resp.get('error')}", file=sys.stderr)
+        return 1
+    print(
+        f"recorded decision {resp.get('decision_id')} ({args.scope}); resuming task {args.task_id}"
+    )
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    from middle_manager.review import ReviewError, build_bundle, is_approved_at_head, record_review
+
+    try:
+        if args.review_cmd == "show":
+            bundle = build_bundle(args.task_id)
+            print(
+                f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
+                f"({bundle.files_changed} file(s))"
+            )
+            print(bundle.diffstat or "(no changes)")
+            return 0
+        if args.review_cmd == "approve":
+            res = record_review(args.task_id, "approved", args.findings or "")
+            print(f"approved task {args.task_id} at {res['head_sha'][:8]}")
+            return 0
+        if args.review_cmd == "request-changes":
+            res = record_review(args.task_id, "changes_requested", args.findings or "")
+            print(f"requested changes on task {args.task_id} at {res['head_sha'][:8]}")
+            return 0
+        if args.review_cmd == "status":
+            approved, reason = is_approved_at_head(args.task_id)
+            print(f"task {args.task_id}: {'APPROVED' if approved else 'NOT approved'} — {reason}")
+            return 0 if approved else 1
+    except ReviewError as exc:
+        print(f"review error: {exc}", file=sys.stderr)
+        return 1
+    print("no review subcommand given", file=sys.stderr)
+    return 2
+
+
+def _cmd_deliver(args: argparse.Namespace) -> int:
+    from middle_manager.delivery import DeliveryError, deliver
+
+    try:
+        res = deliver(
+            args.task_id,
+            push=not args.no_push,
+            open_pr=not args.no_pr,
+            remote=args.remote,
+            base=args.base,
+        )
+    except DeliveryError as exc:
+        print(f"delivery refused: {exc}", file=sys.stderr)
+        return 1
+    print(f"task {res.task_id}: {res.note}")
+    if res.pr_url:
+        print(f"PR: {res.pr_url}")
+    return 0
+
+
+def _cmd_artifact(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from middle_manager.artifacts import ArtifactError, create_artifact
+
+    try:
+        sections = _json.loads(args.sections) if args.sections else []
+        art = create_artifact(args.run_id, args.title, sections)
+    except (ArtifactError, ValueError) as exc:
+        print(f"artifact error: {exc}", file=sys.stderr)
+        return 1
+    print(f"artifact {art.id} written to {art.path}")
+    print(f"feedback sidecar: {art.feedback_path}")
+    return 0
+
+
+def _cmd_feedback(args: argparse.Namespace) -> int:
+    from middle_manager.artifacts import ArtifactError, read_feedback
+
+    try:
+        result = read_feedback(args.artifact_id)
+    except ArtifactError as exc:
+        print(f"feedback error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _cmd_hook(args: argparse.Namespace) -> int:
+    from middle_manager.hooks import handle_hook_stdin
+
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    result = handle_hook_stdin(args.event, raw)
+    print(json.dumps(result))
+    return 0
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    from middle_manager.crossrepo import DependencyError, rollout_plan
+
+    try:
+        plan = rollout_plan(args.run_id)
+    except DependencyError as exc:
+        print(f"plan error: {exc}", file=sys.stderr)
+        return 1
+    if plan.missing:
+        for task, dep in plan.missing:
+            print(f"task {task} depends on {dep}, which is not in this run", file=sys.stderr)
+    if plan.cycles:
+        for cycle in plan.cycles:
+            print(f"dependency cycle among tasks: {cycle}", file=sys.stderr)
+    print("rollout order: " + " -> ".join(str(t) for t in plan.order))
+    return 0 if plan.ok else 1
+
+
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -347,6 +473,53 @@ def build_parser() -> argparse.ArgumentParser:
     steer.add_argument("task_id", type=int)
     steer.add_argument("--message", required=True, help="steer message")
     steer.set_defaults(func=_cmd_steer)
+
+    answer = sub.add_parser("answer", help="answer a blocked task and record a durable decision")
+    answer.add_argument("task_id", type=int)
+    answer.add_argument("--answer", required=True, help="the answer to the pending question")
+    answer.add_argument(
+        "--scope",
+        default="run",
+        choices=["task", "run", "global"],
+        help="how widely the decision applies (default: run)",
+    )
+    answer.add_argument("--rationale", default=None, help="why this answer was chosen")
+    answer.set_defaults(func=_cmd_answer)
+
+    review = sub.add_parser("review", help="review a task's work (exact-HEAD gate)")
+    rvsub = review.add_subparsers(dest="review_cmd", required=True)
+    for name in ("show", "approve", "request-changes", "status"):
+        p = rvsub.add_parser(name)
+        p.add_argument("task_id", type=int)
+        if name in ("approve", "request-changes"):
+            p.add_argument("--findings", default=None, help="review notes")
+    review.set_defaults(func=_cmd_review)
+
+    deliver = sub.add_parser("deliver", help="push and open a PR (requires approval at head)")
+    deliver.add_argument("task_id", type=int)
+    deliver.add_argument("--no-push", dest="no_push", action="store_true")
+    deliver.add_argument("--no-pr", dest="no_pr", action="store_true")
+    deliver.add_argument("--remote", default="origin")
+    deliver.add_argument("--base", default=None, help="PR base branch")
+    deliver.set_defaults(func=_cmd_deliver)
+
+    artifact = sub.add_parser("artifact", help="write a Lavish HTML review artifact")
+    artifact.add_argument("run_id", type=int)
+    artifact.add_argument("--title", required=True)
+    artifact.add_argument("--sections", default=None, help="JSON list of {heading,body,options}")
+    artifact.set_defaults(func=_cmd_artifact)
+
+    feedback = sub.add_parser("feedback", help="read a Lavish artifact's feedback sidecar")
+    feedback.add_argument("artifact_id", type=int)
+    feedback.set_defaults(func=_cmd_feedback)
+
+    hook = sub.add_parser("hook", help="ingest a provider lifecycle hook (payload on stdin)")
+    hook.add_argument("event", help="lifecycle event name (e.g. stop, session-start)")
+    hook.set_defaults(func=_cmd_hook)
+
+    plan = sub.add_parser("plan", help="compute cross-repo rollout order for a run")
+    plan.add_argument("run_id", type=int)
+    plan.set_defaults(func=_cmd_plan)
 
     reconcile = sub.add_parser("reconcile", help="recover half-alive runners")
     reconcile.set_defaults(func=_cmd_reconcile)

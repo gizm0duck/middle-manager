@@ -119,6 +119,16 @@ class SupervisorServer:
                 }
             if cmd == "steer_task":
                 return {"ok": True, **sup.steer_task(int(request["task_id"]), request["message"])}
+            if cmd == "answer_question":
+                return {
+                    "ok": True,
+                    **sup.answer_question(
+                        int(request["task_id"]),
+                        request["answer"],
+                        scope=request.get("scope", "run"),
+                        rationale=request.get("rationale"),
+                    ),
+                }
             if cmd == "reconcile":
                 return {"ok": True, **sup.reconcile()}
             if cmd == "shutdown":

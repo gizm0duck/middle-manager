@@ -12,6 +12,7 @@ import os
 import threading
 import time
 
+from middle_manager import decisions
 from middle_manager.config import ConfigError, load_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter
@@ -56,6 +57,9 @@ class Supervisor:
         self._threads: dict[int, threading.Thread] = {}
         self._runners: dict[int, RunnerGuardian] = {}
         self._leases: dict[int, object] = {}
+        # Question fingerprints already auto-answered per task; a fingerprint that
+        # reappears after its stored answer is escalated instead of looping.
+        self._auto_answered: dict[int, set[str]] = {}
 
     # ------------------------------------------------------------------ #
     # Dispatch
@@ -183,9 +187,7 @@ class Supervisor:
 
         try:
             if model is not None:
-                enforce_ceiling(
-                    config, WorkerProfile(provider, model, reasoning or "low")
-                )
+                enforce_ceiling(config, WorkerProfile(provider, model, reasoning or "low"))
             elif reasoning is not None:
                 # Enforce only the reasoning ceiling when the model is a default.
                 enforce_ceiling(
@@ -291,7 +293,7 @@ class Supervisor:
 
     def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
         try:
-            runner.run(spec)
+            result = runner.run(spec)
         except Exception as exc:  # noqa: BLE001 - record, never crash the supervisor
             conn = init_db()
             store.set_task_status(conn, spec.task_id, "failed")
@@ -302,6 +304,79 @@ class Supervisor:
                 run_id=spec.run_id,
                 task_id=spec.task_id,
             )
+            return
+        if result.status == "blocked" and result.question:
+            self._maybe_auto_answer(spec, result.question)
+
+    def _maybe_auto_answer(self, spec: TaskSpec, question: str) -> None:
+        """Resolve a blocking question from durable decisions, or leave it for a human.
+
+        A routine question already answered by a scoped decision is resumed
+        autonomously. A question that reappears after we applied its stored answer
+        is left actionable so the human is not looped.
+        """
+        conn = init_db()
+        fp = decisions.fingerprint(question)
+        answered = self._auto_answered.setdefault(spec.task_id, set())
+        if fp in answered:
+            store.append_event(
+                conn,
+                kind="blocked",
+                payload={
+                    "task_id": spec.task_id,
+                    "question": question,
+                    "summary": "recurring question after auto-answer; escalating to human",
+                },
+                run_id=spec.run_id,
+                task_id=spec.task_id,
+            )
+            return
+        match = decisions.find_matching(conn, question, run_id=spec.run_id, task_id=spec.task_id)
+        if match is None:
+            return  # leave the `question` event actionable for a human
+        answered.add(fp)
+        store.append_event(
+            conn,
+            kind="auto_answered",
+            payload={
+                "task_id": spec.task_id,
+                "question": question,
+                "answer": match.answer,
+                "decision_id": match.id,
+                "scope": match.scope,
+            },
+            run_id=spec.run_id,
+            task_id=spec.task_id,
+        )
+        self.resume_task(spec.task_id, match.answer)
+
+    def answer_question(
+        self,
+        task_id: int,
+        answer: str,
+        *,
+        scope: str = "run",
+        rationale: str | None = None,
+    ) -> dict:
+        """Record the user's answer as a durable decision and resume the task."""
+        conn = init_db()
+        task = store.get_task(conn, task_id)
+        if task is None:
+            raise SupervisorError(f"task {task_id} not found")
+        question = _last_question(conn, task_id)
+        if question is None:
+            raise SupervisorError(f"task {task_id} has no pending question")
+        decision_id = decisions.record_decision(
+            conn,
+            question=question,
+            answer=answer,
+            scope=scope,
+            run_id=task["run_id"],
+            task_id=task_id,
+            rationale=rationale,
+        )
+        resumed = self.resume_task(task_id, answer)
+        return {"task_id": task_id, "decision_id": decision_id, **resumed}
 
     # ------------------------------------------------------------------ #
     # Status and wait
@@ -409,3 +484,19 @@ class Supervisor:
             runners = list(self._runners.values())
         for runner in runners:
             runner.interrupt()
+
+
+def _last_question(conn, task_id: int) -> str | None:
+    import json
+
+    row = conn.execute(
+        "SELECT payload FROM events WHERE task_id = ? AND kind IN ('question','blocked') "
+        "ORDER BY seq DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row["payload"]).get("question")
+    except (ValueError, KeyError, TypeError):
+        return None

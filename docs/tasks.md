@@ -335,3 +335,109 @@ input — consistent with the technical plan and the M0 matrix.
 Next milestone: **M4 — autonomous completion** (lifecycle hooks, question
 routing, durable scoped decisions, the Lavish feedback loop, an exact-HEAD review
 gate, `gh`/`gh-axi` push+PR, and cross-repo dependency checks).
+
+## M4 — autonomous completion (2026-08-29)
+
+The manager can now close the loop without a human in the routine path: resolve a
+worker's question from a durable decision, review the exact work, and deliver a
+PR — with a hard gate that refuses to ship anything not reviewed at its current
+head.
+
+What changed and why:
+
+- **Durable scoped decisions** ([`src/middle_manager/decisions.py`](../src/middle_manager/decisions.py)).
+  A decision records the normalized-question fingerprint, answer, scope
+  (`task` | `run` | `global`), provenance, and can be superseded without erasing
+  history. `find_matching` resolves by precedence (global > run > task, most
+  specific/recent wins). This is goal 6 ("preserve decisions without making them
+  timeless").
+- **Autonomous question routing**
+  ([`supervisor/core.py`](../src/middle_manager/supervisor/core.py)). When a
+  worker blocks on a question, the supervisor consults decisions and, on a match,
+  emits `auto_answered` and resumes the worker itself — no human. A question that
+  reappears *after* its stored answer was applied is escalated as `blocked`
+  (actionable) instead of looping. `mm answer <task> --answer ... [--scope]`
+  records the user's answer as a decision and resumes; the same answer is then
+  reused for equivalent questions in scope.
+- **Exact-HEAD review gate** ([`src/middle_manager/review.py`](../src/middle_manager/review.py)).
+  A review is bound to the precise commit SHA it examined. `is_approved_at_head`
+  returns false if the latest verdict is not `approved` or if the worktree moved
+  past the reviewed SHA. `mm review show|approve|request-changes|status`.
+- **Gated delivery** ([`src/middle_manager/delivery.py`](../src/middle_manager/delivery.py)).
+  `mm deliver <task>` refuses unless approved-at-head, then pushes the lease
+  branch (plain git, any origin) and opens a PR via `gh-axi`/`gh` when present.
+  This is the only outbound path and the most conservative step (goal 5, delivery
+  gates enforced in code, and goal, "approvals match exact head commits").
+- **Lavish feedback loop** ([`src/middle_manager/artifacts.py`](../src/middle_manager/artifacts.py)).
+  `mm artifact <run> --title --sections` writes a self-contained HTML review
+  surface plus a JSON feedback sidecar; `mm feedback <id>` reads structured
+  feedback back and flips the artifact to `closed` when the user closes the
+  session. Fully local and dependency-free; `lavish-axi` is preferred when
+  installed (goal 9).
+- **Cross-repo rollout order** ([`src/middle_manager/crossrepo.py`](../src/middle_manager/crossrepo.py)).
+  `mm plan <run>` topologically orders tasks over their dependency edges and
+  refuses on cycles or dangling (out-of-run) edges, so shared-contract changes
+  ship in a safe sequence (goal 4).
+- **Lifecycle hooks** ([`src/middle_manager/hooks.py`](../src/middle_manager/hooks.py)).
+  `mm hook <event>` reads a JSON payload on stdin and records a durable
+  `hook_<event>` lifecycle event against the task/run — the supervision seam for
+  interactive managers. Tolerates non-JSON input.
+
+Example commands:
+
+```
+mm dispatch --repo demo --title "needs input" --provider fake --instructions "ASK:which port?"
+mm answer 2 --answer "8080" --scope run          # records a decision + resumes
+mm review show 1                                  # base..head diffstat
+mm review approve 1 --findings lgtm               # binds approval to the head SHA
+mm deliver 1 --no-pr                              # refused unless approved-at-head
+mm artifact 1 --title "Design review" --sections '[{"heading":"Naming","body":"...","options":["keep","rename"]}]'
+mm feedback 1
+mm plan 1
+```
+
+Verified by 74 hermetic tests (decisions precedence/supersede, the review gate
+reopening when head moves, delivery refusal + real push after approval, cross-repo
+ordering/cycles/missing edges, the artifact roundtrip, hook ingestion, and an
+end-to-end autonomous auto-answer through the supervisor + fake worker), plus a
+live CLI smoke: `dispatch → review show → deliver (refused) → approve → deliver
+(pushed) → plan`, the `answer` auto-resume path, and rendering the Lavish HTML
+artifact in a browser. Lint/format clean.
+
+### M4 drift review (2026-08-29)
+
+What was proven: the routine autonomous loop runs without a human — a blocked
+worker is auto-answered from a standing decision and completes — and the delivery
+path is gated by an approval bound to the exact reviewed SHA, so a post-review
+commit reopens review and blocks delivery (both asserted by tests and observed in
+the live smoke). Decisions are scoped and supersedable; cross-repo runs get a
+topological rollout order or a refusal on cycles/dangling edges; the Lavish
+artifact renders and its feedback sidecar round-trips.
+
+Substitutions vs. the technical plan (consistent with the M1/M2 fallback note):
+
+- Delivery uses plain `git push` plus `gh-axi`/`gh` for PR creation, auto-selected
+  when installed. PR creation is skippable (`--no-pr`) so the push gate is testable
+  without a GitHub remote; hermetic tests exercise the gate and a real local push.
+- Lavish is the built-in local HTML + JSON-sidecar loop; `lavish-axi` is preferred
+  when present but not required. This is the Phase 1 "feedback-capable artifact"
+  the M2 review deferred to here, now delivered.
+- `mm answer` / autonomous routing spells the "question routing + decision reuse"
+  behavior; naming noted so the three plan sources stay aligned. Not a design
+  change.
+
+Deferred to M5 (as the plan schedules): the *validity-condition* check before
+reusing a decision (goal 6's "changed premise" delta) is recorded structurally
+(rationale/scope/supersede) but the automated staleness check — comparing changed
+requirements/contracts/authority/time-sensitive facts before reuse — lands with
+M5 memory controls. Today reuse is fingerprint+scope; a superseding decision wins.
+Called out so no goal sentence is read as fully closed prematurely.
+
+Is any goal or plan sentence now wrong? No. Question routing, durable scoped
+decisions, the exact-HEAD gate, GitHub-only delivery, the Lavish loop, and
+cross-repo ordering all match goals 1/4/5/6/9 and the technical plan's Phase-2
+autonomous completion.
+
+Next milestone: **M5 — hardening** (crash/replay/CLI-drift recovery tests,
+decision-staleness/memory controls, usage reports, `mm doctor` polish, docs, and
+the post-M0 re-estimate the technical plan requires).

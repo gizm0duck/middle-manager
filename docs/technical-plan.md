@@ -296,9 +296,11 @@ Package skeleton, idempotent installer, shared setup skill, task-oriented README
 
 Codex and Claude adapters, capability probes, JSON event normalization, usage accounting, task/result schemas, model ceiling enforcement, steering compatibility tests, and concurrent dependency-aware dispatch. Acceptance: manager on either provider can delegate to the other provider, steer it at a safe checkpoint, and resume a blocked worker.
 
-### Phase 3 — autonomous completion
+### Phase 3 — autonomous completion (done, delivered as M4)
 
 Supervisor, lifecycle hooks, manager question routing, bounded retry/escalation, durable Lavish feedback loop, exact-HEAD review gate, commit/push/PR flow, and cross-repo dependency checks. Acceptance: a two-repository change reaches reviewed PRs without user input unless a seeded critical decision is encountered, and a seeded artifact comment is applied and acknowledged before completion.
+
+Delivered in M4: durable scoped decisions with supersede (`decisions.py`), autonomous question routing that auto-answers a blocked worker from a matching decision and escalates recurring questions (`supervisor/core.py`, `mm answer`), the exact-HEAD review gate that reopens when the worktree moves past the reviewed SHA (`review.py`, `mm review`), gated GitHub delivery via `gh-axi`/`gh` (`delivery.py`, `mm deliver`), the local Lavish HTML+feedback loop (`artifacts.py`, `mm artifact`/`mm feedback`), cross-repo topological rollout with cycle/dangling detection (`crossrepo.py`, `mm plan`), and lifecycle-hook ingestion (`hooks.py`, `mm hook`). The decision *staleness/validity-condition* check before reuse is scheduled with M5 memory controls (see the M4 drift review in `docs/tasks.md`).
 
 ### Phase 4 — hardening and dogfood
 
