@@ -8,10 +8,10 @@ Product contract: [`goals.md`](goals.md). Implementation contract:
 
 ## Current state
 
-- Milestone: **M1 — kernel foundation** (done). Next: **M2 — kernel runtime**.
-- M0 added the probe harness. M1 adds the `mm` control plane: setup/doctor,
-  SQLite state, config, and `mm repo add`. No live workers, supervisor,
-  adapters, or companion-tool provisioning yet.
+- Milestone: **M2 — kernel runtime** (done). Next: **M3 — real workers**.
+- M0 probes; M1 control plane; M2 adds the supervisor/runner/spool, worktree
+  leases, and a fake provider that runs the full path with no model cost. Real
+  Claude/Codex adapters and companion-tool provisioning are still pending.
 - Installed harnesses on this machine: Claude Code 2.1.251 (authenticated),
   Codex CLI 0.150.1 (ChatGPT login), Python 3.13, Node 24.16, `gh` 2.92, uv 0.11.
 
@@ -104,6 +104,55 @@ mm status
 
 ## M2 changes
 
+What and why: the kernel runtime makes the manager able to actually dispatch,
+supervise, and recover bounded work — durably and without model cost — so M3 can
+drop in real adapters behind a proven runtime.
+
+Files added:
+
+- [`worktree/lease.py`](../src/middle_manager/worktree/lease.py) — identity-bound
+  worktree leases; default `git worktree` backend, prefers a pinned `treehouse`
+  binary when present. Recorded in a new `leases` table.
+- [`providers/base.py`](../src/middle_manager/providers/base.py) — the adapter
+  contract (`probe/start/resume/steer/interrupt/reconcile/parse_event/
+  parse_usage/result`) and the normalized TaskSpec/ProviderEvent/WorkerResult/
+  UsageInfo protocol.
+- [`providers/fake.py`](../src/middle_manager/providers/fake.py) +
+  [`fake_worker.py`](../src/middle_manager/providers/fake_worker.py) — a
+  deterministic worker subprocess that emits a normalized JSONL stream and makes
+  a real commit in its leased worktree; instruction markers drive the
+  completed/blocked/failure paths.
+- [`supervisor/spool.py`](../src/middle_manager/supervisor/spool.py) — append-only
+  per-task JSONL event spool.
+- [`supervisor/runner.py`](../src/middle_manager/supervisor/runner.py) — per-task
+  runner guardian; process-group spawn, event streaming to spool + SQLite,
+  fail-closed result (a missing result event is a failure, never a silent
+  success).
+- [`supervisor/core.py`](../src/middle_manager/supervisor/core.py),
+  [`server.py`](../src/middle_manager/supervisor/server.py),
+  [`client.py`](../src/middle_manager/supervisor/client.py),
+  [`protocol.py`](../src/middle_manager/supervisor/protocol.py) — the supervisor
+  business logic plus its Unix-socket transport (dispatch / task_status /
+  run_status / wait_actionable / reconcile / shutdown).
+- New `runners` table and store helpers (leases, runners, sessions, usage,
+  actionable events).
+- CLI: `mm supervisor serve|status|stop`, `mm dispatch`, `mm wait`,
+  `mm reconcile`.
+- Tests: leases, fake-provider runner (completed/blocked/failed), and an
+  end-to-end supervisor test over the real socket.
+
+Example (verified end to end):
+
+```bash
+mm repo add /path/to/repo
+mm supervisor serve &            # or run in a dedicated terminal
+mm dispatch --repo repo --title "kernel demo"
+mm wait 1 --timeout 15           # -> worker_done with a real head SHA
+mm supervisor stop
+```
+
+## M3 changes
+
 _Pending._
 
 ## Drift review
@@ -183,3 +232,37 @@ out explicitly in each milestone's drift review.
 Next milestone: **M2 — kernel runtime** (supervisor socket, per-task runner,
 append-only spool, fake provider, worktree lease lifecycle,
 `mm wait --until-actionable`, `mm reconcile`).
+
+### M2 drift review (2026-08-29)
+
+What was proven: a task dispatched over the Unix socket acquires a real worktree
+lease, runs a worker subprocess under a runner guardian, streams normalized
+events to an append-only spool and to SQLite, records fail-closed results and
+usage, and surfaces an actionable `worker_done` event that `mm wait` returns —
+verified both by tests and a live CLI smoke (`serve`/`dispatch`/`wait`/`stop`).
+The blocked/question and failure paths work; reconcile marks vanished runners
+`needs_recovery` rather than assuming success. 33 hermetic tests, lint/format
+clean.
+
+Substitutions vs. the technical plan (called out per the M1 note):
+
+- Worktree leases use a built-in `git worktree` backend; the pinned Treehouse
+  binary is preferred automatically when installed but is not required. This
+  keeps the runtime testable on a machine without Treehouse while preserving the
+  lease abstraction the plan specifies.
+- `mm wait --until-actionable` is spelled `mm wait <run> [--timeout]`; behavior
+  matches (blocks until an actionable event or all-terminal). Naming noted so the
+  three plan sources stay aligned; not a design change.
+
+AF_UNIX note: macOS caps socket paths near 104 bytes, so the supervisor socket
+lives at a short, stable `/tmp/mm-<hash>.sock` derived from the `.mm` home rather
+than under the deep `.mm/run/` path. The pid file stays under `.mm/run/`.
+
+Is any goal or plan sentence now wrong? No. The supervisor/runner split, durable
+SQLite state, append-only spool, and fail-closed recovery all match the plan.
+The Phase 1 "feedback-capable artifact" (Lavish) is intentionally deferred to
+M4, where the artifact loop is first used; the runtime it depends on now exists.
+
+Next milestone: **M3 — real workers** (Claude/Codex adapters gated by the M0
+capability flags, task/result schemas, usage accounting, ceiling enforcement,
+checkpoint steer, blocked-worker resume, a mixed-provider fixture task).

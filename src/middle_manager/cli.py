@@ -107,6 +107,92 @@ def _cmd_repo(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cmd_supervisor(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+    from middle_manager.supervisor.server import SupervisorServer, default_socket_path
+
+    if args.supervisor_cmd == "serve":
+        server = SupervisorServer()
+        print(f"supervisor listening on {server.socket_path} (Ctrl-C to stop)")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            server.stop()
+            print("supervisor stopped")
+        return 0
+
+    client = SupervisorClient()
+    try:
+        if args.supervisor_cmd == "status":
+            resp = client.ping()
+            print(f"supervisor up (pid {resp.get('pid')}) at {default_socket_path()}")
+            return 0
+        if args.supervisor_cmd == "stop":
+            client.shutdown()
+            print("supervisor shutdown requested")
+            return 0
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 2
+
+
+def _cmd_dispatch(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.dispatch_task(
+            repo=args.repo,
+            title=args.title,
+            instructions=args.instructions or "",
+            provider=args.provider,
+            run_id=args.run_id,
+        )
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not resp.get("ok"):
+        print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
+        return 1
+    print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    return 0
+
+
+def _cmd_wait(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.wait_actionable(args.run_id, timeout=args.timeout)
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if resp.get("timed_out"):
+        print(f"run {args.run_id}: no actionable state within {args.timeout}s")
+        return 0
+    print(json.dumps(resp, indent=2))
+    return 0
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.reconcile()
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    findings = resp.get("reconciled", [])
+    if not findings:
+        print("nothing to reconcile")
+    else:
+        for f in findings:
+            print(f"task {f['task_id']}: {f['action']}")
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     from middle_manager.paths import config_path, mm_home
     from middle_manager.repos import list_repos
@@ -188,6 +274,31 @@ def build_parser() -> argparse.ArgumentParser:
     sync = rsub.add_parser("sync", help="fetch and update a repository base")
     sync.add_argument("name", help="registered repository name")
     repo.set_defaults(func=_cmd_repo)
+
+    supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
+    ssub = supervisor.add_subparsers(dest="supervisor_cmd", required=True)
+    ssub.add_parser("serve", help="run the supervisor (blocking)")
+    ssub.add_parser("status", help="ping a running supervisor")
+    ssub.add_parser("stop", help="ask a running supervisor to shut down")
+    supervisor.set_defaults(func=_cmd_supervisor)
+
+    dispatch = sub.add_parser("dispatch", help="dispatch a task to a registered repo")
+    dispatch.add_argument("--repo", required=True, help="registered repository name")
+    dispatch.add_argument("--title", required=True, help="task title/objective")
+    dispatch.add_argument("--instructions", default=None, help="task instructions")
+    dispatch.add_argument("--provider", default="fake", help="worker provider (M2: fake)")
+    dispatch.add_argument(
+        "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
+    )
+    dispatch.set_defaults(func=_cmd_dispatch)
+
+    wait = sub.add_parser("wait", help="wait until a run reaches an actionable state")
+    wait.add_argument("run_id", type=int)
+    wait.add_argument("--timeout", type=float, default=30.0)
+    wait.set_defaults(func=_cmd_wait)
+
+    reconcile = sub.add_parser("reconcile", help="recover half-alive runners")
+    reconcile.set_defaults(func=_cmd_reconcile)
 
     status = sub.add_parser("status", help="show a compact runtime summary")
     status.set_defaults(func=_cmd_status)

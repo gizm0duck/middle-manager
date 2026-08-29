@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -125,6 +125,32 @@ CREATE TABLE IF NOT EXISTS artifacts (
     session_state TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS leases (
+    id TEXT PRIMARY KEY,
+    repo_id INTEGER REFERENCES repos(id) ON DELETE SET NULL,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    branch TEXT NOT NULL,
+    worktree_path TEXT NOT NULL,
+    base_sha TEXT,
+    backend TEXT NOT NULL DEFAULT 'git',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    released_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS runners (
+    id TEXT PRIMARY KEY,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+    pid INTEGER,
+    provider TEXT,
+    session_id TEXT,
+    status TEXT NOT NULL DEFAULT 'starting',
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT,
+    exit_code INTEGER,
+    result_recorded INTEGER NOT NULL DEFAULT 0
 );
 """
 

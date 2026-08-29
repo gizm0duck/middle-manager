@@ -186,3 +186,180 @@ def events_after(conn: sqlite3.Connection, run_id: int | None, after_seq: int) -
             (run_id, after_seq),
         ).fetchall()
     )
+
+
+# Event kinds that require manager or human attention (used by `mm wait`). A
+# completed worker is actionable because the manager must review it next.
+ACTIONABLE_KINDS = (
+    "worker_done",
+    "question",
+    "blocked",
+    "review_requested",
+    "run_done",
+    "error",
+)
+
+
+def actionable_events(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:
+    marks = ",".join("?" for _ in ACTIONABLE_KINDS)
+    return list(
+        conn.execute(
+            f"SELECT * FROM events WHERE run_id = ? AND kind IN ({marks}) ORDER BY seq",
+            (run_id, *ACTIONABLE_KINDS),
+        ).fetchall()
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Leases
+# --------------------------------------------------------------------------- #
+
+
+def add_lease(
+    conn: sqlite3.Connection,
+    *,
+    lease_id: str,
+    repo_id: int | None,
+    task_id: int | None,
+    branch: str,
+    worktree_path: str,
+    base_sha: str | None,
+    backend: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO leases
+            (id, repo_id, task_id, branch, worktree_path, base_sha, backend,
+             status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        """,
+        (lease_id, repo_id, task_id, branch, worktree_path, base_sha, backend, _now()),
+    )
+    conn.commit()
+
+
+def release_lease(conn: sqlite3.Connection, lease_id: str) -> None:
+    conn.execute(
+        "UPDATE leases SET status = 'released', released_at = ? WHERE id = ?",
+        (_now(), lease_id),
+    )
+    conn.commit()
+
+
+def active_leases(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(conn.execute("SELECT * FROM leases WHERE status = 'active' ORDER BY created_at"))
+
+
+# --------------------------------------------------------------------------- #
+# Runners
+# --------------------------------------------------------------------------- #
+
+
+def register_runner(
+    conn: sqlite3.Connection,
+    *,
+    runner_id: str,
+    task_id: int,
+    provider: str,
+    pid: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO runners (id, task_id, pid, provider, status, started_at, heartbeat_at)
+        VALUES (?, ?, ?, ?, 'starting', ?, ?)
+        """,
+        (runner_id, task_id, pid, provider, _now(), _now()),
+    )
+    conn.commit()
+
+
+def update_runner(conn: sqlite3.Connection, runner_id: str, **fields: object) -> None:
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = [*fields.values(), runner_id]
+    conn.execute(f"UPDATE runners SET {cols} WHERE id = ?", values)
+    conn.commit()
+
+
+def get_runner(conn: sqlite3.Connection, runner_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM runners WHERE id = ?", (runner_id,)).fetchone()
+
+
+def live_runners(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM runners WHERE status IN ('starting','running') ORDER BY started_at"
+        )
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Sessions and usage
+# --------------------------------------------------------------------------- #
+
+
+def upsert_session(
+    conn: sqlite3.Connection,
+    *,
+    task_id: int,
+    provider: str,
+    provider_session_id: str | None,
+    status: str = "active",
+) -> int:
+    now = _now()
+    existing = conn.execute(
+        "SELECT id FROM sessions WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
+    ).fetchone()
+    if existing is None:
+        cur = conn.execute(
+            """
+            INSERT INTO sessions
+                (task_id, provider, provider_session_id, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, provider, provider_session_id, status, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    conn.execute(
+        "UPDATE sessions SET provider_session_id = ?, status = ?, updated_at = ? WHERE id = ?",
+        (provider_session_id, status, now, existing["id"]),
+    )
+    conn.commit()
+    return int(existing["id"])
+
+
+def record_usage(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int | None,
+    task_id: int | None,
+    provider: str,
+    model: str | None,
+    reasoning: str | None,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO usage
+            (run_id, task_id, provider, model, reasoning, input_tokens,
+             output_tokens, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (run_id, task_id, provider, model, reasoning, input_tokens, output_tokens, _now()),
+    )
+    conn.commit()
+
+
+def usage_totals(conn: sqlite3.Connection, run_id: int) -> dict:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(input_tokens),0) AS input,
+               COALESCE(SUM(output_tokens),0) AS output
+        FROM usage WHERE run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    return {"input_tokens": int(row["input"]), "output_tokens": int(row["output"])}
