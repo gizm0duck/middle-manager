@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Middle Manager runtime state (canonical state is gitignored per the plan).
+# Includes locally provisioned companion tools and raw probe evidence.
+.mm/
