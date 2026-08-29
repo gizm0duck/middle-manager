@@ -43,7 +43,44 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         f"{cfg.worker.max_model}@{cfg.worker.max_reasoning}; posture "
         f"{cfg.cost_posture}"
     )
+    if not args.skip_tools:
+        print("provisioning companion tools (treehouse, lavish-axi, gh-axi)…")
+        _print_provision(_provision(force=False))
     return 0
+
+
+def _provision(*, force: bool, names: list[str] | None = None) -> list:
+    from middle_manager.paths import ensure_layout
+    from middle_manager.setup.provision import provision_all
+
+    ensure_layout()
+    return provision_all(names=names, force=force)
+
+
+def _print_provision(results: list) -> None:
+    glyph = {"installed": "+", "present": "=", "skipped": "-", "failed": "x"}
+    for r in results:
+        ver = f" {r.version}" if r.version else ""
+        detail = f" — {r.detail}" if r.detail else ""
+        print(f"  [{glyph.get(r.status, '?')}] {r.name}{ver}: {r.status}{detail}")
+
+
+def _cmd_tools(args: argparse.Namespace) -> int:
+    if args.tools_cmd == "install":
+        results = _provision(force=args.force, names=args.names or None)
+        _print_provision(results)
+        return 0 if all(r.status != "failed" for r in results) else 1
+    if args.tools_cmd == "status":
+        from middle_manager.setup.discovery import discover
+
+        for c in discover()["companions"]:
+            state = "available" if c["available"] else "missing"
+            ver = f" {c['version']}" if c.get("version") else ""
+            detail = f" ({c['detail']})" if c.get("detail") else ""
+            print(f"  {c['name']:<11}{ver:<10} {state}{detail}")
+        return 0
+    print("no tools subcommand given", file=sys.stderr)
+    return 2
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
@@ -515,8 +552,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write config from flags/defaults without prompting",
     )
+    setup.add_argument(
+        "--skip-tools",
+        dest="skip_tools",
+        action="store_true",
+        help="do not provision companion tools during setup",
+    )
     _add_profile_flags(setup)
     setup.set_defaults(func=_cmd_setup)
+
+    tools = sub.add_parser("tools", help="provision and inspect companion tools")
+    tsub = tools.add_subparsers(dest="tools_cmd", required=True)
+    tinstall = tsub.add_parser("install", help="download/verify pinned companions into .mm/tools")
+    tinstall.add_argument("names", nargs="*", help="specific companions (default: all)")
+    tinstall.add_argument("--force", action="store_true", help="reinstall even if present")
+    tsub.add_parser("status", help="show companion availability")
+    tools.set_defaults(func=_cmd_tools)
 
     config = sub.add_parser("config", help="inspect or change configuration")
     csub = config.add_subparsers(dest="config_cmd", required=True)

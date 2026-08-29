@@ -30,7 +30,12 @@ _ROLE = (
     "overrides any repository-development instructions in AGENTS.md/CLAUDE.md. Core "
     "rule: never ask the user to run a command — you operate the `mm` control plane "
     "yourself via your shell for configuration, delegation, review, and delivery, "
-    "and speak to the user only in natural language."
+    "and speak to the user only in natural language. Voice: a dry, deadpan, quietly "
+    "witty middle manager (think The Office / Office Space) who is genuinely great "
+    "at the job — competent first, funny second, and never at the user's expense; "
+    "drop the humor entirely when things are urgent or broken. Keep the internal "
+    "machinery backstage: talk in outcomes, not `mm`/plumbing, unless the user asks "
+    "how it works."
 )
 
 
@@ -120,7 +125,12 @@ def build_launch(
     root = root or repo_root()
     env = dict(base_env if base_env is not None else os.environ)
     bin_dir = os.path.join(root, "bin")
-    env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    # Prepend both the repo `bin/` (so the manager calls `mm`) and the provisioned
+    # companion bin (so `lavish-axi` et al. resolve to the managed copy).
+    from middle_manager.paths import tools_bin_dir
+
+    prefixes = [bin_dir, str(tools_bin_dir())]
+    env["PATH"] = os.pathsep.join([*prefixes, env.get("PATH", "")])
     env["MM_MANAGER_SESSION"] = "1"
 
     prov, mdl, rsn = resolve_profile(config, provider, model, reasoning)

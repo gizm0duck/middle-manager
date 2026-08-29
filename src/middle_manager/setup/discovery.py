@@ -11,6 +11,8 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 
+from middle_manager.paths import tools_bin_dir
+
 
 @dataclass
 class Tool:
@@ -92,8 +94,10 @@ def detect_requirement(name: str, version_argv: list[str], hint: str) -> Tool:
 
 
 def detect_companion(name: str) -> Tool:
-    """Companion CLIs are optional at M1; report presence only."""
-    path = _which(name)
+    """Report a companion, preferring the copy provisioned under .mm/tools/bin."""
+    from middle_manager.companions import companion_bin
+
+    path = companion_bin(name)
     if not path:
         return Tool(
             name,
@@ -102,9 +106,11 @@ def detect_companion(name: str) -> Tool:
             None,
             None,
             False,
-            "optional; provisioned by `mm setup` in a later milestone",
+            "optional; install with `mm tools install`",
         )
-    return Tool(name, "companion", path, _version([name, "--version"]), None, True)
+    managed = str(tools_bin_dir()) in path
+    detail = "managed (.mm/tools)" if managed else "on PATH"
+    return Tool(name, "companion", path, _version([path, "--version"]), None, True, detail)
 
 
 def discover() -> dict[str, list[dict]]:

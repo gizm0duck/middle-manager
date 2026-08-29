@@ -43,6 +43,11 @@ def tools_dir() -> Path:
     return mm_home() / "tools"
 
 
+def tools_bin_dir() -> Path:
+    """Aggregated symlink dir for provisioned companion executables."""
+    return tools_dir() / "bin"
+
+
 def worktree_pools_dir() -> Path:
     return mm_home() / "worktree-pools"
 
@@ -60,6 +65,7 @@ def ensure_layout() -> Path:
         runs_dir(),
         run_dir(),
         tools_dir(),
+        tools_bin_dir(),
         worktree_pools_dir(),
         memory_dir(),
     ):

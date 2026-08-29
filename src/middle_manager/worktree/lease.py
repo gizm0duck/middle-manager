@@ -24,12 +24,12 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from middle_manager.companions import companion_bin, has_companion
 from middle_manager.paths import worktree_pools_dir
 from middle_manager.state import init_db, store
 
@@ -81,7 +81,12 @@ def _parse_lease_json(text: str) -> dict:
 
 
 def _run_treehouse(argv: list[str], cwd: str) -> str:
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    # Prefer the provisioned copy under .mm/tools/bin; fall back to PATH. The argv
+    # builders stay pure (argv[0] == "treehouse") so only the executable is swapped.
+    resolved = companion_bin(argv[0]) or argv[0]
+    proc = subprocess.run(
+        [resolved, *argv[1:]], cwd=cwd, capture_output=True, text=True, check=False
+    )
     if proc.returncode != 0:
         # Update banners go to stderr; only surface it on failure.
         raise LeaseError(f"{' '.join(argv)} failed: {proc.stderr.strip()}")
@@ -103,7 +108,7 @@ def resolve_backend(backend: str | None) -> str:
         return env
     if env not in (None, "", "auto"):
         raise LeaseError(f"unknown MM_LEASE_BACKEND {env!r}")
-    return "treehouse" if shutil.which("treehouse") else "git"
+    return "treehouse" if has_companion("treehouse") else "git"
 
 
 class LeaseManager:

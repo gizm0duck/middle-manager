@@ -651,3 +651,65 @@ and verifying it against the checksums now recorded in `tools.lock`, rather than
 using whatever is on PATH. Nothing in the goals or technical plan is contradicted;
 the companion story moved from "placeholder" to "wired + pinned, provisioning
 pending."
+
+## Managed provisioning + manager persona (2026-08-29)
+
+Two follow-ups landed together: `mm setup` now actually *installs* the pinned
+companions, and the runtime manager has a defined voice.
+
+Managed provisioning — what changed and why:
+
+- **Provisioner** ([`setup/provision.py`](../src/middle_manager/setup/provision.py)).
+  Reads the real pins from [`tools.lock`](../tools.lock) and installs each
+  companion into `.mm/tools/<tool>/<version>/`, activating a stable symlink in
+  `.mm/tools/bin/`. treehouse is fetched from its GitHub release for the detected
+  `platform_slug()` and its sha256 is **verified against `tools.lock` before
+  activation**; lavish-axi/gh-axi are `npm install`ed at the exact pinned version
+  into an isolated prefix (npm verifies registry integrity). The side-effecting
+  primitives (`_download`/`_sha256`/`_extract_tar`/`_npm_install`) are injectable,
+  so orchestration — the checksum gate, symlink activation, crash-safety — is unit
+  tested without a network. Provisioning **never raises**: a failed companion
+  leaves the documented fallback in place.
+- **Resolver** ([`companions.py`](../src/middle_manager/companions.py)).
+  `companion_bin(name)` prefers the managed `.mm/tools/bin/<name>` and falls back
+  to `PATH`. Wired into the treehouse lease backend
+  ([`worktree/lease.py`](../src/middle_manager/worktree/lease.py)) and delivery's
+  PR tool ([`delivery.py`](../src/middle_manager/delivery.py)); the manager launch
+  prepends `.mm/tools/bin` to PATH so `lavish-axi` resolves to the managed copy.
+- **CLI/UX**. `mm setup` provisions by default (`--skip-tools` to opt out); new
+  `mm tools install [names…] [--force]` and `mm tools status`
+  ([`cli.py`](../src/middle_manager/cli.py)). `mm doctor` now labels each companion
+  `managed (.mm/tools)` vs `on PATH`
+  ([`setup/discovery.py`](../src/middle_manager/setup/discovery.py)).
+
+Verified for real on this machine: `mm tools install --force` downloaded and
+checksum-verified treehouse `v2.3.0`, npm-installed lavish-axi `0.1.62` and gh-axi
+`0.1.34`, symlinked all three into `.mm/tools/bin`, and `mm tools status` reports
+them as managed. (These pins are newer than the machine's global copies, so
+managed provisioning also upgrades.) Plus 9 new hermetic tests
+([`tests/test_provision.py`](../tests/test_provision.py)); full suite 104 green.
+
+Manager persona — what changed and why:
+
+- The runtime manager now has a **voice**: a dry, deadpan, Office-Space-flavored
+  middle manager who is genuinely great at the job — competent first, funny
+  second, never at the user's expense, and who drops the bit entirely when things
+  are urgent or broken. It also **keeps the machinery backstage**: it speaks in
+  outcomes, not `mm`/plumbing, unless the user asks how it works. Added as
+  "Voice & tone" and "Keep the machinery backstage" sections in the runtime
+  contract ([`docs/manager-runtime.md`](manager-runtime.md)), reinforced in
+  Reporting, and injected into the launch role so it is actually in force
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)).
+- The persona lives in the **runtime** contract, not the root
+  [`AGENTS.md`](../AGENTS.md) (which stays plain/technical for engineers building
+  the framework). A pointer in `AGENTS.md` now says so, to prevent the comedic
+  voice from bleeding into dev-time commits/PRs.
+
+Drift note: this closes the "managed provisioning" follow-up called out in the
+prior entry — companions are now genuinely downloaded, verified, and pinned, with
+graceful fallback intact. The persona is additive and enforced only at runtime; it
+cannot weaken authority, ceilings, or the review gate (those remain in `mm`), and
+the contract explicitly subordinates humor to competence and to dropping the bit
+under pressure. Open follow-up: multi-repo dogfood, and optionally teaching the
+manager to auto-run `mm tools install` on first setup failure rather than at
+setup time only.

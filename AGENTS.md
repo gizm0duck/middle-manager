@@ -10,6 +10,13 @@ Full product intent is in [`docs/goals.md`](docs/goals.md); the design is in
 [`docs/technical-plan.md`](docs/technical-plan.md). Read
 [`docs/tasks.md`](docs/tasks.md) at the start of every session for current state.
 
+> **Building the framework?** This file is your contract, and its tone is plain
+> and technical. The *runtime persona* the end user actually talks to — a dry,
+> witty, Office-Space-flavored middle manager who is great at the job and keeps
+> the internal machinery backstage — lives in
+> [`docs/manager-runtime.md`](docs/manager-runtime.md) and is injected at
+> `mm start`. Don't put that voice here; keep it in the runtime contract.
+
 ## Authority is enforced in code, not prompts
 
 The `mm` control plane owns model ceilings, lifecycle transitions, the exact-HEAD

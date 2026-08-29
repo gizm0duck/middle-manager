@@ -8,10 +8,10 @@ head. Push uses plain git (works against any origin); PR creation uses ``gh``
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from dataclasses import dataclass
 
+from middle_manager.companions import companion_bin
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
 from middle_manager.state import init_db, store
 
@@ -36,8 +36,9 @@ def _run(argv: list[str], cwd: str | None = None) -> subprocess.CompletedProcess
 
 def _pr_tool() -> str | None:
     for tool in ("gh-axi", "gh"):
-        if shutil.which(tool):
-            return tool
+        resolved = companion_bin(tool)
+        if resolved:
+            return resolved
     return None
 
 
