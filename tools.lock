@@ -1,0 +1,31 @@
+# Middle Manager companion tool lock.
+#
+# "Bundled" means reproducible and locally managed, not vendored source trees.
+# `mm setup` provisions each tool into the gitignored .mm/tools/<tool>/<version>/
+# directory and verifies the artifact before activation (implemented in a later
+# milestone). Until then this file records the intended pins and their integrity
+# metadata placeholders.
+#
+# Format: TOML. Each [tool.<name>] table pins a version, source, and checksum.
+
+[tool.treehouse]
+version = "UNPINNED"
+source = "https://github.com/EXAMPLE/treehouse/releases"
+platform_artifact = "TBD"
+sha256 = "TBD"
+license = "MIT"
+notes = "Go release binary; lease-oriented JSON interface. Pin before M2."
+
+[tool.gh-axi]
+version = "UNPINNED"
+source = "npm:gh-axi"
+sha256 = "TBD"
+license = "MIT"
+notes = "Isolated pinned npm package; uses the user's Node and authenticated gh."
+
+[tool.lavish-axi]
+version = "UNPINNED"
+source = "npm:lavish-axi"
+sha256 = "TBD"
+license = "MIT"
+notes = "Isolated pinned npm package; requires Node 22+. Pin before M4."
