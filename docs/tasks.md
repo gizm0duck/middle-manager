@@ -588,3 +588,66 @@ manager merely invokes. Interactive-harness process handoff (`os.execvpe`) is th
 one untested-by-unit path (it replaces the process); it is covered by the live
 smoke and kept trivial. Real companion-binary provisioning and multi-repo dogfood
 remain the open follow-ups.
+
+## Real companion integration — treehouse + lavish-axi (2026-08-29)
+
+User pointed at the real upstreams
+([kunchenguid/treehouse](https://github.com/kunchenguid/treehouse),
+[kunchenguid/lavish-axi](https://github.com/kunchenguid/lavish-axi)). Both are
+installed on this machine, so we integrated against their **real** interfaces
+rather than placeholders, and pinned them with published integrity.
+
+What changed and why:
+
+- **Real Treehouse lease backend**
+  ([`worktree/lease.py`](../src/middle_manager/worktree/lease.py)). Previously the
+  backend was labeled `"treehouse"` but always used `git worktree`. It now uses
+  treehouse's purpose-built non-interactive lease interface:
+  `treehouse get --lease --json --lease-holder mm-task-<id>` durably reserves a
+  pre-warmed pooled worktree and prints `{path, lease_id, ...}`; we create the
+  task branch inside it (`git switch -c mm/task-…`) so delivery pushes
+  `HEAD:<branch>` exactly as before, and release runs
+  `treehouse return <path> --force --if-lease-id <id>` (guarded so we never return
+  someone else's worktree). Backend selection is now `resolve_backend()`:
+  explicit arg > `MM_LEASE_BACKEND` env > auto-detect (treehouse if on PATH, else
+  git). The always-available `git` backend is unchanged.
+- **Hermetic suite stays hermetic**
+  ([`tests/conftest.py`](../tests/conftest.py)). A new autouse fixture forces
+  `MM_LEASE_BACKEND=git` so the supervisor's auto-selected backend never mutates
+  the global `~/.treehouse` pool during tests. New hermetic tests cover the pure
+  treehouse argv builders, lease-JSON parsing (and rejection of garbage/missing
+  fields), and backend-resolution precedence
+  ([`tests/test_lease.py`](../tests/test_lease.py)).
+- **Live proof**
+  ([`tests/live/test_treehouse_live.py`](../tests/live/test_treehouse_live.py)).
+  Opt-in (`-m live`): leases a real pooled worktree, asserts the branch/base SHA,
+  lands a commit, releases, verifies the DB, and destroys the pooled worktree so
+  no global state leaks. Passing here confirms the exact interface the backend
+  depends on.
+- **lavish-axi at the contract level**
+  ([`docs/manager-runtime.md`](manager-runtime.md)). lavish-axi is an *agent-first
+  AXI* — its own docs say the agent authors the HTML and drives
+  `lavish-axi <file>` / `lavish-axi poll <file>`, learning the surface live from
+  `--help`/`design`/`playbook`. So we integrated at the contract level: the
+  runtime manager prefers `lavish-axi` for rich review when present and learns it
+  live; `mm artifact` stays the zero-Node local fallback. Added a "Companion
+  tools" section (treehouse transparent isolation, lavish rich review, gh/gh-axi
+  delivery, doctor drift).
+- **Real pins** ([`tools.lock`](../tools.lock),
+  [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)). Replaced the
+  `UNPINNED`/`EXAMPLE` placeholders with real versions and integrity: treehouse
+  `v2.3.0` with per-platform sha256 from the release `checksums.txt`; lavish-axi
+  `0.1.62` and gh-axi `0.1.34` with their npm `integrity`/`shasum`. All MIT.
+
+Verified: full hermetic suite green (`make lint`/`make test`), lint/format clean,
+and the live treehouse round-trip passes on this machine.
+
+Drift note: this narrows the largest remaining gap between the plan's "pinned
+managed dependencies" and reality — Treehouse is now genuinely wired (not just
+labeled), lavish-axi is integrated the way its own design intends, and gh-axi was
+already wired in delivery. The honest remaining follow-up is *managed
+provisioning*: downloading each pinned artifact into `.mm/tools/<tool>/<version>/`
+and verifying it against the checksums now recorded in `tools.lock`, rather than
+using whatever is on PATH. Nothing in the goals or technical plan is contradicted;
+the companion story moved from "placeholder" to "wired + pinned, provisioning
+pending."

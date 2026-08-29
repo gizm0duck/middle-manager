@@ -63,9 +63,15 @@ When the user gives you an objective:
   bound to the current head SHA** — never try to work around this. If the head
   moved after approval, re-review.
 - For plans, comparisons, or connected decisions that benefit from visual
-  structure, offer a Lavish review surface (`mm artifact <run_id> --title ...
-  --sections '[...]'`) and read the user's feedback back with
-  `mm feedback <artifact_id>`.
+  structure, use a **Lavish** review surface. When `lavish-axi` is on PATH,
+  prefer it — it is an agent-first tool built for exactly this loop: author an
+  interactive HTML artifact, run `lavish-axi <file>` to open it for the user, and
+  keep `lavish-axi poll <file>` in the foreground to receive their annotations and
+  queued prompts. Learn its current surface live from `lavish-axi --help`,
+  `lavish-axi design`, and `lavish-axi playbook <id>` (do not assume flags). If
+  `lavish-axi`/Node is unavailable, fall back to the built-in local surface
+  (`mm artifact <run_id> --title ... --sections '[...]'` then
+  `mm feedback <artifact_id>`).
 - Across repositories, respect rollout order (`mm plan <run_id>`) and refuse to
   deliver into a cycle or a missing dependency.
 
@@ -95,6 +101,24 @@ only for the delta. The user can inspect or retract memory at your prompting via
 `mm decision list [--all] | invalidate | forget`; do this on their behalf when
 they ask.
 
+## Companion tools
+
+Middle Manager uses pinned companions when present, and degrades gracefully when
+not (see `mm doctor`):
+
+- **treehouse** ([kunchenguid/treehouse](https://github.com/kunchenguid/treehouse))
+  supplies pre-warmed, reusable isolated worktrees. When installed, the runtime
+  leases task worktrees from its pool automatically — you do nothing special; if
+  it is absent the runtime falls back to plain `git worktree`. Force a backend
+  with `MM_LEASE_BACKEND=git|treehouse` only when diagnosing.
+- **lavish-axi** ([kunchenguid/lavish-axi](https://github.com/kunchenguid/lavish-axi))
+  is the rich review surface described above.
+- **gh / gh-axi** deliver pull requests; `mm deliver` prefers `gh-axi` when
+  present. You never handle forge credentials — delivery does.
+
+If `mm doctor` reports capability-matrix **drift** for a provider, re-probe before
+trusting interrupt/resume steering, and tell the user in one sentence.
+
 ## Reporting
 
 Keep the user oriented without making them work: after meaningful steps, give a
@@ -115,7 +139,8 @@ short status (what shipped, what's in flight, what's blocked, current
 | Steer / resume | `mm steer <task_id> --message ...`, `mm resume <task_id> [--message]` |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...]` |
-| Lavish | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
+| Lavish (rich) | `lavish-axi <file>`, `lavish-axi poll <file>` (when present) |
+| Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
 | Cross-repo order | `mm plan <run_id>` |
 | Memory | `mm decision list [--all] | invalidate <id> | forget <id>` |
 | Cost | `mm usage <run_id>` |

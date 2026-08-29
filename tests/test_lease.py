@@ -1,11 +1,20 @@
-"""Hermetic tests for worktree leases (git backend)."""
+"""Hermetic tests for worktree leases (git backend) and treehouse helpers."""
 
 from __future__ import annotations
 
 import os
 
+import pytest
+
 from middle_manager.state import init_db, store
 from middle_manager.worktree import LeaseManager
+from middle_manager.worktree.lease import (
+    LeaseError,
+    _parse_lease_json,
+    _th_acquire_argv,
+    _th_return_argv,
+    resolve_backend,
+)
 
 
 def test_acquire_and_release(mm_home, source_repo) -> None:
@@ -27,3 +36,54 @@ def test_acquire_and_release(mm_home, source_repo) -> None:
     mgr.release(lease, repo_path=source_repo)
     assert not os.path.isdir(lease.worktree_path)
     assert len(store.active_leases(conn)) == 0
+
+
+def test_treehouse_argv_helpers() -> None:
+    assert _th_acquire_argv("mm-task-7") == [
+        "treehouse",
+        "get",
+        "--lease",
+        "--json",
+        "--lease-holder",
+        "mm-task-7",
+    ]
+    assert _th_return_argv("/pool/wt", "abc123") == [
+        "treehouse",
+        "return",
+        "/pool/wt",
+        "--force",
+        "--if-lease-id",
+        "abc123",
+    ]
+
+
+def test_parse_lease_json_shape() -> None:
+    payload = (
+        '{"path":"/Users/x/.treehouse/repo-ab/1/repo",'
+        '"lease_id":"663f81d6432aeba95af3f44d31cb8f4f",'
+        '"lease_holder":"mm-task-1","leased_at":"2026-08-29T07:23:58-07:00"}'
+    )
+    data = _parse_lease_json(payload)
+    assert data["path"].endswith("/repo")
+    assert data["lease_id"] == "663f81d6432aeba95af3f44d31cb8f4f"
+
+
+def test_parse_lease_json_rejects_garbage() -> None:
+    with pytest.raises(LeaseError):
+        _parse_lease_json("not json")
+    with pytest.raises(LeaseError):
+        _parse_lease_json('{"lease_id":"x"}')  # missing path
+
+
+def test_resolve_backend_precedence(monkeypatch) -> None:
+    # Explicit wins over env.
+    monkeypatch.setenv("MM_LEASE_BACKEND", "git")
+    assert resolve_backend("treehouse") == "treehouse"
+    # Env wins over auto-detect.
+    assert resolve_backend("auto") == "git"
+    assert resolve_backend(None) == "git"
+    monkeypatch.setenv("MM_LEASE_BACKEND", "treehouse")
+    assert resolve_backend(None) == "treehouse"
+    monkeypatch.setenv("MM_LEASE_BACKEND", "nonsense")
+    with pytest.raises(LeaseError):
+        resolve_backend(None)
