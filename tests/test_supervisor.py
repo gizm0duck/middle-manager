@@ -58,6 +58,24 @@ def test_dispatch_completes_via_socket(server, source_repo) -> None:
     assert "worker_done" in kinds
 
 
+def test_dispatch_wires_repo_memory_into_worker(server, source_repo, monkeypatch) -> None:
+    from middle_manager import memory
+
+    added = repos.add_repo(source_repo)
+    seen: list[str] = []
+    real = memory.worker_context
+    monkeypatch.setattr(memory, "worker_context", lambda name: seen.append(name) or real(name))
+
+    srv, client = server
+    resp = client.dispatch_task(repo=added.name, title="wire memory")
+    assert resp["ok"]
+    assert _wait_terminal(client, resp["task_id"]) == "worker_done"
+
+    # Dispatch pointed the worker at this repo's shared memory (its progress log).
+    assert seen == [added.name]
+    assert memory.repo_tasks_path(added.name).exists()
+
+
 def test_reconcile_reports_nothing_when_clean(server, source_repo) -> None:
     srv, client = server
     added = repos.add_repo(source_repo)

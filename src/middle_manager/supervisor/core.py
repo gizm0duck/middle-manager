@@ -135,6 +135,13 @@ class Supervisor:
             task_id=task_id,
         )
 
+        # Point the worker at this repo's shared memory (learnings + progress log) so
+        # it uses and updates it — which is also how the manager follows progress
+        # without interrupting. Seeding is idempotent; files already exist from add.
+        from middle_manager import memory
+
+        memory.seed_repo_memory(repo)
+
         spec = TaskSpec(
             task_id=task_id,
             title=title,
@@ -145,6 +152,7 @@ class Supervisor:
             model=model,
             reasoning=reasoning,
             run_id=run_id,
+            memory_preamble=memory.worker_context(repo),
         )
         adapter = _adapter_for(provider)
         runner = RunnerGuardian(adapter)

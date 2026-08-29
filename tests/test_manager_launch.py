@@ -65,8 +65,15 @@ def test_objective_is_seeded() -> None:
 
 def test_unconfigured_seed_walks_through_setup() -> None:
     launch = build_launch(config=None, provider="claude")
-    assert "have not configured" in launch.seed_prompt
+    assert "isn't configured yet" in launch.seed_prompt
     assert "mm setup" in launch.seed_prompt
+    # Preflight self-bootstrap is seeded for the unconfigured path.
+    assert "./bin/install" in launch.seed_prompt
+
+
+def test_configured_seed_runs_preflight() -> None:
+    launch = build_launch(config=_cfg())
+    assert "preflight" in launch.seed_prompt.lower()
 
 
 def test_no_provider_and_no_config_raises() -> None:

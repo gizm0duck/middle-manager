@@ -3,8 +3,6 @@
 Read this first each session. It records current state, recent changes, and open
 considerations. Milestones and gating live in
 [`implementation_plans/initial-plan.md`](../implementation_plans/initial-plan.md).
-Product contract: [`goals.md`](goals.md). Implementation contract:
-[`technical-plan.md`](technical-plan.md).
 
 ## Current state
 
@@ -229,12 +227,13 @@ are `resume_after_sigint_tool` (interrupts a real in-progress command) and
 from a missing process — that goal is unchanged and remains enforced by design,
 not by these probe outcomes.
 
-Is any goal or plan sentence now wrong? No. [`goals.md`](goals.md) is unchanged.
-[`technical-plan.md`](technical-plan.md) keeps its fail-closed policy ("until a
-provider/version passes those tests, expose only checkpoint-at-completion
-steering"); we now have a passing record for these two versions, and the delivery
-phases are annotated with M0. The adapter capability record must be re-probed on
-any CLI version change (both drift often).
+Is any goal or plan sentence now wrong? No. The product intent was unchanged, and
+the fail-closed policy still held ("until a provider/version passes those tests,
+expose only checkpoint-at-completion steering"); we now have a passing record for
+these two versions, and the delivery phases are annotated with M0. The adapter
+capability record must be re-probed on any CLI version change (both drift often).
+(The former `docs/goals.md` and `docs/technical-plan.md`, referenced by earlier
+entries, have since been removed.)
 
 Next milestone: **M1 — kernel foundation** (installer, setup/doctor, SQLite,
 `mm repo add`, README; no live workers). Blocked on human approval per the
@@ -317,7 +316,11 @@ Two real-world facts discovered while validating (now encoded):
   "not supported when using Codex with a ChatGPT account"); it only works with
   the account default. So `model=None` now means "provider account default" and
   the runtime never fabricates a model name. Codex cost is steered via reasoning
-  effort, not model tier — the codex ladder holds only the known-valid model.
+  effort, not model tier — so codex has *no* model ladder in `router.py`: the
+  configured ceiling model is the only eligible model. (An earlier ladder of
+  `["gpt-5-codex"]` made `choose_worker` substitute that name whenever the
+  ceiling named a different model, and `enforce_ceiling` let it through because
+  an unranked ceiling was never compared. Fixed 2026-08-29.)
 - A fabricated model name (e.g. a nonexistent "-mini") makes Codex emit metadata
   errors and fail, reinforcing that model ladders must be real.
 
@@ -802,3 +805,296 @@ Verified live: given only `papaya-frontend-monorepo` registered and asked about
 repo on the books… I'm not going to go rummaging around the machine guessing which
 folder you mean… point me at a URL or local path and I'll get it registered" —
 instead of scanning `~/workspace`. Lint clean; full suite 104 green.
+
+## Front door = your harness; manager self-preflights (2026-08-29)
+
+User: *"the manager should have a preflight check and be able to run install and
+setup on its own. User should never need to run `mm start`, their harness is their
+front door."* So the entry model flips: opening a harness in the repo **is** the
+product; the manager bootstraps itself instead of the user running a launch step.
+
+What changed and why:
+
+- **Mode router** ([`CLAUDE.md`](../CLAUDE.md), [`AGENTS.md`](../AGENTS.md)).
+  Replaced the `MM_MANAGER_SESSION`-only STOP banner with a router that picks a
+  mode from what the session is *for*: **runtime manager is the default** (the user
+  wants work done on their repos → follow [`manager-runtime.md`](manager-runtime.md),
+  run preflight, stay inside `.mm/repos/`); **framework development** when editing
+  `src/`/tests/docs or `MM_DEV=1` → follow `AGENTS.md`. This makes a bare harness
+  the front door without hijacking dev sessions (editing the framework selects dev
+  mode naturally).
+- **Preflight / self-bootstrap** ([`docs/manager-runtime.md`](manager-runtime.md),
+  new "Preflight — bootstrap yourself, silently" step before First contact). Before
+  its first reply the manager runs `./bin/mm doctor`, runs `./bin/install` itself if
+  the env isn't ready, and configures via `mm setup` if there's no config — silently.
+  The *only* time preflight speaks is a prerequisite it genuinely can't fix (`uv`,
+  `git`, Node, `gh`, or a signed-in harness). Contract now standardizes on
+  **`./bin/mm`** (works before anything is on PATH).
+- **Launch role/seed** ([`manager/launch.py`](../src/middle_manager/manager/launch.py)).
+  The always-on role gained a PREFLIGHT clause (doctor → install → setup, invoked as
+  `./bin/mm`); the seed instructs a silent preflight for both configured and
+  unconfigured paths. `mm start` is now framed as an *optional explicit launcher* —
+  same behavior, more direct — not the required front door.
+- **Docs** ([`README.md`](../README.md)). Getting Started is now "open `claude`/
+  `codex` here and talk"; the manager self-installs/configures on the first turn.
+  `mm start` demoted to an optional note. Development section documents `MM_DEV=1`.
+
+Verified live (tool-free print-mode smokes against the real `CLAUDE.md` router):
+a runtime ask ("add a `/healthz` endpoint… open a PR") → *"Runtime manager mode —
+the very first thing I do is run the Preflight… bootstrap the environment, install,
+self-setup… then confirm the service is a repo registered under `.mm/repos/`"*; a
+framework ask ("fix a bug in `src/middle_manager/router.py`") → *"Framework
+development mode… first thing I do is read `AGENTS.md`."* Lint/format clean; full
+suite green (launch seed/role assertions updated: unconfigured seed asserts
+`isn't configured yet` + `./bin/install`, new configured-seed preflight assertion).
+
+Open follow-ups: the preflight relies on the manager's shell honoring `./bin/mm`;
+if a harness sandboxes shell access differently we may want a tiny `mm preflight`
+command that returns structured readiness instead of prose.
+
+## Bugfix — Lavish poll froze the manager's turn (2026-08-29)
+
+Symptom from a real runtime session: the manager generated a Lavish visual, then
+sat "Booping… 9m 24s" — the conversation was frozen. Root cause was **our own
+contract**: [`manager-runtime.md`](manager-runtime.md) told the manager to "keep
+`lavish-axi poll <file>` in the foreground." `poll` is a long-poll (blocks until
+the user responds or a ~10-minute timeout), so foregrounding it holds the harness
+turn open the whole time; the manager then stacked a second long foreground command
+on top. Nothing was backgrounded.
+
+Fix — a general "don't block the turn" rule plus corrected Lavish guidance:
+
+- **Runtime contract** ([`docs/manager-runtime.md`](manager-runtime.md)). Rewrote the
+  Lavish bullet: open the artifact (returns immediately), **hand the turn back**, and
+  collect feedback via a **backgrounded drain** (`lavish-axi poll <file> > file &`,
+  read next turn) or a **single short-timeout** poll once the user says they've left
+  notes — never a foreground long-poll. Added a blockquote principle: *never hold your
+  conversational turn open waiting on a human or a long-poll; background anything that
+  waits, and pick results up later. The only legitimate block is `mm wait`.* Updated
+  the command-reference row accordingly.
+- **Launch role** ([`manager/launch.py`](../src/middle_manager/manager/launch.py)).
+  Added a `NEVER BLOCK YOUR TURN ON A HUMAN` clause to the always-on role so it holds
+  before the contract is even read: background interactive/watch waits (append `&`,
+  output to a file), foregrounding `lavish-axi poll` freezes the conversation, block
+  only on `mm wait`.
+
+Lint/format clean; launch seed/role tests green. Follow-up worth considering: teach
+the manager a concrete "check the Lavish feedback file" convention (stable path per
+artifact) so background drains are reliably picked up, and/or a thin `mm feedback
+--drain` that wraps a bounded poll.
+
+## Skills + scripts over contract bloat; Lavish loop → script (2026-08-29)
+
+User direction: *"we should be leveraging skills and scripts for all of these
+things to make it more efficient and not overload the agent.md file"* — and, on the
+Lavish fix specifically, *"why not just use bash scripts?"* Both right. We'd been
+pouring procedure into the always-loaded contract and the `_ROLE` string, and the
+first cut of the Lavish fix was an over-engineered `mm lavish` Python subcommand for
+what is ~30 lines of stateless shell plumbing.
+
+Architecture we're now following (matches the existing `setup-middle-manager`
+skill's stated split):
+
+- **Skills** (`.agents/skills/*/SKILL.md`, cross-harness, on-demand) own *judgment*
+  — when/how — and hold no mechanics.
+- **Scripts** (bundled with the skill) own *stateless plumbing* — backgrounding a
+  poll, draining a sidecar, opening a viewer.
+- **`mm` (Python)** owns only *durable-state / authority* mechanics — SQLite, the
+  supervisor/leases, the exact-HEAD review gate, delivery/credentials, config and
+  ceilings — where enforcement and hermetic tests actually matter.
+- The **contract / `_ROLE`** stays thin: persona, boundaries, and a **skills index**
+  telling the manager which skill to load for which job.
+
+What changed:
+
+- **Reverted** the `mm lavish` Python approach: deleted `src/middle_manager/lavish.py`
+  and its CLI wiring + `tests/test_lavish.py`.
+- **New script** [`.agents/skills/review-surfaces/scripts/lavish-review`](../.agents/skills/review-surfaces/scripts/lavish-review):
+  `open|drain|stop`. `open` fires the viewer and backgrounds `lavish-axi poll` via
+  `nohup` (portable on macOS/Linux; no `setsid`) to a `.<name>.feedback` sidecar,
+  recording a pidfile; `drain` prints collected notes non-blockingly; `stop` kills
+  the poller. The freeze bug is now impossible by construction — nothing is
+  foregrounded.
+- **New skill** [`.agents/skills/review-surfaces/SKILL.md`](../.agents/skills/review-surfaces/SKILL.md):
+  owns the judgment (pick a surface, the hand-off loop, boundaries), points at the
+  script and the `mm artifact`/`mm feedback` fallback.
+- **Slimmed contract** ([`docs/manager-runtime.md`](manager-runtime.md)): the fat
+  Lavish how-to collapsed to a one-line "load the `review-surfaces` skill" pointer;
+  kept the short "never freeze your turn" principle; added a new **"Use skills and
+  scripts — don't reinvent procedure"** section indexing the available skills.
+- **Slimmed role** ([`manager/launch.py`](../src/middle_manager/manager/launch.py)):
+  replaced the multi-sentence never-block how-to with a `USE SKILLS/SCRIPTS` +
+  one-line never-freeze clause.
+- **Test** [`tests/test_lavish_review_script.py`](../tests/test_lavish_review_script.py):
+  fake `lavish-axi` on PATH whose `poll` writes a line then sleeps; asserts `open`
+  returns immediately and hands the turn back, `drain` surfaces the backgrounded
+  note, `stop` reaps the poller, and a missing tool points at the local surface.
+
+Lint/format clean; full suite 111 green. Follow-up (proposed, not yet done): give
+`preflight` and the `dispatch → review-at-head → deliver` loop the same treatment —
+a thin script/`mm` mechanic plus a skill — and trim their prose out of the contract.
+
+## Self-healing + self-optimization (as a skill, within authority) (2026-08-29)
+
+User: *"middle manager should be proactive at self healing itself… if it finds
+inefficiencies or better ways to operate within what the user is asking of it, it
+should optimize itself."* Delivered as **judgment in a skill** reusing existing `mm`
+recovery primitives — no new subsystem — consistent with the skills/scripts split.
+The critical framing: self-optimization must live *inside* the safety envelope, since
+authority is enforced in code, not prose.
+
+- **New skill** [`.agents/skills/self-improvement/SKILL.md`](../.agents/skills/self-improvement/SKILL.md).
+  Two halves. **Heal:** repair proactively rather than report — `mm doctor` /
+  `mm tools install` for config/companions, re-probe on capability-matrix drift,
+  `mm supervisor serve` for a dead supervisor, `mm reconcile` for half-alive runners,
+  and kill-and-reroute a hung command instead of waiting it out. **Optimize:** reuse
+  durable decisions before re-asking, right-size the worker on evidence, cut
+  redundant work, notice when it's hand-rolling the same shell (reach for a
+  script/skill), and **propose** structural changes (ceiling/config/policy) rather
+  than self-applying. **Hard guardrails:** never edit the framework's own
+  source/contract/config/skills to "optimize," never weaken ceilings / the exact-HEAD
+  review gate / `.mm/repos/` scope / merge authority for speed, and stay bounded (not
+  a self-check loop that crowds out the work).
+- **Thin wiring.** Added `self-improvement` to the contract's skills index with a
+  one-line principle ([`docs/manager-runtime.md`](manager-runtime.md)), a single
+  `SELF-HEAL & IMPROVE` clause in the always-on role
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)), and an on-brand
+  capability line in [`README.md`](../README.md) ("I fix my own messes… what I won't
+  do is rewire my own guardrails").
+
+Deliberately **no** new `mm` command or module: the recovery mechanics already exist
+(`doctor`, `reconcile`, `tools install`, `supervisor`, `decision`); the skill
+orchestrates them. Lint/format clean; launch tests green (full suite unaffected —
+docs/skill + role string only). Open question for later: whether a lightweight
+`mm selfcheck [--repair]` that bundles the read-only diagnostics + reversible repairs
+earns its keep, or stays skill-orchestrated.
+
+## Durable per-instance memory under `.mm/memory/` (2026-08-29)
+
+User: *"every instance of MM needs its own docs with tasks and whatever else in the
+`.mm` dir to save durable state so learnings are captured and not lost across
+sessions — the manager should not need to relearn things about repos, their
+relationships or preferences."* The SQLite store already holds authoritative *state*
+(repos/runs/tasks/decisions), but there was no curated, human-readable **knowledge**
+layer that survives sessions. Added one.
+
+- **Memory module** [`src/middle_manager/memory.py`](../src/middle_manager/memory.py).
+  Owns the canonical layout under `.mm/memory/` and idempotent scaffolding/seeding —
+  **files, not a schema**. Layout: `README.md` (index), `preferences.md` (how the
+  user likes things done), `relationships.md` (cross-repo dependencies / shared
+  contracts / rollout order), and `repos/<name>.md` (per-repo: what it is,
+  build/test/run commands, conventions, gotchas, key areas). `ensure_memory_layout()`
+  and `seed_repo_note()` never overwrite existing files, so captured learnings are
+  preserved.
+- **Auto-seed on registration.** [`repos.add_repo`](../src/middle_manager/repos.py)
+  now seeds `repos/<name>.md` with the repo's identity (remote, default branch, date)
+  the moment it's registered, so every managed repo has a durable note from the
+  start. [`setup.run_setup`](../src/middle_manager/setup/wizard.py) scaffolds the
+  top-level notes.
+- **CLI** [`mm memory init|path|show`](../src/middle_manager/cli.py). `init`
+  scaffolds + seeds a note per registered repo; `path [--repo]` resolves canonical
+  locations; `show [--repo]` prints preferences+relationships or a repo note. The
+  manager edits the Markdown directly.
+- **Skill** [`.agents/skills/durable-memory/SKILL.md`](../.agents/skills/durable-memory/SKILL.md)
+  owns the judgment: recall at session start (don't re-derive/re-ask what's on file),
+  record durable facts/preferences as you learn them, curate in place (prune stale),
+  and the boundaries (machine-local, gitignored, no secrets, never the framework's
+  own files). Live task state stays in `.mm/state.db`; memory is what should outlive
+  the run.
+- **Thin wiring.** Added `durable-memory` to the contract skills index, a **preflight
+  step 5 "Load your memory"**, a `DURABLE MEMORY` clause in the always-on role
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)), and an on-brand
+  README capability line ("I remember") plus an updated `.mm/` layout entry.
+- **Tests** [`tests/test_memory.py`](../tests/test_memory.py): scaffolding is
+  idempotent and preserves edits, `seed_repo_note` records identity and never
+  clobbers, `add_repo` seeds a note, and the `mm memory path|show|init` CLI works.
+
+Design note: kept to files + a thin module (no new tables) — the DB stays the source
+of truth; memory is the curated cheat-sheet on top. Lint/format clean; full suite 117
+green. Follow-up: consider surfacing a memory summary in `mm status`, and (optionally)
+`mm memory edit`.
+
+**Refinement — two explicit tiers (per-instance + per-repo) (2026-08-29).** User:
+*"it should be explicitly per repo; it needs to be per-`mm` so it operates across
+repos, with repo-specific in addition."* Restructured so the two scopes are
+first-class:
+
+- **Per-instance (this `mm`), spans every repo:** top-level `preferences.md` and
+  `relationships.md` — the cross-repo layer that lets the manager operate across
+  repos.
+- **Per-repo, in addition:** `repos/<name>/` is now a **directory** (was a single
+  `repos/<name>.md`), seeded with `notes.md` (what it is, build/test/run, conventions,
+  gotchas, key areas) and `tasks.md` (repo-specific follow-ups / backlog / tech debt).
+
+Code: `memory.py` split into a Tier-1 (instance) / Tier-2 (per-repo) API —
+`repos_root()`, `repo_dir(name)`, `repo_notes_path`, `repo_tasks_path`, and
+`seed_repo_memory()` (replaces `seed_repo_note`); templates label their scope.
+`repos.add_repo` seeds the per-repo directory; `mm memory path|show` operate on the
+repo directory (notes + tasks) with `--repo`. Skill, contract skills-index, preflight
+step 5, the always-on role, and README all now name both tiers explicitly. Tests
+updated for the directory layout; full suite 119 green.
+
+**Refinement — tasks split by owner: manager board vs. worker workspace (2026-08-29).**
+User: *"tasks should live at the mm layer for the manager to track work, and workers
+can use the repo-specific tasks and learnings. This also lets the manager peek in and
+check on workers without needing to distract them or ask them."* Split the two tiers by
+**who owns them**, and wired workers into the per-repo files so the manager gets a
+passive status channel:
+
+- **Manager's board (instance tier):** new top-level
+  [`.mm/memory/tasks.md`](../src/middle_manager/memory.py) (`memory.board_path()`,
+  seeded by `ensure_memory_layout`, template `_BOARD`) — the manager's own cross-repo
+  view of what's delegated / in flight / blocked / done. `mm memory show` (no `--repo`)
+  now prints the board alongside preferences + relationships.
+- **Workers' shared workspace (per-repo tier):** `repos/<name>/tasks.md` reframed from a
+  static backlog into a **live progress log** (template now has a "Progress log,
+  newest-first" section); `notes.md` stays durable learnings. Both are meant for workers
+  to read and update.
+- **Wiring workers to it (the real enabler).** `mm dispatch` now hands every worker an
+  absolute-path preamble to its repo memory so it *uses* the learnings and *logs
+  progress* there — which is exactly what lets the manager check status without
+  interrupting. Added `memory.worker_context(name)` (absolute `notes.md`/`tasks.md`
+  paths + "read before you start / log progress as you go"), a new
+  [`TaskSpec.memory_preamble`](../src/middle_manager/providers/base.py) field, and
+  `ProviderAdapter.worker_prompt(spec)` which prepends the preamble to the task. The
+  Claude and Codex adapters build their `-p`/`exec` prompt via `worker_prompt`; the
+  **fake** adapter deliberately ignores it so its `ASK:`/`FAIL` instruction markers stay
+  intact. [`Supervisor.dispatch_task`](../src/middle_manager/supervisor/core.py) seeds
+  the repo memory (idempotent) and sets `memory_preamble=worker_context(repo)` before
+  building the spec. Workers run with `cwd` = their leased worktree, so the injected
+  paths are absolute — reachable regardless of cwd.
+- **Peek, don't distract.** The `durable-memory` skill, the runtime contract (skills
+  index + "Turning intent into work" step 4), the always-on role
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)), and the README all
+  now say the same thing: track work on your board, and to check on a worker read its
+  `repos/<name>/tasks.md` (`mm memory show --repo <name>`) rather than steering/asking.
+- **Tests** ([`test_memory.py`](../tests/test_memory.py), [`test_adapters.py`](../tests/test_adapters.py),
+  [`test_supervisor.py`](../tests/test_supervisor.py)): board is seeded and shown;
+  `worker_context` yields absolute paths; both real adapters prepend the preamble while
+  argv without a preamble is unchanged; and a dispatch-path test proves the worker is
+  wired to the repo's progress log. Lint/format clean; full suite **123 green**.
+
+Design note: authoritative lifecycle state stays in `.mm/state.db` (`mm status`/`mm
+wait`); the board and progress log are the durable human-readable layer on top — the
+manager keeps the plot, workers narrate their bench. No schema change, no new DB table.
+
+**Refinement — review the plan early and course-correct (2026-08-29).** User: *"and
+also allow them to review their plans and course-correct if they're taking the wrong
+pass."* Closed the loop from *passive* status to *active* steering, reusing the existing
+`mm steer`/`mm resume` mechanism (no new machinery):
+
+- **Plan-first convention.** `memory.worker_context()` now tells every dispatched worker
+  to **post its plan/approach to `repos/<name>/tasks.md` before implementing**, then log
+  progress — so the manager sees the intended approach while course is still cheap to
+  change. The per-repo `tasks.md` template's progress-log section cues the same
+  ("Start with your PLAN before implementing").
+- **Manager loop.** The runtime contract's "Turning intent into work" gains an explicit
+  step: *review the approach early; if it's wrong, `mm steer <task_id> --message ...`
+  (or `mm resume`) instead of waiting to reject the finished diff.* Steering injects
+  mid-flight where the capability matrix proves it and checkpoints at the next resume
+  otherwise — the correction lands either way. Mirrored in the `durable-memory` skill
+  ("Review the plan early; steer if it's wrong"), the always-on role
+  ([`manager/launch.py`](../src/middle_manager/manager/launch.py)), and the README
+  capability line ("review the approach early, catch a wrong turn while it's cheap").
+- **Tests.** `test_worker_context_*` now asserts the plan cue is present; full suite
+  still **123 green**. Lint/format clean.

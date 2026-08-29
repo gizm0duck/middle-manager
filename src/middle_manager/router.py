@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from middle_manager.config import MMConfig
 
 # Ordered cheapest -> most capable. Unknown models compare as "unranked".
-# Codex exposes cost primarily via reasoning effort rather than model tiers, so
-# its ladder holds only the known-valid worker model; keep these names real —
-# invented names (e.g. a nonexistent "-mini") make the provider error out.
+# Codex exposes cost via reasoning effort, not model tiers, and a ChatGPT
+# account rejects any explicit model other than its default, so codex has no
+# ladder: the only eligible model is the configured ceiling model itself. Never
+# put an invented name here — the provider errors out on it.
 MODEL_LADDERS: dict[str, list[str]] = {
     "claude": ["haiku", "sonnet", "opus"],
-    "codex": ["gpt-5-codex"],
+    "codex": [],
 }
 REASONING_LADDER = ["low", "medium", "high", "xhigh"]
 
@@ -56,12 +57,14 @@ def enforce_ceiling(config: MMConfig, profile: WorkerProfile) -> None:
     if profile.provider == ceiling.provider:
         req = _model_rank(profile.provider, profile.model)
         cap = _model_rank(ceiling.provider, ceiling.max_model)
-        if req is not None and cap is not None and req > cap:
-            raise CeilingError(f"model {profile.model!r} exceeds ceiling {ceiling.max_model!r}")
-        if req is None and profile.model != ceiling.max_model:
+        if req is not None and cap is not None:
+            if req > cap:
+                raise CeilingError(f"model {profile.model!r} exceeds ceiling {ceiling.max_model!r}")
+        elif profile.model != ceiling.max_model:
+            # Either side unranked: only the ceiling model itself is eligible.
             raise CeilingError(
-                f"model {profile.model!r} is not in the {profile.provider} ladder and "
-                f"is not the ceiling model {ceiling.max_model!r}"
+                f"model {profile.model!r} is not comparable within the {profile.provider} "
+                f"ladder and is not the ceiling model {ceiling.max_model!r}"
             )
 
 
@@ -72,14 +75,15 @@ def choose_worker(config: MMConfig, *, complexity: str = "normal") -> WorkerProf
     reasoning; hard bumps one step, clamped to the ceiling.
     """
     provider = config.worker.provider
-    ladder = MODEL_LADDERS.get(provider, [config.worker.max_model])
+    ladder = MODEL_LADDERS.get(provider, [])
     cap_idx = _model_rank(provider, config.worker.max_model)
     if cap_idx is None:
-        cap_idx = len(ladder) - 1
-
-    idx = 0 if complexity == "normal" else min(1, cap_idx)
-    idx = min(idx, cap_idx)
-    model = ladder[idx] if ladder else config.worker.max_model
+        # No ladder (codex) or a ceiling model we can't rank: the ceiling model is
+        # the only eligible choice. Never substitute a ladder entry for it.
+        model = config.worker.max_model
+    else:
+        idx = 0 if complexity == "normal" else 1
+        model = ladder[min(idx, cap_idx)]
 
     reasoning = "low" if complexity == "normal" else "medium"
     if _reasoning_rank(reasoning) > _reasoning_rank(config.worker.max_reasoning):

@@ -1,11 +1,13 @@
 # Middle Manager — development contract
 
-> **Runtime manager session? STOP — this file is not for you.** If you were
-> launched by `mm start` (env `MM_MANAGER_SESSION=1`), follow
-> [`docs/manager-runtime.md`](docs/manager-runtime.md) instead. Operate only on
-> repositories registered under `.mm/repos/`; never read this framework's own
-> `AGENTS.md`/`CLAUDE.md`/`docs/` or touch anything on the machine outside `.mm/`.
-> Everything below is for engineers **building Middle Manager itself.**
+> **Wrong file for a runtime session.** The default way Middle Manager is used is
+> the *runtime manager* — the user opens their harness and delegates work. If this
+> session is that (the user wants work done on their repos), or you were launched
+> by `mm start` (env `MM_MANAGER_SESSION=1`), STOP and follow
+> [`docs/manager-runtime.md`](docs/manager-runtime.md): run its preflight, operate
+> only on repositories registered under `.mm/repos/`, and don't read this file or
+> `docs/tasks.md`. **This file applies only when you are developing the Middle
+> Manager codebase itself** (editing `src/`, tests, docs), or `MM_DEV=1` is set.
 
 This contract governs agents **developing the Middle Manager codebase.** As that
 engineer you act as the **manager**: translate objectives into acceptance criteria
@@ -13,9 +15,7 @@ and a dependency-aware plan, delegate implementation to appropriately sized
 workers, resolve routine uncertainty, review the exact final diff, and open pull
 requests only after that review passes.
 
-Full product intent is in [`docs/goals.md`](docs/goals.md); the design is in
-[`docs/technical-plan.md`](docs/technical-plan.md). Read
-[`docs/tasks.md`](docs/tasks.md) at the start of every development session for
+Read [`docs/tasks.md`](docs/tasks.md) at the start of every development session for
 current state.
 
 > The *runtime persona* the end user talks to — a dry, Office-Space-flavored

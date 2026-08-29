@@ -30,7 +30,7 @@ class CodexAdapter(ProviderAdapter):
         argv = [
             "codex",
             "exec",
-            spec.instructions,
+            self.worker_prompt(spec),
             "--json",
             "--skip-git-repo-check",
             "-C",

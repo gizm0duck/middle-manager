@@ -4,13 +4,10 @@ This is the milestone-gated implementation plan derived from the approved
 "Probe-first Middle Manager implementation" plan. Code edits stay small and
 gated by the current milestone. After each milestone: run `make lint`,
 `make fmt`, `make test`; update [`docs/tasks.md`](../docs/tasks.md); create a
-checkpoint commit; re-read [`docs/goals.md`](../docs/goals.md),
-[`docs/technical-plan.md`](../docs/technical-plan.md), and this plan; append a
-drift review; then wait for human approval before the next milestone.
+checkpoint commit; re-read this plan; append a drift review; then wait for human
+approval before the next milestone.
 
-The product contract is [`docs/goals.md`](../docs/goals.md). The implementation
-contract is [`docs/technical-plan.md`](../docs/technical-plan.md). The
-[`design/middle-manager-plan.html`](../design/middle-manager-plan.html) surface
+The [`design/middle-manager-plan.html`](../design/middle-manager-plan.html) surface
 records the seven decisions accepted on 2026-08-28; do not reopen them.
 
 ## Why probe-first
@@ -90,6 +87,5 @@ docs. Re-estimate delivery after M0 evidence, per the technical plan.
   `tests/`. No Firstmate source copies, no vendored companion trees, no tmux in
   the protocol.
 - Use `uv` for all Python commands.
-- Keep [`docs/technical-plan.md`](../docs/technical-plan.md) delivery phases
-  aligned as M0 lands; leave [`docs/goals.md`](../docs/goals.md) unchanged unless
-  a rereview finds a real premise change.
+- Record milestone state and drift in [`docs/tasks.md`](../docs/tasks.md) as each
+  lands.

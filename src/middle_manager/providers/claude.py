@@ -43,7 +43,7 @@ class ClaudeAdapter(ProviderAdapter):
         argv = [
             "claude",
             "-p",
-            spec.instructions,
+            self.worker_prompt(spec),
             "--output-format",
             "stream-json",
             "--verbose",

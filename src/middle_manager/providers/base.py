@@ -21,6 +21,9 @@ class TaskSpec:
     run_id: int | None = None
     resume_session_id: str | None = None
     steer_message: str | None = None
+    # Repo-memory preamble prepended to a fresh worker's prompt so it consults and
+    # updates the repo's shared notes/tasks. Set by the supervisor at dispatch.
+    memory_preamble: str | None = None
 
 
 @dataclass
@@ -60,6 +63,16 @@ class ProviderAdapter(abc.ABC):
     @abc.abstractmethod
     def probe(self) -> dict:
         """Return the capability record for this provider/version (fail-closed)."""
+
+    def worker_prompt(self, spec: TaskSpec) -> str:
+        """The prompt for a fresh worker: repo-memory preamble (if any) + the task.
+
+        Real adapters use this so a worker is pointed at the repo's shared
+        notes/tasks; the fake adapter keeps raw ``instructions`` for its markers.
+        """
+        if spec.memory_preamble:
+            return f"{spec.memory_preamble}\n\n---\n\n{spec.instructions}"
+        return spec.instructions
 
     @abc.abstractmethod
     def start(self, spec: TaskSpec) -> list[str]:

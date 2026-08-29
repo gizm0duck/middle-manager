@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Papaya Frontend Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --window:#e9e9ec; --panel:#fcfcfd; --raised:#ffffff; --panel2:#f2f2f5;
+    --border:#e5e5e8; --divider:#d5d5d8;
+    --ink:#333435; --ink2:#222222; --muted:#8e8e93;
+    --teal:#9bc6c3; --teal-ink:#2f5552; --teal-wash:#e6f1f0;
+    --peri:#5b6baa; --peri-wash:#eef1fb;
+    --swift:#c9a86a; --swift-wash:#f7f1e4;
+    --accent:#111111; --accent-text:#ffffff;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --window:#0d0d0d; --panel:#111111; --raised:#1a1a1a; --panel2:#161616;
+      --border:#2a2a2a; --divider:#333333;
+      --ink:#ececec; --ink2:#ffffff; --muted:#8e8e93;
+      --teal:#9bc6c3; --teal-ink:#bfe0dd; --teal-wash:#182524;
+      --peri:#8d9bd6; --peri-wash:#1a1e2e;
+      --swift:#d8b978; --swift-wash:#2a2416;
+      --accent:#ffffff; --accent-text:#111111;
+    }
+  }
+  :root[data-theme="dark"]{
+    --window:#0d0d0d; --panel:#111111; --raised:#1a1a1a; --panel2:#161616;
+    --border:#2a2a2a; --divider:#333333;
+    --ink:#ececec; --ink2:#ffffff; --muted:#8e8e93;
+    --teal:#9bc6c3; --teal-ink:#bfe0dd; --teal-wash:#182524;
+    --peri:#8d9bd6; --peri-wash:#1a1e2e;
+    --swift:#d8b978; --swift-wash:#2a2416;
+    --accent:#ffffff; --accent-text:#111111;
+  }
+  *{box-sizing:border-box;min-width:0}
+  html,body{margin:0}
+  body{background:var(--window);color:var(--ink);font:14px/1.5 "Inter",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .pfm-page{max-width:1180px;margin:0 auto;padding:40px 28px 80px}
+  .pfm-eyebrow{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:"Archivo","Arial Narrow",Inter,sans-serif;font-weight:800;font-size:clamp(30px,4vw,44px);line-height:1.02;letter-spacing:-.02em;margin:6px 0 10px;color:var(--ink2);text-wrap:balance}
+  .pfm-lede{max-width:64ch;color:var(--ink);margin:0 0 28px}
+  .pfm-lede code,.pfm-path{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+  h2{font-family:"Archivo",Inter,sans-serif;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:44px 0 14px;display:flex;align-items:center;gap:12px}
+  h2::after{content:"";flex:1;height:1px;background:var(--divider)}
+
+  /* ── Overview map ── */
+  .pfm-map{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px}
+  .pfm-lane{grid-column:1/-1;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:6px 4px 0}
+  .pfm-box{border:1px solid var(--border);background:var(--raised);border-radius:10px;padding:12px 14px;position:relative}
+  .pfm-box .k{font-family:"Archivo",Inter,sans-serif;font-weight:700;font-size:15px;color:var(--ink2);letter-spacing:-.01em}
+  .pfm-box .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .pfm-box .t{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px}
+  .pfm-box .t span{font-size:11px;padding:2px 7px;border-radius:999px;background:var(--panel2);color:var(--ink);border:1px solid var(--border)}
+  .pfm-box.web{border-top:3px solid var(--accent)}
+  .pfm-box.mkt{border-top:3px solid var(--peri)}
+  .pfm-box.ios{border-top:3px solid var(--swift)}
+  .pfm-box.dsg{border-top:3px solid var(--divider);background:var(--panel2)}
+  .pfm-box.share{background:var(--teal-wash);border-color:color-mix(in srgb,var(--teal) 55%,var(--border))}
+  .pfm-box.share .k{color:var(--teal-ink)}
+  .pfm-span3{grid-column:1/4}
+  .pfm-span2{grid-column:1/3}
+  .pfm-box.harness{grid-column:3/5;background:var(--panel2)}
+  .pfm-box.native{grid-column:3/4;background:var(--swift-wash);border-color:color-mix(in srgb,var(--swift) 55%,var(--border))}
+  .pfm-api{background:var(--raised)}
+  .pfm-arrow{grid-column:1/-1;text-align:center;color:var(--muted);font-size:11px;letter-spacing:.06em;padding:2px 0 0}
+  .pfm-key{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:12px;color:var(--muted)}
+  .pfm-key i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:6px}
+
+  /* ── Detail cards ── */
+  .pfm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .pfm-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .pfm-card h3{font-family:"Archivo",Inter,sans-serif;font-weight:700;font-size:16px;margin:0 0 2px;color:var(--ink2);letter-spacing:-.01em}
+  .pfm-card .pfm-path{display:block;margin-bottom:10px}
+  .pfm-card p{margin:0 0 10px}
+  .pfm-card ul{margin:0;padding-left:16px}
+  .pfm-card li{margin:3px 0}
+  .pfm-card li b{font-weight:600;color:var(--ink2)}
+  .pfm-card .n{font-family:"Archivo",Inter,sans-serif;font-weight:800;font-size:28px;line-height:1;color:var(--ink2);font-variant-numeric:tabular-nums}
+  .pfm-card .nl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .pfm-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:0 0 4px}
+  .pfm-stat{background:var(--raised);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+
+  /* ── Route panel diagram ── */
+  .pfm-routes{display:grid;grid-template-columns:minmax(0,180px) 24px minmax(0,1fr);gap:8px 6px;align-items:center;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .pfm-routes .u{font:12px ui-monospace,Menlo,monospace;color:var(--ink);text-align:right}
+  .pfm-routes .a{color:var(--muted);text-align:center;font-size:12px}
+  .pfm-routes .p{display:flex;flex-wrap:wrap;gap:4px}
+  .pfm-routes .p span{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--peri-wash);color:var(--peri);border:1px solid color-mix(in srgb,var(--peri) 30%,transparent)}
+  .pfm-routes .hd{grid-column:1/-1;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
+
+  /* ── Domain vocabulary ── */
+  .pfm-vocab{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px}
+  .pfm-term{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+  .pfm-term b{display:block;font-weight:600;color:var(--ink2);font-size:13px}
+  .pfm-term small{display:block;color:var(--muted);font:11px ui-monospace,Menlo,monospace;margin-top:3px;overflow-wrap:anywhere}
+  .pfm-term em{display:block;font-style:normal;font-size:12px;color:var(--ink);margin-top:4px}
+
+
+  /* ── Makefile ── */
+  .pfm-mk{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+  .pfm-mkfam{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .pfm-mkfam h3{font-family:"Archivo",Inter,sans-serif;font-weight:700;font-size:14px;margin:0 0 8px;color:var(--ink2)}
+  .pfm-mkfam ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+  .pfm-mkfam li{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:8px;font-size:12px;align-items:baseline}
+  .pfm-mkfam code{font:11px ui-monospace,Menlo,monospace;color:var(--ink2);background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .pfm-mkfam li span{color:var(--muted)}
+  .pfm-gate{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+  .pfm-gatecard{border-radius:12px;padding:14px 16px;border:1px solid var(--border);background:var(--teal-wash);border-color:color-mix(in srgb,var(--teal) 55%,var(--border))}
+  .pfm-gatecard.full{background:var(--raised);border-color:var(--accent)}
+  .pfm-gatecard h3{font-family:"Archivo",Inter,sans-serif;font-weight:800;font-size:15px;margin:0;color:var(--ink2)}
+  .pfm-gatecard .s{font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .pfm-chain{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .pfm-chain code{font:11px ui-monospace,Menlo,monospace;background:var(--raised);border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--ink2)}
+  .pfm-chain code.plus{background:var(--peri-wash);border-color:color-mix(in srgb,var(--peri) 40%,transparent);color:var(--peri)}
+  .pfm-chain i{color:var(--muted);font-style:normal;font-size:11px}
+  .pfm-note{margin-top:18px;font-size:12px;color:var(--muted);max-width:70ch}
+  @media (max-width:760px){
+    .pfm-map{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .pfm-span3,.pfm-span2,.pfm-box.harness,.pfm-box.native{grid-column:1/-1}
+    .pfm-routes{grid-template-columns:minmax(0,1fr)}
+    .pfm-routes .u{text-align:left}.pfm-routes .a{display:none}
+  }
+  @media (prefers-reduced-motion:no-preference){.pfm-box{transition:box-shadow .15s}}
+  .pfm-box:hover{box-shadow:0 2px 10px rgba(0,0,0,.08)}
+</style>
+</head>
+<body>
+<div class="pfm-page">
+  <div class="pfm-eyebrow">papaya-frontend-monorepo · main</div>
+  <h1>Four surfaces, one set of tokens.</h1>
+  <p class="pfm-lede">The monorepo ships three products — a React web app, an Astro marketing site, and native iOS/macOS clients — plus a non-shipping design workspace. There's no workspace tool; a root <code>Makefile</code> stitches them together, and the shared ground between web, marketing, and native is a single tokens file.</p>
+
+  <h2>Overview</h2>
+  <div class="pfm-map">
+    <div class="pfm-lane">Shipping surfaces</div>
+    <div class="pfm-box web"><div class="k">frontend/</div><div class="s">Product web app · React 19 SPA</div><div class="t"><span>Vite 6</span><span>Tailwind 4</span><span>Router 7</span><span>Zustand</span><span>TipTap</span><span>AI SDK</span></div></div>
+    <div class="pfm-box mkt"><div class="k">marketing/</div><div class="s">Public site · Astro 5, static</div><div class="t"><span>React islands</span><span>Sitemap</span><span>nginx</span></div></div>
+    <div class="pfm-box ios"><div class="k">ios-v2/</div><div class="s">Native iOS + macOS · SwiftUI</div><div class="t"><span>XcodeGen</span><span>MVVM</span><span>2 targets</span></div></div>
+    <div class="pfm-box dsg"><div class="k">design/</div><div class="s">System docs, prototypes, mockups</div><div class="t"><span>Not shipped</span></div></div>
+
+    <div class="pfm-arrow">▼ all read from ▼</div>
+    <div class="pfm-lane">Shared ground</div>
+    <div class="pfm-box share pfm-span3"><div class="k">Design tokens — papaya-tokens.css ⇄ DesignTokens.swift</div><div class="s">One <code class="pfm-path">--papaya-*</code> source of truth. Web and marketing import it by relative path; native mirrors it by hand; a harness check refuses redeclarations anywhere else.</div></div>
+    <div class="pfm-box dsg"><div class="k">Makefile</div><div class="s">39 targets · <code class="pfm-path">make check / verify</code> are the gates</div></div>
+
+    <div class="pfm-box share pfm-span2"><div class="k">Web foundations</div><div class="s">API client · UI kit (shadcn-style + block/activity/streaming/document sub-kits) · Zustand stores · wire types · panel data cache · WebSocket</div></div>
+    <div class="pfm-box native"><div class="k">Native foundations</div><div class="s">APIClient · AuthService · WebSocketService · TurnsPoller · WorkspaceStore</div></div>
+    <div class="pfm-box dsg" style="grid-column:4/5"><div class="k">tools/harness/</div><div class="s">Executable repo guardrails: doc garden, native invariants, token redeclaration check</div></div>
+
+    <div class="pfm-arrow">▼ talk to ▼</div>
+    <div class="pfm-box pfm-api" style="grid-column:1/-1;text-align:center"><div class="k">Papaya API · <code class="pfm-path">VITE_API_BASE_URL/api/v1</code> + <code class="pfm-path">/ws/:workspaceId</code></div><div class="s">Lives in a separate repo. JWT auth, per-workspace socket, agent turn streaming.</div></div>
+  </div>
+  <div class="pfm-key"><span><i style="background:var(--accent)"></i>Web</span><span><i style="background:var(--peri)"></i>Marketing</span><span><i style="background:var(--swift)"></i>Native</span><span><i style="background:var(--teal)"></i>Shared</span><span><i style="background:var(--divider)"></i>Support / non-shipping</span></div>
+
+  <h2>The Makefile: the only glue</h2>
+  <p class="pfm-lede">There is no root <code>package.json</code>, turbo, or nx. The root <code>Makefile</code> is the whole orchestration layer — 39 targets, each <code>##</code>-annotated for <code>make help</code>, grouped by surface. Ports are parameterised (<code>FRONTEND_PORT</code> 5173, <code>MARKETING_PORT</code> 5175) so worktrees don't collide, and <code>frontend-worktree-env</code> generates a per-worktree port file.</p>
+  <div class="pfm-mk">
+    <div class="pfm-mkfam"><h3>Web app</h3><ul>
+      <li><code>install</code><span>pnpm from lockfile</span></li>
+      <li><code>dev</code> <span>Vite on FRONTEND_PORT (+ <code>-stop</code>)</span></li>
+      <li><code>build</code> <span>production bundle; <code>preview</code> serves it</span></li>
+      <li><code>lint</code> <code>typecheck</code> <code>fmt</code> <code>audit</code><span></span></li>
+      <li><code>frontend-unit</code><span>Vitest</span></li>
+      <li><code>frontend-route-smoke</code><span>public, product, admin routes (also <code>test</code>/<code>smoke</code>)</span></li>
+      <li><code>frontend-browser-smoke</code><span>Chromium drive + evidence capture</span></li>
+    </ul></div>
+    <div class="pfm-mkfam"><h3>Marketing site</h3><ul>
+      <li><code>marketing-install</code><span>pnpm from lockfile</span></li>
+      <li><code>dev-marketing</code><span>Astro on MARKETING_PORT</span></li>
+      <li><code>marketing-build</code><span>static output</span></li>
+      <li><code>marketing-lint</code> <code>marketing-typecheck</code><span>astro check</span></li>
+      <li><code>marketing-route-smoke</code><span>routes + SEO head over built output</span></li>
+      <li><code>marketing-container-smoke</code><span>build image, assert noindex (Docker)</span></li>
+    </ul></div>
+    <div class="pfm-mkfam"><h3>Repo guardrails</h3><ul>
+      <li><code>harness-check</code><span>executable guardrails in tools/harness</span></li>
+      <li><code>harness-test</code><span>tests for the guardrails themselves</span></li>
+      <li><code>native-invariants</code><span>XcodeGen + entitlement checks</span></li>
+      <li><code>doc-garden</code><span>doc links, parity rows, deferrals, plan hygiene</span></li>
+    </ul></div>
+    <div class="pfm-mkfam"><h3>Native</h3><ul>
+      <li><code>ios-destinations</code><span>list simulators/devices</span></li>
+      <li><code>ios-build</code> <code>ios-test</code><span>xcodebuild, unsigned</span></li>
+      <li><code>ios-release-archive</code><span>isolated DerivedData</span></li>
+      <li><code>ios-release-upload</code><span>to App Store Connect</span></li>
+      <li><code>mac-build</code><span>macOS target</span></li>
+    </ul></div>
+  </div>
+  <div class="pfm-gate">
+    <div class="pfm-gatecard"><h3>make check</h3><div class="s">Standard web suite — the everyday gate</div>
+      <div class="pfm-chain"><code>install</code><i>→</i><code>lint</code><i>→</i><code>typecheck</code><i>→</i><code>build</code><i>→</i><code>test</code><i>→</i><code>frontend-unit</code><i>→</i><code>audit</code></div></div>
+    <div class="pfm-gatecard full"><h3>make verify</h3><div class="s">Full local gate — everything <code>check</code> runs, minus unit tests, plus marketing, guardrails, and the browser drive</div>
+      <div class="pfm-chain"><code>install</code><code class="plus">marketing-install</code><code class="plus">harness-test</code><code class="plus">harness-check</code><code class="plus">doc-garden</code><code>lint</code><code>typecheck</code><code>build</code><code>frontend-route-smoke</code><code class="plus">frontend-browser-smoke</code><code class="plus">marketing-lint</code><code class="plus">marketing-typecheck</code><code class="plus">marketing-build</code><code class="plus">marketing-route-smoke</code><code>audit</code></div>
+      <div class="s" style="margin:10px 0 0">Note: native targets are never in either gate — iOS/macOS builds run on demand, and <code>frontend-unit</code> is in <code>check</code> but not <code>verify</code>.</div></div>
+  </div>
+
+  <h2>By the numbers</h2>
+  <div class="pfm-stats">
+    <div class="pfm-stat"><div class="n">4</div><div class="nl">Projects</div></div>
+    <div class="pfm-stat"><div class="n">~340</div><div class="nl">Swift files</div></div>
+    <div class="pfm-stat"><div class="n">264</div><div class="nl">Vitest files</div></div>
+    <div class="pfm-stat"><div class="n">~50</div><div class="nl">UI-kit primitives</div></div>
+    <div class="pfm-stat"><div class="n">~20</div><div class="nl">Admin pages</div></div>
+    <div class="pfm-stat"><div class="n">4.3k</div><div class="nl">Lines in api.ts</div></div>
+  </div>
+
+  <h2>The web app: URL → panel</h2>
+  <p class="pfm-lede">Every product route renders one component, <code>AppPage</code>, which maps the path onto a <code>PanelType</code> union. The URL is the only view state, so filters and open records are deep-linkable.</p>
+  <div class="pfm-routes">
+    <div class="hd">Product panels</div>
+    <div class="u">/radar · /radar2</div><div class="a">→</div><div class="p"><span>Activity feed</span><span>lenses</span><span>triage</span><span>Verified For You</span></div>
+    <div class="u">/channel/:id</div><div class="a">→</div><div class="p"><span>Channels</span><span>threads</span><span>messages</span></div>
+    <div class="u">/work-items[/:id]</div><div class="a">→</div><div class="p"><span>Work items</span><span>lanes</span><span>decisions</span><span>evidence</span></div>
+    <div class="u">/agents · /routines</div><div class="a">→</div><div class="p"><span>Scout / Polyweave agents</span><span>agent DMs</span><span>routines &amp; jobs</span></div>
+    <div class="u">/documents · /context-pages</div><div class="a">→</div><div class="p"><span>Documents</span><span>dashboards</span><span>context import</span></div>
+    <div class="u">/memory · /connections</div><div class="a">→</div><div class="p"><span>Workspace beliefs</span><span>MCP providers</span></div>
+    <div class="u">/settings/*</div><div class="a">→</div><div class="p"><span>Members</span><span>usage</span><span>billing &amp; plans</span></div>
+    <div class="hd">Gated</div>
+    <div class="u">/admin/*</div><div class="a">→</div><div class="p"><span>~20 pages via adminCatalog.ts</span><span>knowledge graph</span><span>analytics prototypes</span></div>
+    <div class="u">/*-harness · /ui-kit</div><div class="a">→</div><div class="p"><span>Lazy dev harnesses</span><span>component browser</span></div>
+    <div class="hd">Public</div>
+    <div class="u">/login · /invite/:token · /join/:token</div><div class="a">→</div><div class="p"><span>Auth</span><span>onboarding + Team Brief</span></div>
+  </div>
+
+  <h2>Key components</h2>
+  <div class="pfm-grid">
+    <div class="pfm-card"><h3>API client</h3><span class="pfm-path">frontend/src/lib/api.ts</span><ul><li>Base URL, auth headers + token refresh</li><li>Typed <b>ApiError</b> / <code class="pfm-path">apiErrorDetail</code></li><li>Timezone injection boundary</li></ul></div>
+    <div class="pfm-card"><h3>UI kit</h3><span class="pfm-path">frontend/src/components/ui-kit/</span><ul><li>shadcn "new-york" style: Radix + CVA + lucide</li><li><b>blocks/</b> — metric grids, charts, timelines, decision cards, provenance</li><li><b>activity/</b>, <b>streaming/</b>, <b>documents/</b> sub-kits</li></ul></div>
+    <div class="pfm-card"><h3>State</h3><span class="pfm-path">frontend/src/store/</span><ul><li><b>auth</b> (persisted) · <b>chat</b> (channels, threads, agent streams, panels)</li><li>documents · billing · connections · subscriptions</li></ul></div>
+    <div class="pfm-card"><h3>Data fetching</h3><span class="pfm-path">frontend/src/lib/panelData.ts</span><ul><li>No React Query — homegrown stale-while-revalidate <b>usePanelData</b></li><li>Module cache per workspace, cleared on logout</li></ul></div>
+    <div class="pfm-card"><h3>Realtime &amp; streaming</h3><span class="pfm-path">hooks/useWebSocket.ts · lib/agentStream*.ts</span><ul><li>One socket per workspace, backoff reconnect</li><li>Polling fallbacks for agent turns and block streams</li><li>Vercel AI SDK + streamdown; consent/write-action cards</li></ul></div>
+    <div class="pfm-card"><h3>Wire types</h3><span class="pfm-path">frontend/src/types/index.ts</span><ul><li>~2,000-line contract shared by every panel</li><li>PanelType / DetailPanelType unions</li><li>blocks, agentTurns, billing types alongside</li></ul></div>
+    <div class="pfm-card"><h3>Native client</h3><span class="pfm-path">ios-v2/Papaya · ios-v2/PapayaMac</span><ul><li>View folders mirror the web domain 1:1</li><li>Networking: API, auth/keychain, socket, turn poller, agent client</li><li>~21 MVVM view models, WorkspaceStore</li></ul></div>
+    <div class="pfm-card"><h3>Marketing site</h3><span class="pfm-path">marketing/src/pages · components/sections</span><ul><li>Home, product, pricing, business, integrations, manifesto, legal, writing/</li><li>Animated React vignettes (chat, dashboard)</li><li>Owns the estate's only apex→www redirect</li></ul></div>
+    <div class="pfm-card"><h3>Quality &amp; delivery</h3><span class="pfm-path">Makefile · .github/workflows</span><ul><li>Vitest + Testing Library, route smoke, Playwright smoke, screenshot evidence scripts</li><li>CI builds web + marketing images; deploy hands off to papaya-infra → Cloud Run</li></ul></div>
+  </div>
+
+  <h2>Domain vocabulary</h2>
+  <div class="pfm-vocab">
+    <div class="pfm-term"><b>Radar / activity feed</b><small>components/activity · lib/forYou*</small><em>Lenses, triage, evidence ladders</em></div>
+    <div class="pfm-term"><b>Channels &amp; threads</b><small>components/channel · store/chat.ts</small><em>Messages, reactions, agent DMs</em></div>
+    <div class="pfm-term"><b>Work items</b><small>components/work-items</small><em>Lanes, kinds, decisions, evidence</em></div>
+    <div class="pfm-term"><b>Agents &amp; routines</b><small>createAgent · agent · routines</small><em>Scout, Polyweave agents, agent jobs</em></div>
+    <div class="pfm-term"><b>Documents &amp; dashboards</b><small>components/documents · ui-kit/documents</small><em>TipTap editing, block rendering</em></div>
+    <div class="pfm-term"><b>Context pages</b><small>context-pages · contextImport</small><em>Curated workspace context</em></div>
+    <div class="pfm-term"><b>Memory / beliefs</b><small>components/memory</small><em>Polyweave memory, workspace beliefs</em></div>
+    <div class="pfm-term"><b>Connections</b><small>components/connections · /admin/mcp-tools</small><em>MCP providers and tool routing</em></div>
+    <div class="pfm-term"><b>Canonical refs</b><small>lib/canonicalRefs · lib/papayaLinks</small><em>Object links, knowledge graph</em></div>
+    <div class="pfm-term"><b>Billing &amp; usage</b><small>components/billing · lib/billing*</small><em>Credits, plans, usage</em></div>
+    <div class="pfm-term"><b>Onboarding</b><small>components/onboarding</small><em>Invites, Team Brief</em></div>
+    <div class="pfm-term"><b>Following / inbox</b><small>store/subscriptions · inbox</small><em>Subscriptions, smart inbox</em></div>
+  </div>
+
+  <p class="pfm-note">Source: a read-only pass over the managed clone at head <code>cb39e232</code>. Counts are approximate where marked. Annotate anything you'd like expanded or corrected.</p>
+</div>
+</body>
+</html>

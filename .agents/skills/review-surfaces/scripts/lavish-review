@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# lavish-review — drive the rich lavish-axi review surface WITHOUT freezing your turn.
+#
+# `lavish-axi poll <file>` long-polls: it blocks until the user annotates the
+# surface or it times out. Never run it in the foreground — it freezes the whole
+# conversation. This wrapper backgrounds the poll to a sidecar file so you can hand
+# control back immediately and read notes on a later turn.
+#
+#   lavish-review open  <file>   # open the surface + start a background poller
+#   lavish-review drain <file>   # print feedback collected so far (non-blocking)
+#   lavish-review stop  <file>   # stop the background poller
+#
+# Sidecars live next to <file> as .<name>.feedback (notes) and .<name>.pid (poller).
+set -euo pipefail
+
+cmd="${1:-}"
+file="${2:-}"
+if [ -z "$cmd" ] || [ -z "$file" ]; then
+  echo "usage: lavish-review open|drain|stop <file>" >&2
+  exit 2
+fi
+
+dir="$(cd "$(dirname "$file")" && pwd)"
+base="$(basename "$file")"
+fb="$dir/.$base.feedback"
+pidf="$dir/.$base.pid"
+bin="$(command -v lavish-axi || true)"
+
+poller_alive() { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; }
+
+case "$cmd" in
+  open)
+    if [ -z "$bin" ]; then
+      echo "lavish-axi unavailable; use the local surface (mm artifact / mm feedback)" >&2
+      exit 1
+    fi
+    # Viewer: opens the browser and returns. Fire-and-forget.
+    nohup "$bin" "$file" >/dev/null 2>&1 &
+    if poller_alive; then
+      echo "surface already polling; feedback collecting at $fb"
+    else
+      # Poller: detached (nohup survives the end of your turn), appends to sidecar.
+      nohup "$bin" poll "$file" >>"$fb" 2>&1 </dev/null &
+      echo "$!" >"$pidf"
+      echo "surface open; annotations collecting in the background at $fb"
+    fi
+    echo "hand the turn back to the user; run 'lavish-review drain \"$file\"' later to read notes"
+    ;;
+  drain)
+    if [ -s "$fb" ] && grep -vq '^[[:space:]]*$' "$fb"; then
+      grep -v '^[[:space:]]*$' "$fb"
+    else
+      echo "no feedback yet"
+    fi
+    ;;
+  stop)
+    if poller_alive; then
+      kill "$(cat "$pidf")" 2>/dev/null || true
+      rm -f "$pidf"
+      echo "poller stopped"
+    else
+      rm -f "$pidf"
+      echo "no poller was running"
+    fi
+    ;;
+  *)
+    echo "usage: lavish-review open|drain|stop <file>" >&2
+    exit 2
+    ;;
+esac

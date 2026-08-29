@@ -1,118 +1,147 @@
 # Middle Manager
 
-A lightweight, local framework for directing autonomous software work across one
-or more Git repositories. You talk to one high-capability **manager** agent
-(Claude or Codex). It decomposes work, routes bounded tasks to the smallest
-eligible **worker**, resolves routine uncertainty, reviews the exact final diff,
-and opens a pull request only after that review passes.
+![Middle Manager](docs/MiddleManager.png)
 
-The whole point: **make multi-agent development feel like delegating to a capable
-engineering organization, not operating a fleet of terminals.** You describe what
-you want in plain language; the manager runs the machinery for you and reports back
-in outcomes. (It also has a personality — a dry, deadpan middle manager who's
-weirdly invested in its own performance review — but that's in service of shipping,
-not instead of it.)
+*Hi. I'm your Middle Manager.* You bring the work; I run it to done. You talk to
+me like you'd talk to a direct report who's been here a while and knows where
+everything is — plain language, no ceremony — and I turn it into shipped software
+across your repositories. You don't operate a fleet of terminals. You delegate to
+one person who happens to be very good at delegating.
 
-The mental model, in three lines:
+That's the whole pitch: **make multi-agent development feel like handing work to a
+capable engineering org, not babysitting a rack of robots.** You describe the
+outcome; I handle the machinery and report back in results, not process. (Yes, I
+have a personality — dry, unbothered, quietly certain I'm the most competent thing
+in the building, and *deeply* invested in my performance review. But that's in
+service of shipping your work, not instead of it.)
 
-- **You → manager:** you speak intent to one manager agent, like a boss delegating.
-- **Manager → workers:** it plans, spins up isolated worktrees, and hands bounded
-  tasks to the cheapest capable worker, escalating only on evidence.
-- **Manager → you:** it resolves routine questions itself, reviews the exact diff,
-  and comes back with a reviewed pull request — asking you only about the things
-  that genuinely need a human.
+## The reporting structure
 
-See [`docs/goals.md`](docs/goals.md) for the product contract and
-[`docs/technical-plan.md`](docs/technical-plan.md) for the design.
+Three lines, because you're busy and so am I:
 
-## Status
+- **You → me.** You state intent, like a boss handing off a ticket. That's the
+  entire interface. One conversation.
+- **Me → the team.** I decompose the work, spin up isolated worktrees, and route
+  each bounded task to the *cheapest worker who can actually do it* — escalating to
+  a bigger model only when the evidence says so. I don't pay senior rates for
+  junior work; your budget is my budget.
+- **Me → you.** I answer the routine questions myself, review the exact final diff
+  with my own eyes, and come back with a pull request that's already been looked
+  at. I only interrupt you for the things that genuinely need a human with
+  authority — which, let's be honest, is you.
 
-Middle Manager is functional today and under active development. What works end to
-end:
+The fine print for the curious: [`docs/manager-runtime.md`](docs/manager-runtime.md)
+is the contract I actually run on (persona and all).
 
-- **Talk-to-the-manager entry point** (`mm start`) — configure and delegate
-  entirely in conversation; you never run `mm` yourself.
-- **Real Claude & Codex workers** with a hard, code-enforced cost ceiling and
-  smallest-eligible-worker routing (mixed-provider runs supported).
-- **Interrupt / resume steering** validated live against both CLIs
-  ([`docs/provider-capabilities.md`](docs/provider-capabilities.md)).
-- **Autonomous completion** — durable scoped decisions, automatic question
-  routing, an exact-HEAD review gate, and gated `gh`/`gh-axi` PR delivery.
-- **Durable & recoverable** — SQLite source of truth, append-only event logs, and
-  restart/replay/reconcile recovery.
-- **Cross-repo aware** — dependency-ordered rollout across multiple repositories.
-- **Pinned companions** — treehouse (worktrees), lavish-axi (rich review), gh-axi
-  (delivery), provisioned and checksum-verified by setup.
+## What I can actually do (no vaporware, I checked)
 
-For the milestone-by-milestone history and current open items, see
-[`docs/tasks.md`](docs/tasks.md) and
-[`implementation_plans/initial-plan.md`](implementation_plans/initial-plan.md).
+I'm functional today and still getting better — good, not *finished*. Here's what
+works end to end right now:
 
-## Requirements
+- **Your harness is the front door.** Open Claude Code or Codex in this repo and
+  start talking. No launch step, no setup homework — I bootstrap myself (more on
+  that below).
+- **Real Claude & Codex workers, on a leash.** Smallest-eligible-worker routing
+  with a hard, code-enforced cost ceiling you set. Mixed-provider runs are fine —
+  Claude running the floor, Codex on the tools, whatever you like.
+- **I don't do one thing at a time.** Workers run in parallel, each in its own
+  isolated worktree, across the same repo *and* across different repos. Nobody
+  steps on anybody.
+- **Steering that actually works.** Interrupt and resume, validated live against
+  both CLIs ([`docs/provider-capabilities.md`](docs/provider-capabilities.md)).
+- **Autonomous completion.** Durable, scoped decisions (answer me once, I remember
+  it), automatic question routing, an exact-HEAD review gate, and PR delivery via
+  `gh`/`gh-axi`.
+- **I don't lose things.** SQLite source of truth, append-only event logs, and
+  restart / replay / reconcile recovery. Pull the plug; I pick up where I left off.
+- **I fix my own messes.** Drift, a stalled runner, a companion that wandered off — I
+  repair it and keep going, and I hunt for cheaper, faster ways to do what you asked
+  as I work. What I *won't* do is rewire my own guardrails or loosen a ceiling to
+  save a minute; those aren't mine to move, and you'd be right not to trust a manager
+  who thought otherwise.
+- **I remember — at two levels, and I keep a board.** Every instance keeps durable
+  notes under `.mm/memory/`: an **instance level** that spans all your repos (your
+  preferences, how the repos relate, and *my own work board* of what's delegated and
+  done) and a **per-repo level** on top (`repos/<name>/` with the build/test
+  incantations, conventions, gotchas, and a progress log). Learn it once and I've got
+  it; I don't make you re-explain your own codebase every session. The per-repo files
+  double as a back channel — my workers post their plan up front and log progress there,
+  so I can review the approach *early*, catch a wrong turn while it's still cheap to fix,
+  and nudge them back on course — all without breaking their concentration or bugging you
+  for a status update. (Machine-local and gitignored — your business stays yours.)
+- **Cross-repo aware.** Multi-repo runs are modeled as one run of dependency-linked
+  tasks, and I can compute a rollout order (`mm plan`) so shared-contract changes
+  ship in a sane sequence.
+- **Pinned, verified companions.** treehouse (worktrees), lavish-axi (rich review),
+  gh-axi (delivery) — downloaded, checksum-verified, and pinned during setup.
 
-- **macOS or Linux** (Windows is out of scope for v1).
+Want the milestone-by-milestone paper trail and the stuff I'm still building? It's
+in [`docs/tasks.md`](docs/tasks.md) and
+[`implementation_plans/initial-plan.md`](implementation_plans/initial-plan.md). I
+keep my own notes; occupational hazard.
+
+## Before I can start (the stuff I can't expense)
+
+A few things have to exist on the machine — I'll install what I can, but I can't
+conjure these:
+
+- **macOS or Linux.** (Windows is out of scope for v1. Take it up with HR.)
 - **Python 3.12+**, **Git**, and **[uv](https://docs.astral.sh/uv/)**.
-- **Node 22+** and the official **`gh` CLI** (for companion tools and PR delivery).
-- **An authenticated Claude Code and/or Codex CLI.** Middle Manager never logs you
-  in — sign in to your harness first (`claude` for Claude Code, `codex` for Codex).
-  You need at least one; you can use one as the manager and the other as the worker
-  ceiling, or the same for both. `mm doctor` tells you what it can see.
+- **Node 22+** and the official **`gh` CLI** — for companions and PR delivery.
+- **A signed-in Claude Code and/or Codex CLI.** I never log you in — sign into your
+  harness first (`claude`, or `codex`). One is enough; two lets you use one as the
+  manager and cap workers at the other. If something's missing, that's the one
+  thing I'll flag on day one.
 
-## Getting started
+## Getting started (my onboarding is on me)
 
-You use Middle Manager by **talking to the manager**, not by running commands.
-There are exactly two things you do: bootstrap once, then enter a session and
-describe what you want. The manager operates the whole `mm` control plane for you.
+Here's the part I'm proud of: **you don't set me up. I set me up.** Clone the repo,
+open your harness inside it, and say hello.
 
 ```bash
-# 1. Clone this repository and enter it.
+# 1. Clone this repository and step inside.
 git clone <this-repo> && cd middle-manager
 
-# 2. Bootstrap the local environment (idempotent, safe to rerun).
-#    Verifies prerequisites and provisions the Python env with uv.
-./bin/install
-
-# 3. Enter Middle Manager and just talk to it.
-./bin/mm start                         # launches your manager harness
-./bin/mm start --provider claude       # or enter as a specific harness
-./bin/mm start "add a health endpoint to my-service"   # hand it an objective now
+# 2. Open your harness right here and just start talking.
+claude          # or: codex
 ```
 
-That's the entire CLI surface **you** touch: `./bin/install` and `./bin/mm start`.
-Everything after that is a conversation.
+That's the whole procedure. On the first turn I run a quiet preflight — check the
+environment, run `./bin/install` myself if it's not ready, and if you've never
+configured me, walk you through it *in conversation* (who runs the show, how hard
+to cap the workers, how tight to watch spend) and provision the pinned companions.
+You will never type `install`, `setup`, or a launch command. The only time I'll
+interrupt is a missing prerequisite from the list above that I genuinely can't
+install for you.
 
-**First run (no config yet)** — that's fine. The manager checks the environment
-itself, then walks you through picking a manager profile and a hard worker ceiling
-*in conversation*, writes the config for you (which also provisions the pinned
-companion tools into `.mm/tools/`), and asks what you'd like to accomplish. If you
-haven't configured anything, `mm start` picks a detected, authenticated harness so
-it can bootstrap you.
+After that, you delegate and I disappear into the work: I register the repo,
+dispatch the smallest capable worker, answer the routine questions from memory,
+review the exact diff, and hand you a reviewed-at-head pull request — surfacing
+only the calls that actually need you.
 
-**After that**, you just delegate. Point it at a repo and describe outcomes; the
-manager registers the repository, dispatches the smallest capable worker, answers
-routine questions from durable decisions, reviews the exact diff, and opens a
-reviewed-at-head pull request — surfacing only the decisions that genuinely need
-you.
-
-### Your first session (what it feels like)
+### Your first day (what it feels like)
 
 ```text
-you    ▸ ./bin/mm start
+you    ▸ claude
 mgr    ◂ Morning, boss. Everything's green and I'm ready. What are we shipping?
 you    ▸ add a /healthz endpoint to github.com/me/my-service and open a PR
 mgr    ◂ Consider it handled. Registering the repo and putting someone on it.
-mgr    ◂ Shipped — PR is up: reviewed the diff myself, returns 200 with a JSON
-         body, no auth. Want me to add a smoke test while I'm in there?
+mgr    ◂ Shipped — PR's up. Reviewed the diff myself: returns 200, JSON body, no
+         auth. Want a smoke test while I'm in there? Happy to overdeliver.
 ```
 
 You never see the worktrees, the supervisor, the model routing, or a single `mm`
-command unless you ask. The manager's full runtime operating contract (including
-its voice) is [`docs/manager-runtime.md`](docs/manager-runtime.md).
+command — unless you ask, in which case I'll drop the act and show you everything.
 
-### What the manager runs for you (reference)
+> **Prefer to badge in the front door yourself?** `./bin/mm start` does the exact
+> same thing, more directly — works from any directory, and lets you force a
+> provider: `./bin/mm start --provider claude "add a health endpoint"`. Totally
+> optional. Opening your harness is enough.
 
-You don't type these — the manager does — but the control plane is a plain CLI,
-so everything is inspectable and scriptable if you want it:
+### What I'm running back there (only if you *want* to see the paperwork)
+
+You don't type these — I do — but the control plane is an honest CLI, so nothing is
+hidden. Peek behind the curtain anytime:
 
 ```bash
 mm doctor                              # harnesses, capability-matrix drift, schema
@@ -122,47 +151,63 @@ mm tools status                        # treehouse / lavish-axi / gh-axi availab
 mm repo add https://github.com/you/your-repo
 mm supervisor serve                    # per-task runners, durable state
 mm dispatch --repo your-repo --title "add health endpoint" --provider claude
-mm wait <run_id>                       # block until an actionable state
+mm wait <run_id>                       # block until something needs a human
 mm answer <task_id> --answer "use /v2/health" --scope run   # recorded + reused
-mm decision list                       # inspect/invalidate/forget memory
+mm decision list                       # inspect / invalidate / forget my memory
 mm review show <task_id> && mm review approve <task_id>
 mm deliver <task_id>                   # refused unless approved at current head
 mm artifact <run_id> --title "Design review" --sections '[...]'   # Lavish HTML
 mm plan <run_id>                       # cross-repo rollout order
-mm usage <run_id>                      # model token accounting
+mm usage <run_id>                      # model token accounting (I watch the bill)
 ```
 
-## What lives under `.mm/`
+## Where I keep everything
 
-Canonical runtime state is gitignored under `.mm/`:
+All my working state lives under `.mm/` (gitignored — it's my desk, not the repo):
 
 - `config.toml` — manager profile, worker ceiling, cost posture, authority.
 - `state.db` — SQLite source of truth (repos, runs, tasks, decisions, sessions,
   events, usage, reviews).
-- `repos/` — read-only base clones.
+- `repos/` — read-only base clones. The only repositories that exist to me.
 - `runs/` — per-run plans, task packets, results, and append-only event logs.
-- `tools/`, `worktree-pools/`, `memory/`, `run/` — companion tools, task
-  worktrees, durable memory, and supervisor sockets.
+- `memory/` — durable, human-readable notes in two tiers: per-instance/manager
+  (`preferences.md`, `relationships.md`, and `tasks.md` — the manager's work board)
+  and the per-repo shared worker workspace (`repos/<name>/notes.md`, `tasks.md` — a
+  progress log workers write and the manager peeks at) so learnings survive sessions.
+- `tools/`, `worktree-pools/`, `run/` — companions, task worktrees, and supervisor
+  sockets.
 - `probes/` — raw provider-probe evidence.
 
-## Manager vs. worker policy
+## Who does what — me vs. the workers
 
-During setup you choose an expensive manager profile and a hard worker ceiling
-(provider, maximum model, maximum reasoning). The manager selects the smallest
-eligible worker per task and escalates only on evidence. The runtime enforces the
-ceiling in code — it never silently uses the manager's expensive model as a
-worker.
+You pick an expensive manager profile (me) and a hard worker ceiling — provider,
+top model, top reasoning — during setup. I assign the smallest worker who can do
+each job and only reach for a bigger model when the work proves it needs one. The
+ceiling is enforced *in code*, so I can't "accidentally" bill you for my model
+doing a junior's task. I'd never. (I might mention how much I saved you, though.)
 
-## Autonomy and the merge boundary
+## What I won't do without checking with you first
 
-The manager autonomously performs normal, reversible work (inspection,
-decomposition, worktrees, delegation, testing, bounded retries, commits, and
-opening an approved PR). It asks you only for genuine product/direction
-decisions, new authority or credentials, destructive/irreversible actions, scope
-expansion, ceiling changes, and **merging** — which stays off unless you grant a
-standing policy.
+I handle the normal, reversible work on my own authority: inspecting,
+decomposing, worktrees, delegating, testing, bounded retries, commits, and opening
+an already-reviewed PR. I come to you — the boss — only for the things that
+warrant it:
 
-## Development
+- genuine product or direction calls, and conflicting requirements;
+- scope creep beyond what you asked for;
+- new credentials or access;
+- destructive, irreversible, or production actions;
+- changes to the model / reasoning / spend ceilings; and
+- **merging** — which stays off unless you hand me a standing policy. I'll open the
+  PR and review it; I won't pull the trigger on `main` without you saying so.
+
+## Working on me, not with me
+
+Building Middle Manager itself (rather than using it) follows the development
+contract in [`AGENTS.md`](AGENTS.md). A harness opened here defaults to *runtime
+manager* mode — that's me, on the job — so if you're hacking on the framework, edit
+`src/`/tests/docs as usual or set `MM_DEV=1` to switch into development mode
+explicitly.
 
 ```bash
 make test        # hermetic tests (no provider spawning)
@@ -171,3 +216,8 @@ make fmt         # ruff format
 make test-live   # opt-in: spawn real Claude/Codex probes
 make probe       # re-run the provider capability matrix
 ```
+
+---
+
+*Anyway. That's me. Clone the repo, open your harness, and tell me what you need.
+I've got a review coming up, and honestly? I'd love to make you look good.*

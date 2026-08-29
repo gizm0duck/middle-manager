@@ -215,6 +215,71 @@ def _cmd_wait(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Non-blocking snapshot of a run: task states, actionable events, usage.
+
+    Reads the supervisor's live state (workers run in the background daemon) and
+    returns immediately — it never waits. Use this to track progress inside a turn
+    instead of the blocking ``mm wait``.
+    """
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        snap = client.run_status(args.run_id)
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not snap.get("ok", True) or "run" not in snap:
+        print(f"run {args.run_id}: {snap.get('error', 'not found')}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(snap, indent=2))
+        return 0
+    run = snap["run"]
+    print(f"run {run['id']} \"{run.get('title', '')}\" — {run.get('status', '?')}")
+    for t in snap.get("tasks", []):
+        prov = t.get("provider") or "?"
+        print(f"  task {t['id']} \"{t.get('title', '')}\" [{prov}] {t.get('status', '?')}")
+    actionable = snap.get("actionable", [])
+    if actionable:
+        marks = ", ".join(f"{e['kind']}(seq {e['seq']})" for e in actionable)
+        print(f"actionable: {marks}")
+    else:
+        print("actionable: none")
+    usage = snap.get("usage") or {}
+    if usage:
+        print(f"usage: in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}")
+    return 0
+
+
+def _cmd_task(args: argparse.Namespace) -> int:
+    """Non-blocking snapshot of a single task. Returns immediately; never waits."""
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.task_status(args.task_id)
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    task = resp.get("task")
+    if not task:
+        print(f"task {args.task_id}: {resp.get('error', 'not found')}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(task, indent=2))
+        return 0
+    prov = task.get("provider") or "?"
+    model = task.get("model")
+    label = f"{prov}/{model}" if model else prov
+    line = f"task {task['id']} \"{task.get('title', '')}\" [{label}] {task.get('status', '?')}"
+    if task.get("branch"):
+        line += f"  branch {task['branch']}"
+    print(line)
+    return 0
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -344,6 +409,47 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
         return 1
     print(json.dumps(result, indent=2))
     return 0
+
+
+def _cmd_memory(args: argparse.Namespace) -> int:
+    from middle_manager import memory
+    from middle_manager.repos import list_repos
+
+    if args.memory_cmd == "init":
+        memory.ensure_memory_layout()
+        seeded = [
+            memory.seed_repo_memory(
+                r["name"], origin=r.get("origin"), default_branch=r.get("default_branch")
+            )
+            for r in list_repos()
+        ]
+        print(f"memory ready at {memory.memory_dir()} ({len(seeded)} repo(s) seeded)")
+        return 0
+    if args.memory_cmd == "path":
+        print(memory.repo_dir(args.repo) if args.repo else memory.memory_dir())
+        return 0
+    if args.memory_cmd == "show":
+        memory.ensure_memory_layout()
+        if args.repo:
+            notes, tasks = memory.repo_notes_path(args.repo), memory.repo_tasks_path(args.repo)
+            if not notes.exists():
+                print(f"no memory for repo {args.repo!r} yet", file=sys.stderr)
+                return 1
+            for path in (notes, tasks):
+                if path.exists():
+                    print(f"# ---- {path} ----")
+                    print(path.read_text())
+            return 0
+        for path in (
+            memory.board_path(),
+            memory.preferences_path(),
+            memory.relationships_path(),
+        ):
+            print(f"# ---- {path} ----")
+            print(path.read_text())
+        return 0
+    print("no memory subcommand given", file=sys.stderr)
+    return 2
 
 
 def _cmd_hook(args: argparse.Namespace) -> int:
@@ -619,10 +725,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.set_defaults(func=_cmd_dispatch)
 
-    wait = sub.add_parser("wait", help="wait until a run reaches an actionable state")
+    wait = sub.add_parser(
+        "wait",
+        help="BLOCKING long-poll until a run is actionable (scripts/tests; "
+        "use --timeout 0 for a non-blocking drain). Prefer `mm run` in a live turn.",
+    )
     wait.add_argument("run_id", type=int)
     wait.add_argument("--timeout", type=float, default=30.0)
     wait.set_defaults(func=_cmd_wait)
+
+    run = sub.add_parser(
+        "run", help="non-blocking snapshot of a run (task states, actionable events, usage)"
+    )
+    run.add_argument("run_id", type=int)
+    run.add_argument("--json", action="store_true", help="machine-readable output")
+    run.set_defaults(func=_cmd_run)
+
+    task = sub.add_parser("task", help="non-blocking snapshot of a single task")
+    task.add_argument("task_id", type=int)
+    task.add_argument("--json", action="store_true", help="machine-readable output")
+    task.set_defaults(func=_cmd_task)
 
     resume = sub.add_parser("resume", help="resume a task's provider session")
     resume.add_argument("task_id", type=int)
@@ -672,6 +794,19 @@ def build_parser() -> argparse.ArgumentParser:
     feedback = sub.add_parser("feedback", help="read a Lavish artifact's feedback sidecar")
     feedback.add_argument("artifact_id", type=int)
     feedback.set_defaults(func=_cmd_feedback)
+
+    memory = sub.add_parser(
+        "memory", help="durable memory under .mm/memory (per-instance + per-repo)"
+    )
+    msub = memory.add_subparsers(dest="memory_cmd", required=True)
+    msub.add_parser("init", help="scaffold instance memory + seed a dir per registered repo")
+    mpath = msub.add_parser("path", help="print the memory dir, or a repo's memory dir")
+    mpath.add_argument("--repo", default=None, help="print this repo's memory directory")
+    mshow = msub.add_parser(
+        "show", help="print instance preferences+relationships, or a repo's memory"
+    )
+    mshow.add_argument("--repo", default=None, help="show this repo's notes + tasks instead")
+    memory.set_defaults(func=_cmd_memory)
 
     hook = sub.add_parser("hook", help="ingest a provider lifecycle hook (payload on stdin)")
     hook.add_argument("event", help="lifecycle event name (e.g. stop, session-start)")

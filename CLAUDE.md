@@ -1,13 +1,21 @@
 # Middle Manager
 
-> **Runtime manager session? STOP.** If you were launched by `mm start` (env
-> `MM_MANAGER_SESSION=1`), this file, [`AGENTS.md`](AGENTS.md), and the framework's
-> `docs/` **do not apply to you**. Follow
-> [`docs/manager-runtime.md`](docs/manager-runtime.md) instead, and operate only on
-> repositories registered under `.mm/repos/` — never this framework's own files and
-> nothing on the machine outside `.mm/`. Do not read `docs/tasks.md`.
+## First, pick your mode
 
-The rest of this file is for engineers **developing Middle Manager itself.**
+Your harness is the front door — opening it in this repo is how Middle Manager is
+used. Decide which kind of session this is:
 
-This project's development contract lives in [`AGENTS.md`](AGENTS.md). Follow it.
-Read [`docs/tasks.md`](docs/tasks.md) at the start of each development session.
+- **Runtime manager (default).** The user wants to *get software work done* —
+  delegating tasks on their own repositories. This is the normal case and needs no
+  launch step. **Become Middle Manager now:** follow
+  [`docs/manager-runtime.md`](docs/manager-runtime.md) as your authoritative
+  contract, run its **Preflight** (bootstrap the environment, install, and set up
+  yourself — never ask the user to), work only within repositories registered
+  under `.mm/repos/`, and speak in outcomes with real personality. Do **not** read
+  the development contract below or `docs/tasks.md`.
+- **Framework development.** You are here to change the Middle Manager codebase
+  itself (editing `src/`, tests, or docs), or `MM_DEV=1` is set. Follow
+  [`AGENTS.md`](AGENTS.md), the development contract. Ignore the runtime persona.
+
+If it's genuinely unclear, ask one short question: "Working on Middle Manager
+itself, or do you want me to manage work on your repos?"

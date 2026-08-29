@@ -13,6 +13,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from middle_manager.memory import seed_repo_memory
 from middle_manager.paths import ensure_layout, repos_dir
 from middle_manager.state import init_db, store
 
@@ -88,6 +89,8 @@ def add_repo(url_or_path: str, name: str | None = None) -> AddedRepo:
         default_branch=default_branch,
         base_sha=base_sha,
     )
+    # Seed per-repo memory so learnings about this repo persist across sessions.
+    seed_repo_memory(repo_name, origin=source, default_branch=default_branch)
     return AddedRepo(repo_name, source, str(dest), default_branch, base_sha)
 
 

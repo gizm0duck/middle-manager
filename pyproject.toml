@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "A lightweight, local framework for directing autonomous software work across one or more Git repositories."
 readme = "README.md"
 requires-python = ">=3.12"
-# Zero runtime package dependencies by design (see docs/technical-plan.md).
+# Zero runtime package dependencies by design.
 # The control plane uses only the Python standard library. Treehouse, gh-axi,
 # and lavish-axi are pinned companion CLIs, not Python libraries.
 dependencies = []

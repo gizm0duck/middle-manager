@@ -36,6 +36,13 @@ def test_claude_start_argv_no_bypass() -> None:
     assert "--dangerously-skip-permissions" not in argv
 
 
+def test_claude_start_prepends_memory_preamble() -> None:
+    spec = _spec("claude", memory_preamble="Shared repo memory: read notes.md, log tasks.md")
+    prompt = ClaudeAdapter().start(spec)[2]
+    assert prompt.startswith("Shared repo memory:")
+    assert "do the thing" in prompt  # original task preserved after the preamble
+
+
 def test_claude_resume_uses_session() -> None:
     argv = ClaudeAdapter().resume(_spec("claude", resume_session_id="sid-9", model="haiku"))
     assert "--resume" in argv and "sid-9" in argv
@@ -83,6 +90,13 @@ def test_codex_start_argv() -> None:
     assert "-s" in argv and "workspace-write" in argv
     assert "--model" in argv and "gpt-5-codex" in argv
     assert any("model_reasoning_effort" in a for a in argv)
+
+
+def test_codex_start_prepends_memory_preamble() -> None:
+    spec = _spec("codex", memory_preamble="Shared repo memory: read notes.md, log tasks.md")
+    prompt = CodexAdapter().start(spec)[2]
+    assert prompt.startswith("Shared repo memory:")
+    assert "do the thing" in prompt
 
 
 def test_codex_result_and_usage() -> None:

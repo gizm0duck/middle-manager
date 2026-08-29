@@ -18,6 +18,7 @@ from middle_manager.config import (
     load_config,
     save_config,
 )
+from middle_manager.memory import ensure_memory_layout
 from middle_manager.paths import ensure_layout
 from middle_manager.setup.discovery import discover, usable_harnesses
 from middle_manager.state.db import init_db
@@ -76,6 +77,7 @@ def _default_model(provider: str) -> str:
 def run_setup(non_interactive: bool = False, overrides: dict | None = None) -> MMConfig:
     ensure_layout()
     init_db()
+    ensure_memory_layout()
     overrides = dict(overrides or {})
 
     if not non_interactive:
