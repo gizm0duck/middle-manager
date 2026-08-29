@@ -19,6 +19,40 @@ from middle_manager.providers.base import ProviderAdapter, TaskSpec, WorkerResul
 from middle_manager.state import init_db, store
 from middle_manager.supervisor.spool import EventSpool
 
+
+def _git(args: list[str], cwd: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _finalize_worktree(spec: TaskSpec, summary: str) -> str | None:
+    """Ensure completed work is committed; return the head SHA, or None.
+
+    Workers may or may not commit. The manager owns the reviewable commit, so a
+    completed task with a dirty worktree is committed here with a generated
+    message. Returns the current head SHA of the leased worktree.
+    """
+    if not spec.worktree_path:
+        return None
+    status = _git(["status", "--porcelain"], cwd=spec.worktree_path)
+    if status.strip():
+        _git(["add", "-A"], cwd=spec.worktree_path)
+        _git(
+            [
+                "-c",
+                "user.name=Middle Manager",
+                "-c",
+                "user.email=manager@mm.local",
+                "commit",
+                "-qm",
+                f"task {spec.task_id}: {summary or spec.title}",
+            ],
+            cwd=spec.worktree_path,
+        )
+    head = _git(["rev-parse", "HEAD"], cwd=spec.worktree_path)
+    return head or None
+
+
 _TERMINAL_STATUS = {"completed": "worker_done", "blocked": "blocked", "failed": "failed"}
 
 
@@ -112,6 +146,10 @@ class RunnerGuardian:
 
         task_status = _TERMINAL_STATUS.get(result.status, "failed")
         store.set_task_status(conn, spec.task_id, task_status)
+
+        # For a completed task, guarantee a reviewable commit and record head.
+        if result.status == "completed" and not result.head_sha:
+            result.head_sha = _finalize_worktree(spec, result.summary)
 
         # Emit an actionable event for the manager/human loop.
         if result.status == "completed":

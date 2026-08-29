@@ -46,6 +46,12 @@ class SupervisorClient:
             timeout=timeout + 10,
         )
 
+    def resume_task(self, task_id: int, message: str | None = None) -> dict:
+        return self._call({"cmd": "resume_task", "task_id": task_id, "message": message})
+
+    def steer_task(self, task_id: int, message: str) -> dict:
+        return self._call({"cmd": "steer_task", "task_id": task_id, "message": message})
+
     def reconcile(self) -> dict:
         return self._call({"cmd": "reconcile"})
 

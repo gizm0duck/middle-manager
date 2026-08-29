@@ -147,6 +147,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             title=args.title,
             instructions=args.instructions or "",
             provider=args.provider,
+            model=args.model,
+            reasoning=args.reasoning,
             run_id=args.run_id,
         )
     except SupervisorUnavailable as exc:
@@ -172,6 +174,38 @@ def _cmd_wait(args: argparse.Namespace) -> int:
         print(f"run {args.run_id}: no actionable state within {args.timeout}s")
         return 0
     print(json.dumps(resp, indent=2))
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.resume_task(args.task_id, message=args.message)
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not resp.get("ok"):
+        print(f"resume failed: {resp.get('error')}", file=sys.stderr)
+        return 1
+    print(f"resuming task {args.task_id} (session {resp.get('resumed_session')})")
+    return 0
+
+
+def _cmd_steer(args: argparse.Namespace) -> int:
+    from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    client = SupervisorClient()
+    try:
+        resp = client.steer_task(args.task_id, args.message)
+    except SupervisorUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not resp.get("ok"):
+        print(f"steer failed: {resp.get('error')}", file=sys.stderr)
+        return 1
+    print(f"steer task {args.task_id}: mode={resp.get('mode')} {resp.get('note', '')}")
     return 0
 
 
@@ -286,7 +320,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--repo", required=True, help="registered repository name")
     dispatch.add_argument("--title", required=True, help="task title/objective")
     dispatch.add_argument("--instructions", default=None, help="task instructions")
-    dispatch.add_argument("--provider", default="fake", help="worker provider (M2: fake)")
+    dispatch.add_argument(
+        "--provider",
+        default="fake",
+        choices=["fake", "claude", "codex"],
+        help="worker provider",
+    )
+    dispatch.add_argument("--model", default=None, help="worker model (clamped to ceiling)")
+    dispatch.add_argument("--reasoning", default=None, help="worker reasoning (clamped to ceiling)")
     dispatch.add_argument(
         "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
     )
@@ -296,6 +337,16 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("run_id", type=int)
     wait.add_argument("--timeout", type=float, default=30.0)
     wait.set_defaults(func=_cmd_wait)
+
+    resume = sub.add_parser("resume", help="resume a task's provider session")
+    resume.add_argument("task_id", type=int)
+    resume.add_argument("--message", default=None, help="answer/steer message")
+    resume.set_defaults(func=_cmd_resume)
+
+    steer = sub.add_parser("steer", help="steer a task (checkpoint or capability-gated interrupt)")
+    steer.add_argument("task_id", type=int)
+    steer.add_argument("--message", required=True, help="steer message")
+    steer.set_defaults(func=_cmd_steer)
 
     reconcile = sub.add_parser("reconcile", help="recover half-alive runners")
     reconcile.set_defaults(func=_cmd_reconcile)

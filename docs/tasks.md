@@ -8,10 +8,11 @@ Product contract: [`goals.md`](goals.md). Implementation contract:
 
 ## Current state
 
-- Milestone: **M2 — kernel runtime** (done). Next: **M3 — real workers**.
-- M0 probes; M1 control plane; M2 adds the supervisor/runner/spool, worktree
-  leases, and a fake provider that runs the full path with no model cost. Real
-  Claude/Codex adapters and companion-tool provisioning are still pending.
+- Milestone: **M3 — real workers** (done). Next: **M4 — autonomous completion**.
+- M0 probes; M1 control plane; M2 runtime; M3 adds real Claude/Codex worker
+  adapters gated by the M0 capability matrix, ceiling enforcement, task/result
+  schemas, and blocked-worker resume / checkpoint steer. Autonomous delivery
+  (hooks, questions/decisions, Lavish, review gate, PR) is still pending.
 - Installed harnesses on this machine: Claude Code 2.1.251 (authenticated),
   Codex CLI 0.150.1 (ChatGPT login), Python 3.13, Node 24.16, `gh` 2.92, uv 0.11.
 
@@ -153,6 +154,40 @@ mm supervisor stop
 
 ## M3 changes
 
+What and why: real workers make the framework useful — but only behind the M0
+evidence and the enforced ceiling, so cost and steering claims stay honest.
+
+Files added/changed:
+
+- [`provider-capabilities.json`](../provider-capabilities.json) — committed
+  machine-readable capability matrix (from M0) that adapters read; the probe CLI
+  now refreshes it on every run.
+- [`providers/capability.py`](../src/middle_manager/providers/capability.py) —
+  fail-closed capability gate; `allows_interrupt_steer` requires the strong
+  proofs (in-progress tool interrupt + uncatchable crash + on-disk session) and
+  disables a record on CLI version drift.
+- [`providers/claude.py`](../src/middle_manager/providers/claude.py) and
+  [`providers/codex.py`](../src/middle_manager/providers/codex.py) — real
+  adapters (argv, event parsing, usage, fail-closed result). No permission-bypass
+  flags; Claude uses `acceptEdits`.
+- [`router.py`](../src/middle_manager/router.py) — worker ladder, smallest-eligible
+  selection, and hard ceiling enforcement.
+- [`schemas.py`](../src/middle_manager/schemas.py) +
+  [`schemas/task.schema.json`](../schemas/task.schema.json) +
+  [`schemas/worker-result.schema.json`](../schemas/worker-result.schema.json) —
+  zero-dependency validator; task packets are validated before dispatch.
+- Supervisor: real adapter selection, ceiling enforcement on dispatch, plus
+  `resume_task` (blocked-worker resume) and `steer_task` (capability-gated
+  interrupt vs. checkpoint). Runner now finalizes a completed worktree into a
+  reviewable commit and head SHA.
+- CLI: `mm dispatch --provider claude|codex --model --reasoning`, `mm resume`,
+  `mm steer`.
+- Tests: capability gate, router ceilings, adapter parsing on real M0 stream
+  shapes, schema validation, blocked→resume, and an opt-in **live mixed-provider**
+  test that runs real Claude and Codex workers.
+
+## M4 changes
+
 _Pending._
 
 ## Drift review
@@ -266,3 +301,37 @@ M4, where the artifact loop is first used; the runtime it depends on now exists.
 Next milestone: **M3 — real workers** (Claude/Codex adapters gated by the M0
 capability flags, task/result schemas, usage accounting, ceiling enforcement,
 checkpoint steer, blocked-worker resume, a mixed-provider fixture task).
+
+### M3 drift review (2026-08-29)
+
+What was proven: the opt-in live mixed-provider test passes — a real Claude
+(haiku) worker and a real Codex (account-default model) worker each make a change
+that the runtime commits into the leased worktree and records as `worker_done`
+with a head SHA and usage. Adapters parse the real M0 stream shapes; the ceiling
+is enforced in code at dispatch; blocked→resume completes via checkpoint steer.
+57 hermetic tests, lint/format clean.
+
+Two real-world facts discovered while validating (now encoded):
+
+- Codex on a ChatGPT account rejects an explicit `--model gpt-5-codex` (400
+  "not supported when using Codex with a ChatGPT account"); it only works with
+  the account default. So `model=None` now means "provider account default" and
+  the runtime never fabricates a model name. Codex cost is steered via reasoning
+  effort, not model tier — the codex ladder holds only the known-valid model.
+- A fabricated model name (e.g. a nonexistent "-mini") makes Codex emit metadata
+  errors and fail, reinforcing that model ladders must be real.
+
+Capability sourcing: adapters read the committed `provider-capabilities.json`
+(the gitignored `.mm/probes/` evidence is not present in a fresh checkout). The
+probe CLI refreshes this committed file, and the gate disables a record whose
+recorded CLI version no longer matches the installed one.
+
+Is any goal or plan sentence now wrong? No. Manager/worker peering, ceiling
+enforcement in the runtime, capability-gated steering, and fail-closed results
+all match the plan. Mid-flight interrupt steering remains gated and, for Codex,
+is never offered regardless of resume support because exec cannot accept mid-run
+input — consistent with the technical plan and the M0 matrix.
+
+Next milestone: **M4 — autonomous completion** (lifecycle hooks, question
+routing, durable scoped decisions, the Lavish feedback loop, an exact-HEAD review
+gate, `gh`/`gh-axi` push+PR, and cross-repo dependency checks).

@@ -112,6 +112,13 @@ class SupervisorServer:
                         int(request["run_id"]), float(request.get("timeout", 30.0))
                     ),
                 }
+            if cmd == "resume_task":
+                return {
+                    "ok": True,
+                    **sup.resume_task(int(request["task_id"]), request.get("message")),
+                }
+            if cmd == "steer_task":
+                return {"ok": True, **sup.steer_task(int(request["task_id"]), request["message"])}
             if cmd == "reconcile":
                 return {"ok": True, **sup.reconcile()}
             if cmd == "shutdown":
