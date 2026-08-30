@@ -24,7 +24,7 @@ checkpoint-at-completion steering plus a compact fresh-session recovery packet.
 
 ## Milestones
 
-### M0 — Live Claude/Codex interrupt and resume (current)
+### M0 — Live Claude/Codex interrupt and resume
 
 First code. Measure the installed CLIs; build no supervisor, Treehouse, setup
 wizard, or real adapters yet.
@@ -79,6 +79,33 @@ loop, exact-HEAD review gate, `gh-axi` push/PR, cross-repo dependency checks.
 
 Crash/replay/CLI-drift tests, memory controls, usage reports, doctor polish,
 docs. Re-estimate delivery after M0 evidence, per the technical plan.
+
+### Approved cross-cutting addition — proactive self-assessment
+
+The user explicitly authorized this addition on 2026-08-29. It spans M4's
+autonomous manager loop and M5's durable-state/hardening work without advancing
+either milestone gate or expanding the manager's authority:
+
+- collect a deterministic evidence packet from durable run, task, review, usage,
+  decision, recovery, escalation, and user-correction state;
+- persist assessment cycles and their one-to-three measurable experiments in
+  SQLite, including the user's aligned/revised/dismissed outcome, with a curated
+  summary under `.mm/memory/improvements.md` for session recall;
+- make a formal review due after five completed runs or 14 days, whichever comes
+  first, subject to minimum evidence and a seven-day cooldown; surface significant
+  failures, repeated rework, or repeated user correction for earlier review;
+- deliver due work through the supervisor and Claude/Codex lifecycle hooks so the
+  manager initiates the review rather than waiting for the user;
+- expose `mm assessment tick|status|show|complete|align` for deterministic,
+  recoverable mechanics; and
+- keep structural changes to models, ceilings, config, standing authority,
+  framework code, hooks, skills, and safety boundaries as proposals that require
+  user alignment. Reuse aligned decisions until their premises materially change.
+
+Acceptance: cadence and failure triggers are deterministic; a due assessment
+survives restart; hook delivery cannot loop; the manager produces no more than
+three measurable experiments; user alignment is durable and context-sensitive;
+and existing authority/review gates remain unchanged.
 
 ## Guardrails
 

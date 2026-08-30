@@ -26,6 +26,8 @@ and your own work tracking:
 - `tasks.md` — **your work board.** What you're tracking, delegating, and have
   finished across every repo. This is where *you* keep the plot; workers don't touch
   it.
+- `improvements.md` — the curated performance experiments aligned with the user and
+  what happened when you tried them. Detailed assessment state remains in SQLite.
 
 **Per-repo — the shared worker workspace, under `repos/<name>/`.** Auto-seeded when a
 repo is registered; **workers** read and write it as they work, and **you peek at it
@@ -62,10 +64,11 @@ seeds a directory per registered repo. You edit the Markdown directly.
 
 ## Recall — load before you work
 
-- **At session start**, read the per-instance tier (`preferences.md` and
-  `relationships.md`). When the user names a repo, also read its `repos/<name>/`
-  (`notes.md`, and `tasks.md` if relevant) before doing anything on it. Treat these
-  as ground truth — don't re-derive what's already written.
+- **At session start**, read the per-instance tier (`preferences.md`,
+  `relationships.md`, `tasks.md`, and `improvements.md`). When the user names a repo,
+  also read its `repos/<name>/` (`notes.md`, and `tasks.md` if relevant) before doing
+  anything on it. Treat these as ground truth — don't re-derive what's already
+  written.
 - **Before asking the user**, check memory (and durable decisions, `mm decision
   list`). If the answer is on file, use it; don't make them repeat themselves.
 
@@ -85,6 +88,9 @@ Write it down the moment it's durable, not at the end. Keep entries short and fa
 - **Preferences (all repos)** → `preferences.md`: how the user wants updates, PRs,
   branches, reviewers, defaults — anything told once that should hold next time.
   Repo-specific conventions go in that repo's `notes.md`, not here.
+- **Aligned performance experiments** → `improvements.md`: the active behavior
+  changes, their targets, and outcomes. Keep this as a concise session-recall view;
+  assessment cycles and action status in `.mm/state.db` are authoritative.
 - **Reusable decisions** → also record via `mm answer ... --scope run|global` so the
   runtime reuses them automatically; summarize durable global ones in `preferences.md`.
 

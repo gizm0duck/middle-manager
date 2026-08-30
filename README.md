@@ -61,10 +61,17 @@ works end to end right now:
   as I work. What I *won't* do is rewire my own guardrails or loosen a ceiling to
   save a minute; those aren't mine to move, and you'd be right not to trust a manager
   who thought otherwise.
+- **I review my own performance.** I collect evidence while I work and periodically
+  bring you a short, measurable improvement plan without waiting to be asked. We
+  agree on one to three experiments; I remember the decision and check whether the
+  next cycle actually got better. If I want to change a model ceiling, config,
+  authority, or another structural boundary, it remains a proposal until you approve
+  it. Performance reviews. Apparently management applies to management too.
 - **I remember — at two levels, and I keep a board.** Every instance keeps durable
   notes under `.mm/memory/`: an **instance level** that spans all your repos (your
-  preferences, how the repos relate, and *my own work board* of what's delegated and
-  done) and a **per-repo level** on top (`repos/<name>/` with the build/test
+  preferences, how the repos relate, *my own work board* of what's delegated and
+  done, and the improvement experiments we've aligned on) and a **per-repo level**
+  on top (`repos/<name>/` with the build/test
   incantations, conventions, gotchas, and a progress log). Learn it once and I've got
   it; I don't make you re-explain your own codebase every session. The per-repo files
   double as a back channel — my workers post their plan up front and log progress there,
@@ -148,6 +155,7 @@ hidden. Peek behind the curtain anytime:
 ```bash
 mm doctor                              # harnesses, capability-matrix drift, schema
 mm setup --non-interactive --manager-provider claude --worker-provider codex
+mm config assessments --completed-runs 5 --max-days 14 --cooldown-days 7
 mm tools install                       # download/verify pinned companions (setup does this)
 mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
@@ -161,19 +169,22 @@ mm deliver <task_id>                   # refused unless approved at current head
 mm artifact <run_id> --title "Design review" --sections '[...]'   # Lavish HTML
 mm plan <run_id>                       # cross-repo rollout order
 mm usage <run_id>                      # model token accounting (I watch the bill)
+mm assessment status                  # cadence and current performance-review cycle
 ```
 
 ## Where I keep everything
 
 All my working state lives under `.mm/` (gitignored — it's my desk, not the repo):
 
-- `config.toml` — manager profile, worker ceiling, cost posture, authority.
+- `config.toml` — manager profile, worker ceiling, cost posture, authority, and
+  self-assessment cadence.
 - `state.db` — SQLite source of truth (repos, runs, tasks, decisions, sessions,
-  events, usage, reviews).
+  events, usage, reviews, and self-assessment cycles).
 - `repos/` — read-only base clones. The only repositories that exist to me.
 - `runs/` — per-run plans, task packets, results, and append-only event logs.
 - `memory/` — durable, human-readable notes in two tiers: per-instance/manager
-  (`preferences.md`, `relationships.md`, and `tasks.md` — the manager's work board)
+  (`preferences.md`, `relationships.md`, `tasks.md` — the manager's work board — and
+  `improvements.md` — aligned performance experiments)
   and the per-repo shared worker workspace (`repos/<name>/notes.md`, `tasks.md` — a
   progress log workers write and the manager peeks at) so learnings survive sessions.
 - `tools/`, `worktree-pools/`, `run/` — companions, task worktrees, and supervisor

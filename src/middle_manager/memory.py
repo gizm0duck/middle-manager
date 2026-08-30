@@ -18,6 +18,7 @@ Memory has **two explicit tiers**, split by who owns them:
         relationships.md   how the registered repos relate (cross-repo)
         tasks.md           the MANAGER's work board — what's delegated / in flight /
                            done across every repo
+        improvements.md    aligned manager performance experiments and outcomes
 
 - **Per-repo, in addition — the shared worker workspace.** A directory per registered
   repository that workers read and update as they work, and the manager peeks at to
@@ -63,6 +64,11 @@ def board_path() -> Path:
     return memory_dir() / "tasks.md"
 
 
+def improvements_path() -> Path:
+    """Curated history of aligned self-improvement commitments."""
+    return memory_dir() / "improvements.md"
+
+
 # --------------------------------------------------------------------------- #
 # Tier 2 — per-repo
 # --------------------------------------------------------------------------- #
@@ -98,6 +104,7 @@ Two tiers, split by who owns them:
 - `relationships.md` — how the registered repositories relate.
 - `tasks.md` — the manager's work board: what's delegated, in flight, and done
   across every repo.
+- `improvements.md` — aligned performance experiments and their outcomes.
 
 **Per-repo — the shared worker workspace, under `repos/<name>/`.**
 - `notes.md` — durable repo learnings (what it is, build/test/run, conventions,
@@ -166,6 +173,18 @@ time. This is the instance-wide map; repo-specific detail lives in each repo's
 
 ## Rollout order
 - Preferred sequence for coordinated, cross-repo changes.
+"""
+
+_IMPROVEMENTS = """\
+# Manager improvements
+
+Curated, machine-local record of performance reviews the manager aligned with the
+user. Detailed evidence and lifecycle state remain authoritative in `.mm/state.db`.
+
+## Aligned assessment history
+
+Newest entries are appended below. The last aligned entry is the current plan unless
+a later entry explicitly retires it.
 """
 
 
@@ -259,6 +278,7 @@ def ensure_memory_layout() -> Path:
     _write_if_absent(preferences_path(), _PREFERENCES)
     _write_if_absent(relationships_path(), _RELATIONSHIPS)
     _write_if_absent(board_path(), _BOARD)
+    _write_if_absent(improvements_path(), _IMPROVEMENTS)
     return memory_dir()
 
 

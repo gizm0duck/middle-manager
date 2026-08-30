@@ -29,6 +29,27 @@ def test_round_trip(tmp_path) -> None:
     assert loaded.worker.max_model == "gpt-5-codex"
     assert loaded.authority.merge is False
     assert loaded.cost_posture == "lean"
+    assert loaded.assessments.completed_runs == 5
+
+
+def test_older_config_gets_default_assessment_policy(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+cost_posture = "lean"
+[manager]
+provider = "claude"
+model = "opus"
+reasoning = "high"
+[worker]
+provider = "codex"
+max_model = "gpt-5-codex"
+max_reasoning = "medium"
+"""
+    )
+    loaded = load_config(path)
+    assert loaded.assessments.enabled is True
+    assert loaded.assessments.max_days == 14
 
 
 def test_missing_config_raises(tmp_path) -> None:

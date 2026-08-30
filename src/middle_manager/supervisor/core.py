@@ -312,9 +312,18 @@ class Supervisor:
                 run_id=spec.run_id,
                 task_id=spec.task_id,
             )
-            return
-        if result.status == "blocked" and result.question:
-            self._maybe_auto_answer(spec, result.question)
+        else:
+            if result.status == "blocked" and result.question:
+                self._maybe_auto_answer(spec, result.question)
+        finally:
+            # This is a cheap deterministic due check, not a model call. It makes
+            # run-count and failure-triggered reviews durable immediately.
+            try:
+                from middle_manager.assessments import ensure_due
+
+                ensure_due()
+            except Exception:  # noqa: BLE001 - maintenance never breaks worker completion
+                pass
 
     def _maybe_auto_answer(self, spec: TaskSpec, question: str) -> None:
         """Resolve a blocking question from durable decisions, or leave it for a human.
