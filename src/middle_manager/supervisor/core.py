@@ -8,6 +8,7 @@ supervisor restart.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -22,7 +23,7 @@ from middle_manager.router import CeilingError, WorkerProfile, choose_worker, en
 from middle_manager.schemas import SchemaError, validate_task
 from middle_manager.state import init_db, store
 from middle_manager.supervisor.runner import RunnerGuardian
-from middle_manager.worktree import LeaseManager
+from middle_manager.worktree import Lease, LeaseError, LeaseManager
 
 
 class SupervisorError(Exception):
@@ -113,12 +114,27 @@ class Supervisor:
             reasoning=reasoning,
         )
 
+        # The task row exists first because the lease's branch name carries the
+        # task id. If no worktree can be leased, the row must not linger as a
+        # `requested` task with no runner: mark it failed with the reason, and
+        # surface that reason to the caller instead of a bare "dispatch failed".
         lease_mgr = LeaseManager()
-        lease = lease_mgr.acquire(
-            repo_path=repo_row["local_path"],
-            repo_id=repo_row["id"],
-            task_id=task_id,
-        )
+        try:
+            lease = lease_mgr.acquire(
+                repo_path=repo_row["local_path"],
+                repo_id=repo_row["id"],
+                task_id=task_id,
+            )
+        except LeaseError as exc:
+            store.set_task_status(conn, task_id, "failed")
+            store.append_event(
+                conn,
+                kind="error",
+                payload={"task_id": task_id, "summary": f"no worktree lease: {exc}"},
+                run_id=run_id,
+                task_id=task_id,
+            )
+            raise SupervisorError(f"task {task_id}: no worktree lease: {exc}") from exc
         store.update_task_fields(
             conn,
             task_id,
@@ -315,15 +331,56 @@ class Supervisor:
         else:
             if result.status == "blocked" and result.question:
                 self._maybe_auto_answer(spec, result.question)
-        finally:
-            # This is a cheap deterministic due check, not a model call. It makes
-            # run-count and failure-triggered reviews durable immediately.
-            try:
-                from middle_manager.assessments import ensure_due
+        # A task that failed without touching its worktree has nothing worth
+        # keeping; hand the slot back so the pool cannot fill up with dead leases.
+        with contextlib.suppress(Exception):  # lease hygiene never breaks worker completion
+            self._release_lease_if_pristine(spec.task_id)
+        # This is a cheap deterministic due check, not a model call. It makes
+        # run-count and failure-triggered reviews durable immediately.
+        try:
+            from middle_manager.assessments import ensure_due
 
-                ensure_due()
-            except Exception:  # noqa: BLE001 - maintenance never breaks worker completion
-                pass
+            ensure_due()
+        except Exception:  # noqa: BLE001 - maintenance never breaks worker completion
+            pass
+
+    def _release_lease_if_pristine(self, task_id: int) -> None:
+        """Release a failed task's lease when its worktree holds no work.
+
+        A failed worker that never committed or edited anything (a rejected model
+        name, a crashed launch) leaves a pristine worktree. Keeping that lease
+        only starves later dispatches. A worktree with uncommitted edits or new
+        commits is kept for inspection and ``mm resume``.
+        """
+        conn = init_db()
+        task = store.get_task(conn, task_id)
+        if task is None or task["status"] != "failed":
+            return
+        with self._lock:
+            entry = self._leases.get(task_id)
+        if entry is None:
+            return
+        lease, repo_path = entry
+        assert isinstance(lease, Lease)
+        mgr = LeaseManager(lease.backend)
+        try:
+            pristine = not mgr.is_dirty(lease) and mgr.head_sha(lease) == (lease.base_sha or "")
+        except LeaseError:
+            # Missing or unreadable worktree: nothing to preserve.
+            pristine = True
+        if not pristine:
+            return
+        try:
+            self.release_task_lease(task_id, remove_branch=True)
+        except LeaseError:
+            return
+        store.append_event(
+            conn,
+            kind="lease_released",
+            payload={"task_id": task_id, "lease": lease.id, "reason": "failed, pristine"},
+            run_id=task["run_id"],
+            task_id=task_id,
+        )
 
     def _maybe_auto_answer(self, spec: TaskSpec, question: str) -> None:
         """Resolve a blocking question from durable decisions, or leave it for a human.
