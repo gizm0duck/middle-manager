@@ -905,7 +905,9 @@ Architecture we're now following (matches the existing `setup-middle-manager`
 skill's stated split):
 
 - **Skills** (`.agents/skills/*/SKILL.md`, cross-harness, on-demand) own *judgment*
-  — when/how — and hold no mechanics.
+  — when/how — and hold no mechanics. Each one is mirrored by a relative symlink
+  `.claude/skills/<name>` (Claude Code only scans that directory; Codex reads
+  `.agents/skills/` natively) — enforced by `tests/test_skills_layout.py`.
 - **Scripts** (bundled with the skill) own *stateless plumbing* — backgrounding a
   poll, draining a sidecar, opening a viewer.
 - **`mm` (Python)** owns only *durable-state / authority* mechanics — SQLite, the
@@ -1302,3 +1304,20 @@ full hermetic suite: **163 green**, 5 live deselected.
 Known gap: the Stop gate runs for any harness session opened in this repo (the hooks
 are checked in), so a developer session with runtime work open sees one block until
 `MM_DEV=1` is exported or a todo is recorded.
+
+## Skills mirrored into `.claude/skills/` for every skill (2026-08-29)
+
+Only `handoff` had a `.claude/skills/` symlink, so in a Claude Code session the
+other four skills (`durable-memory`, `review-surfaces`, `self-improvement`,
+`setup-middle-manager`) were invisible to the harness's skill loader — the manager
+could still reach them because `docs/manager-runtime.md` names them, but only by
+reading `.agents/skills/<name>/SKILL.md` by hand. `user-invocable: true` on
+`setup-middle-manager` was always about plain-language triggering ("setup middle
+manager"), not the `/` menu; the symlink is what makes either path work in Claude.
+
+- Added relative symlinks `.claude/skills/{durable-memory,review-surfaces,
+  self-improvement,setup-middle-manager}` alongside the existing `handoff` one.
+- New `tests/test_skills_layout.py`: every `.agents/skills/*/SKILL.md` must have a
+  matching relative symlink in `.claude/skills/` that resolves, and nothing else may
+  live in `.claude/skills/`. Adding a skill without its symlink now fails `make test`.
+- `AGENTS.md` operating discipline records the rule.
