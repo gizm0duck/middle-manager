@@ -22,6 +22,10 @@
   Rules that keep Lavish happy: native controls (radio, checkbox, textarea,
   button) are interactive by default; queue ONE prompt per decision from the
   form's submit, never from a radio change; tables scroll inside .ads-table-wrap.
+  Rule that keeps the reader happy: describe every reference as what it is —
+  never a bare plan label like "1B" or "§5" (a label may follow once, in
+  parentheses). The turn-end hook bounces replies that break this; surfaces
+  are read by the same person.
 -->
 <main class="ads-page">
 
@@ -70,10 +74,10 @@
     <article class="ads-card ads-card--warning" id="q1">
       <div class="ads-row">
         <span class="ads-lozenge ads-lozenge--moved">#1</span>
-        <span class="ads-lozenge">gates PR 1B</span>
+        <span class="ads-lozenge">must be settled before the next PR starts</span>
       </div>
       <h3 class="ads-card__title">The question, as a question?</h3>
-      <p>Context the reader needs to answer it — what was found, where, and why it matters. Cite <code>file:line</code>.</p>
+      <p>Context the reader needs to answer it — what was found, where, and why it matters. Describe each thing as what it is; a plan or spec label may follow once in parentheses. Cite <code>file:line</code> for evidence.</p>
       <form class="ads-form" data-lavish-question="q1"
             onsubmit="event.preventDefault(); const fd = new FormData(event.currentTarget); const choice = fd.get('q1'); const note = (fd.get('note') || '').toString().trim(); if (!choice) { return; } window.lavish.queuePrompt('Q1: ' + choice + (note ? ' — note: ' + note : ''), { tag: 'decision', text: 'Q1: ' + choice, element: event.currentTarget, queueKey: 'q1', data: { question: 'q1', answer: choice, note } }); event.currentTarget.querySelector('.ads-form__status').textContent = 'Queued — press Send to Agent when you are done.';">
         <label class="ads-choice">
@@ -117,8 +121,8 @@
     <details class="ads-details">
       <summary>Already decided — folded away so it does not compete with the open questions</summary>
       <dl class="ads-kv">
-        <dt>Order</dt><dd>1C may land before 1B.</dd>
-        <dt>Budget</dt><dd>100 ms p95 is a gate.</dd>
+        <dt>Order</dt><dd>The small worker-fixes PR may merge before the larger read-contract PR.</dd>
+        <dt>Budget</dt><dd>The badge-count endpoint must answer in under 100 ms (p95); that is a gate.</dd>
       </dl>
     </details>
     <details class="ads-details">
