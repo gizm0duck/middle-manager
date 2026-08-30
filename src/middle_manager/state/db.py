@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -154,6 +154,45 @@ CREATE TABLE IF NOT EXISTS runners (
     exit_code INTEGER,
     result_recorded INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS assessment_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ready',
+    window_start TEXT,
+    window_end TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    summary TEXT,
+    strengths TEXT,
+    weaknesses TEXT,
+    user_response TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    aligned_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS improvement_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assessment_id INTEGER NOT NULL REFERENCES assessment_cycles(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'practice',
+    observation TEXT,
+    likely_cause TEXT,
+    baseline TEXT,
+    target TEXT,
+    measurement TEXT,
+    requires_approval INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assessment_cycles_status
+    ON assessment_cycles(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_improvement_actions_assessment
+    ON improvement_actions(assessment_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_assessment
+    ON assessment_cycles ((status IN ('ready', 'awaiting_user')))
+    WHERE status IN ('ready', 'awaiting_user');
 """
 
 
@@ -182,6 +221,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:
             conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT")
+    if "improvement_actions" in {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }:
+        action_cols = _column_names(conn, "improvement_actions")
+        for col in ("observation", "likely_cause", "measurement"):
+            if col not in action_cols:
+                conn.execute(f"ALTER TABLE improvement_actions ADD COLUMN {col} TEXT")
     conn.commit()
 
 

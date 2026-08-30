@@ -57,12 +57,26 @@ class ToolsPolicy:
 
 
 @dataclass
+class AssessmentPolicy:
+    """Cadence and bounds for proactive manager performance reviews."""
+
+    enabled: bool = True
+    completed_runs: int = 5
+    max_days: int = 14
+    cooldown_days: int = 7
+    minimum_runs: int = 2
+    failure_trigger_count: int = 2
+    max_actions: int = 3
+
+
+@dataclass
 class MMConfig:
     manager: ManagerProfile = field(default_factory=ManagerProfile)
     worker: WorkerCeiling = field(default_factory=WorkerCeiling)
     cost_posture: str = "lean"
     authority: Authority = field(default_factory=Authority)
     tools: ToolsPolicy = field(default_factory=ToolsPolicy)
+    assessments: AssessmentPolicy = field(default_factory=AssessmentPolicy)
 
     def validate(self) -> None:
         if self.manager.provider not in PROVIDERS:
@@ -80,6 +94,21 @@ class MMConfig:
                 raise ConfigError(f"manager.{name} must be set")
         if not self.worker.max_model:
             raise ConfigError("worker.max_model must be set")
+        for name in (
+            "completed_runs",
+            "max_days",
+            "cooldown_days",
+            "minimum_runs",
+            "failure_trigger_count",
+            "max_actions",
+        ):
+            value = getattr(self.assessments, name)
+            if value < 1:
+                raise ConfigError(f"assessments.{name} must be at least 1")
+        if self.assessments.minimum_runs > self.assessments.completed_runs:
+            raise ConfigError("assessments.minimum_runs cannot exceed completed_runs")
+        if self.assessments.max_actions > 3:
+            raise ConfigError("assessments.max_actions cannot exceed 3")
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +117,7 @@ class MMConfig:
             "cost_posture": self.cost_posture,
             "authority": asdict(self.authority),
             "tools": asdict(self.tools),
+            "assessments": asdict(self.assessments),
         }
 
 
@@ -98,6 +128,7 @@ def _from_dict(data: dict) -> MMConfig:
         cost_posture=data.get("cost_posture", "lean"),
         authority=Authority(**data.get("authority", {})),
         tools=ToolsPolicy(**data.get("tools", {})),
+        assessments=AssessmentPolicy(**data.get("assessments", {})),
     )
     return cfg
 

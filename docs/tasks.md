@@ -11,6 +11,9 @@ considerations. Milestones and gating live in
   adapters gated by the M0 capability matrix, ceiling enforcement, task/result
   schemas, and blocked-worker resume / checkpoint steer. Autonomous delivery
   (hooks, questions/decisions, Lavish, review gate, PR) is still pending.
+- Current approved cross-cutting work: proactive self-assessment, added across M4's
+  autonomous manager loop and M5's durable-state/hardening concerns. It does not
+  advance or bypass either milestone gate.
 - Installed harnesses on this machine: Claude Code 2.1.251 (authenticated),
   Codex CLI 0.150.1 (ChatGPT login), Python 3.13, Node 24.16, `gh` 2.92, uv 0.11.
 
@@ -962,12 +965,13 @@ authority is enforced in code, not prose.
   capability line in [`README.md`](../README.md) ("I fix my own messes… what I won't
   do is rewire my own guardrails").
 
-Deliberately **no** new `mm` command or module: the recovery mechanics already exist
-(`doctor`, `reconcile`, `tools install`, `supervisor`, `decision`); the skill
-orchestrates them. Lint/format clean; launch tests green (full suite unaffected —
-docs/skill + role string only). Open question for later: whether a lightweight
-`mm selfcheck [--repair]` that bundles the read-only diagnostics + reversible repairs
-earns its keep, or stays skill-orchestrated.
+At this point there was deliberately **no** new `mm` command or module: the recovery
+mechanics already existed (`doctor`, `reconcile`, `tools install`, `supervisor`,
+`decision`), so the skill orchestrated them. Lint/format clean; launch tests green
+(full suite unaffected — docs/skill + role string only). The later, explicit request
+for periodic evidence-based performance reviews supersedes only that subsystem
+decision; see **Proactive performance self-assessments** below. Routine healing stays
+skill-orchestrated.
 
 ## Durable per-instance memory under `.mm/memory/` (2026-08-29)
 
@@ -1131,3 +1135,58 @@ NEVER BLOCK unless it is responding to the user."* Answer + fix:
 - **Tests** ([`test_supervisor.py`](../tests/test_supervisor.py)): `mm run`/`mm task`
   render the live snapshot after a fake task completes, and `mm wait --timeout 0` returns
   in under 2s (proves non-blocking). Full suite **125 green**; lint/format clean.
+
+## Proactive performance self-assessments (2026-08-29)
+
+User: *"The middle manager should periodically perform self assessments, identify
+opportunities to improve their performance, set an action plan, and align with the
+user on how they will be better in the future than they were in the past. The user
+should not need to initiate this."* This is an explicitly approved cross-cutting
+addition to M4/M5, not a relaxation of the authority model or a claim that either
+milestone is otherwise complete.
+
+The implementation and runtime contract follow these decisions:
+
+- **Evidence is collected automatically.** The control plane builds a deterministic
+  packet from durable run/task outcomes, reviews and rework, retries/recovery, cycle
+  time and usage, escalations and repeated questions, decision reuse, user
+  corrections, cross-repo coordination, and progress against the previous plan. The
+  manager assesses evidence; it does not grade itself from vibes.
+- **Formal cadence is bounded.** A review becomes due after **five completed runs or
+  14 days**, whichever comes first, but only with enough completed work to support a
+  conclusion and with at least a **seven-day cooldown** between formal reviews.
+  Significant failure, repeated rework, or repeated user correction can surface an
+  earlier evidence-based review without turning every noisy run into a crisis
+  meeting. The defaults are policy, not prompt lore, and remain editable later through
+  `mm config assessments`.
+- **The manager initiates it.** Supervisor and Claude/Codex lifecycle-hook delivery
+  surface due reviews into the active manager session; durable state carries the
+  obligation across interruption or restart. The user does not run a retrospective
+  command or remember the schedule.
+- **The output is an experiment plan, not a promise.** Each review records what
+  improved, what underperformed, and **one to three** proposed experiments with an
+  observation, likely cause, concrete behavior change, baseline, target, and future
+  evidence. Mechanics are exposed as `mm assessment tick|status|show|complete|align`
+  so delivery is deterministic and recoverable across both harnesses.
+- **User alignment is durable and context-sensitive.** The manager brings the
+  evidence and proposed plan to the user, then records approval, revision, or
+  dismissal in authoritative SQLite state and curates the active plan in
+  `.mm/memory/improvements.md`. It reuses that decision while the premises hold and
+  does not relitigate it. Materially changed evidence, constraints, scope, or
+  direction justify asking again — with the delta made explicit.
+- **The walls do not move themselves.** Routing, sequencing, memory use, caching, and
+  other reversible operating practices may improve inside existing authority.
+  Changes to model/reasoning/spend ceilings, config, standing authority, framework
+  source, hooks, skills, or safety gates remain proposals until the user approves
+  them.
+
+Documentation is aligned in the runtime contract, the `self-improvement` and
+`durable-memory` skills, README, and the implementation plan.
+
+Implementation: schema v4 adds durable assessment/action records;
+[`assessments.py`](../src/middle_manager/assessments.py) owns evidence, cadence,
+transitions, measurable-action validation, and memory projection; supervisor/task
+completion prepares due work; checked-in Claude/Codex SessionStart + Stop hooks deliver
+it without a recursion loop; and `mm config assessments` keeps cadence editable.
+Validation: `make fmt`, `make lint`, and the full hermetic suite pass (**135 green**, 5
+live tests deselected).

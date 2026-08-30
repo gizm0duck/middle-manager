@@ -13,6 +13,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 
 from middle_manager.paths import ensure_layout, mm_home, run_dir
 from middle_manager.supervisor.core import Supervisor, SupervisorError
@@ -35,6 +36,7 @@ class SupervisorServer:
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._last_assessment_tick = 0.0
 
     def start_background(self) -> None:
         self._bind()
@@ -60,6 +62,7 @@ class SupervisorServer:
     def _serve_loop(self) -> None:
         assert self._sock is not None
         while not self._stop.is_set():
+            self._tick_assessments()
             try:
                 conn, _ = self._sock.accept()
             except TimeoutError:
@@ -68,6 +71,19 @@ class SupervisorServer:
                 break
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
         self._cleanup()
+
+    def _tick_assessments(self) -> None:
+        """Prepare due reviews while the supervisor is alive, without a model call."""
+        now = time.monotonic()
+        if now - self._last_assessment_tick < 60:
+            return
+        self._last_assessment_tick = now
+        try:
+            from middle_manager.assessments import ensure_due
+
+            ensure_due()
+        except Exception:  # noqa: BLE001 - maintenance must never take down dispatch
+            return
 
     def _handle(self, conn: socket.socket) -> None:
         with conn, conn.makefile("r") as rf:

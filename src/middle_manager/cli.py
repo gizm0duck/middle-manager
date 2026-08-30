@@ -106,6 +106,30 @@ def _cmd_config(args: argparse.Namespace) -> int:
             cfg = config_authority(overrides)
             print(f"merge authority: {'on' if cfg.authority.merge else 'off'}")
             return 0
+        if args.config_cmd == "assessments":
+            cfg = load_config()
+            policy = cfg.assessments
+            for name in (
+                "enabled",
+                "completed_runs",
+                "max_days",
+                "cooldown_days",
+                "minimum_runs",
+                "failure_trigger_count",
+                "max_actions",
+            ):
+                value = getattr(args, name, None)
+                if value is not None:
+                    setattr(policy, name, value)
+            from middle_manager.config import save_config
+
+            save_config(cfg)
+            print(
+                "assessment cadence: "
+                f"{'on' if policy.enabled else 'off'}, every {policy.completed_runs} completed "
+                f"runs or {policy.max_days} days, {policy.cooldown_days}-day cooldown"
+            )
+            return 0
     except ConfigError as exc:
         print(f"config failed: {exc}", file=sys.stderr)
         return 1
@@ -444,6 +468,7 @@ def _cmd_memory(args: argparse.Namespace) -> int:
             memory.board_path(),
             memory.preferences_path(),
             memory.relationships_path(),
+            memory.improvements_path(),
         ):
             print(f"# ---- {path} ----")
             print(path.read_text())
@@ -459,6 +484,83 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     result = handle_hook_stdin(args.event, raw)
     print(json.dumps(result))
     return 0
+
+
+def _cmd_assessment(args: argparse.Namespace) -> int:
+    from middle_manager import assessments
+    from middle_manager.state import init_db
+
+    conn = init_db()
+    try:
+        if args.assessment_cmd == "tick":
+            cycle = assessments.ensure_due(conn, force=args.force)
+            if args.json:
+                print(json.dumps(cycle, indent=2))
+            elif cycle is None:
+                print("no assessment due")
+            else:
+                print(f"assessment {cycle['id']} {cycle['status']} (trigger: {cycle['trigger']})")
+            return 0
+        if args.assessment_cmd == "status":
+            row = assessments.latest_cycle(conn)
+            if row is None:
+                print("no assessments yet")
+                return 0
+            cycle = assessments.cycle_dict(conn, int(row["id"]))
+            if args.json:
+                print(json.dumps(cycle, indent=2))
+            else:
+                print(
+                    f"assessment {cycle['id']}: {cycle['status']} "
+                    f"(trigger: {cycle['trigger']}, actions: {len(cycle['actions'])})"
+                )
+            return 0
+        if args.assessment_cmd == "show":
+            cycle_id = args.id
+            if cycle_id is None:
+                row = assessments.latest_cycle(conn)
+                if row is None:
+                    print("no assessments yet")
+                    return 0
+                cycle_id = int(row["id"])
+            cycle = assessments.cycle_dict(conn, cycle_id)
+            if args.json:
+                print(json.dumps(cycle, indent=2))
+            else:
+                print(assessments.assessment_prompt(cycle))
+            return 0
+        if args.assessment_cmd == "complete":
+            actions: list[dict] = []
+            if args.action_json:
+                decoded = json.loads(args.action_json)
+                if not isinstance(decoded, list) or not all(isinstance(x, dict) for x in decoded):
+                    raise assessments.AssessmentError(
+                        "--action-json must be a JSON list of objects"
+                    )
+                actions = decoded
+            cycle = assessments.complete(
+                args.id,
+                summary=args.summary,
+                strengths=args.strength,
+                weaknesses=args.weakness,
+                actions=actions,
+                conn=conn,
+            )
+            print(
+                f"assessment {cycle['id']} recorded; align {len(cycle['actions'])} "
+                "proposed actions with the user"
+            )
+            return 0
+        if args.assessment_cmd == "align":
+            cycle = assessments.align(
+                args.id, decision=args.decision, notes=args.notes or "", conn=conn
+            )
+            print(f"assessment {cycle['id']} {cycle['status']} ({args.decision})")
+            return 0
+    except (assessments.AssessmentError, json.JSONDecodeError) as exc:
+        print(f"assessment failed: {exc}", file=sys.stderr)
+        return 1
+    return 2
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
@@ -616,6 +718,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"repos:   {len(repos)} registered")
     except Exception:  # noqa: BLE001 - status must never crash
         print("repos:   (state not initialized)")
+    try:
+        from middle_manager import assessments
+        from middle_manager.state import init_db
+
+        row = assessments.latest_cycle(init_db())
+        if row is not None and row["status"] in assessments.OPEN_STATUSES:
+            print(f"review:  assessment {row['id']} {row['status']}")
+    except Exception:  # noqa: BLE001 - status must never crash
+        pass
     return 0
 
 
@@ -689,6 +800,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="grant standing merge authority (off by default)",
     )
     authority.add_argument("--no-allow-merge", dest="allow_merge", action="store_false")
+    assessments_cfg = csub.add_parser("assessments", help="change review cadence")
+    assessments_cfg.add_argument("--enabled", dest="enabled", action="store_true", default=None)
+    assessments_cfg.add_argument("--disabled", dest="enabled", action="store_false")
+    assessments_cfg.add_argument("--completed-runs", type=int, default=None)
+    assessments_cfg.add_argument("--max-days", type=int, default=None)
+    assessments_cfg.add_argument("--cooldown-days", type=int, default=None)
+    assessments_cfg.add_argument("--minimum-runs", type=int, default=None)
+    assessments_cfg.add_argument("--failure-trigger-count", type=int, default=None)
+    assessments_cfg.add_argument("--max-actions", type=int, default=None)
     config.set_defaults(func=_cmd_config)
 
     repo = sub.add_parser("repo", help="register and sync repositories")
@@ -811,6 +931,37 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook", help="ingest a provider lifecycle hook (payload on stdin)")
     hook.add_argument("event", help="lifecycle event name (e.g. stop, session-start)")
     hook.set_defaults(func=_cmd_hook)
+
+    assessment = sub.add_parser(
+        "assessment", help="inspect and record proactive manager performance reviews"
+    )
+    asub = assessment.add_subparsers(dest="assessment_cmd", required=True)
+    atick = asub.add_parser("tick", help="prepare a cycle if policy says one is due")
+    atick.add_argument("--force", action="store_true", help="prepare a cycle regardless of cadence")
+    atick.add_argument("--json", action="store_true")
+    astatus = asub.add_parser("status", help="show the latest cycle")
+    astatus.add_argument("--json", action="store_true")
+    ashow = asub.add_parser("show", help="show the assessment prompt or state")
+    ashow.add_argument("id", type=int, nargs="?", default=None)
+    ashow.add_argument("--json", action="store_true")
+    acomplete = asub.add_parser("complete", help="record findings and proposed experiments")
+    acomplete.add_argument("id", type=int)
+    acomplete.add_argument("--summary", required=True)
+    acomplete.add_argument("--strength", action="append", default=[])
+    acomplete.add_argument("--weakness", action="append", default=[])
+    acomplete.add_argument(
+        "--action-json",
+        default=None,
+        help=(
+            "JSON actions with description/category/observation/likely_cause/"
+            "baseline/target/measurement"
+        ),
+    )
+    aalign = asub.add_parser("align", help="record the user's decision on the plan")
+    aalign.add_argument("id", type=int)
+    aalign.add_argument("--decision", choices=["approved", "revised", "dismissed"], required=True)
+    aalign.add_argument("--notes", default=None)
+    assessment.set_defaults(func=_cmd_assessment)
 
     plan = sub.add_parser("plan", help="compute cross-repo rollout order for a run")
     plan.add_argument("run_id", type=int)

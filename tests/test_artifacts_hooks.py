@@ -10,6 +10,12 @@ from middle_manager.artifacts import create_artifact, read_feedback
 from middle_manager.state import init_db, store
 
 
+def _seed_due_assessment(conn) -> None:
+    for index in range(5):
+        run_id = store.create_run(conn, f"completed objective {index}")
+        store.set_run_status(conn, run_id, "completed")
+
+
 def test_artifact_roundtrip(mm_home) -> None:
     conn = init_db()
     run_id = store.create_run(conn, "review this")
@@ -72,3 +78,29 @@ def test_hook_tolerates_bad_json(mm_home) -> None:
     ack = hooks.handle_hook_stdin("session-start", "not json")
     assert ack["ok"] is True
     assert ack["event"] == "session_start"
+
+
+def test_stop_hook_continues_due_assessment_once(mm_home) -> None:
+    conn = init_db()
+    _seed_due_assessment(conn)
+
+    first = hooks.handle_hook_stdin("Stop", "{}")
+    recursive = hooks.handle_hook_stdin("Stop", json.dumps({"stop_hook_active": True}))
+
+    assert first["decision"] == "block"
+    assert "Periodic performance assessment" in first["reason"]
+    assert "decision" not in recursive
+    assert conn.execute("SELECT COUNT(*) FROM assessment_cycles").fetchone()[0] == 1
+
+
+def test_session_start_hook_injects_pending_assessment_context(mm_home) -> None:
+    conn = init_db()
+    _seed_due_assessment(conn)
+
+    response = hooks.handle_hook_stdin("SessionStart", "{}")
+
+    assert "Periodic performance assessment" in response["additionalContext"]
+    assert response["hookSpecificOutput"] == {
+        "hookEventName": "SessionStart",
+        "additionalContext": response["additionalContext"],
+    }
