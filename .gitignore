@@ -40,3 +40,7 @@ Thumbs.db
 # tools, task worktree pools, durable memory, supervisor sockets, and raw
 # provider-probe evidence.
 .mm/
+
+# Review surfaces and their feedback/pid sidecars are local working files, not a
+# tracker to commit (see AGENTS.md "No trackers in the repo").
+.lavish/

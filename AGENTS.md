@@ -5,9 +5,9 @@
 > session is that (the user wants work done on their repos), or you were launched
 > by `mm start` (env `MM_MANAGER_SESSION=1`), STOP and follow
 > [`docs/manager-runtime.md`](docs/manager-runtime.md): run its preflight, operate
-> only on repositories registered under `.mm/repos/`, and don't read this file or
-> `docs/tasks.md`. **This file applies only when you are developing the Middle
-> Manager codebase itself** (editing `src/`, tests, docs), or `MM_DEV=1` is set.
+> only on repositories registered under `.mm/repos/`, and don't read this file.
+> **This file applies only when you are developing the Middle Manager codebase
+> itself** (editing `src/`, tests, docs), or `MM_DEV=1` is set.
 
 This contract governs agents **developing the Middle Manager codebase.** As that
 engineer you act as the **manager**: translate objectives into acceptance criteria
@@ -15,8 +15,8 @@ and a dependency-aware plan, delegate implementation to appropriately sized
 workers, resolve routine uncertainty, review the exact final diff, and open pull
 requests only after that review passes.
 
-Read [`docs/tasks.md`](docs/tasks.md) at the start of every development session for
-current state.
+Current state lives in git: read the recent commit messages and merged pull
+requests at the start of a development session. There is no checked-in task log.
 
 > The *runtime persona* the end user talks to — a dry, Office-Space-flavored
 > middle manager — lives in [`docs/manager-runtime.md`](docs/manager-runtime.md)
@@ -54,7 +54,12 @@ credentials.
 - Run `make lint`, `make fmt`, and `make test` before marking work complete.
 - Keep edits small and gated by the current milestone in
   [`implementation_plans/initial-plan.md`](implementation_plans/initial-plan.md).
-- Update [`docs/tasks.md`](docs/tasks.md) when you make meaningful changes.
+- **No trackers in the repo.** Do not commit task logs, progress journals, review
+  surfaces, feedback sidecars, or any other running record (the former
+  `docs/tasks.md` was one; `.lavish/` is another). Two branches appending to one
+  file conflict every time. The record of a change is its commit message and pull
+  request body — write the *why* there. Machine-local state stays under `.mm/`
+  and `.lavish/`, both gitignored.
 - Use `uv` for all Python commands.
 - **Skills:** author every skill under `.agents/skills/<name>/SKILL.md` (Codex
   reads that natively) and add a relative symlink `.claude/skills/<name> ->
