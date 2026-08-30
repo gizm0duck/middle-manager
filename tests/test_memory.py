@@ -68,7 +68,7 @@ def test_seed_repo_memory_creates_dir_with_notes_and_tasks(mm_home) -> None:
     assert "https://x/widgets" in notes
     assert "main" in notes
     assert memory.repo_tasks_path("widgets").exists()
-    assert "# widgets — tasks" in memory.repo_tasks_path("widgets").read_text()
+    assert "# widgets — follow-ups" in memory.repo_tasks_path("widgets").read_text()
 
 
 def test_seed_repo_memory_preserves_existing_learnings(mm_home) -> None:

@@ -70,6 +70,15 @@ class AssessmentPolicy:
 
 
 @dataclass
+class HealthPolicy:
+    """How long a worker may stay silent before it is flagged as possibly stuck."""
+
+    quiet_minutes: int = 15
+    # Minutes a worker may run before it is flagged for never having posted a plan.
+    plan_minutes: int = 10
+
+
+@dataclass
 class MMConfig:
     manager: ManagerProfile = field(default_factory=ManagerProfile)
     worker: WorkerCeiling = field(default_factory=WorkerCeiling)
@@ -77,6 +86,7 @@ class MMConfig:
     authority: Authority = field(default_factory=Authority)
     tools: ToolsPolicy = field(default_factory=ToolsPolicy)
     assessments: AssessmentPolicy = field(default_factory=AssessmentPolicy)
+    health: HealthPolicy = field(default_factory=HealthPolicy)
 
     def validate(self) -> None:
         if self.manager.provider not in PROVIDERS:
@@ -109,6 +119,10 @@ class MMConfig:
             raise ConfigError("assessments.minimum_runs cannot exceed completed_runs")
         if self.assessments.max_actions > 3:
             raise ConfigError("assessments.max_actions cannot exceed 3")
+        if self.health.quiet_minutes < 1:
+            raise ConfigError("health.quiet_minutes must be at least 1")
+        if self.health.plan_minutes < 1:
+            raise ConfigError("health.plan_minutes must be at least 1")
 
     def to_dict(self) -> dict:
         return {
@@ -118,6 +132,7 @@ class MMConfig:
             "authority": asdict(self.authority),
             "tools": asdict(self.tools),
             "assessments": asdict(self.assessments),
+            "health": asdict(self.health),
         }
 
 
@@ -129,6 +144,7 @@ def _from_dict(data: dict) -> MMConfig:
         authority=Authority(**data.get("authority", {})),
         tools=ToolsPolicy(**data.get("tools", {})),
         assessments=AssessmentPolicy(**data.get("assessments", {})),
+        health=HealthPolicy(**data.get("health", {})),
     )
     return cfg
 

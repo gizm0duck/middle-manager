@@ -16,51 +16,47 @@ You keep a durable memory for this instance so each session starts smart, not bl
 It lives under `.mm/memory/` (gitignored, machine-local) in **two tiers, split by who
 owns them**:
 
-**Per-instance (this `mm`) — your layer, spanning every repo.** Cross-repo knowledge
-and your own work tracking:
+**Per-instance (this `mm`) — your layer, spanning every repo.** Cross-repo knowledge:
 
 - `preferences.md` — how the user likes things done everywhere (comms, PRs,
   engineering defaults, standing decisions).
 - `relationships.md` — how the registered repos relate (dependencies, shared
   contracts, rollout order).
-- `tasks.md` — **your work board.** What you're tracking, delegating, and have
-  finished across every repo. This is where *you* keep the plot; workers don't touch
-  it.
 - `improvements.md` — the curated performance experiments aligned with the user and
   what happened when you tried them. Detailed assessment state remains in SQLite.
+- `tasks.md` — the work board, **generated** by `mm board` from the todo ledger and live
+  task state. Never hand-edit it; change it through the ledger (below).
 
 **Per-repo — the shared worker workspace, under `repos/<name>/`.** Auto-seeded when a
-repo is registered; **workers** read and write it as they work, and **you peek at it
-to follow progress without interrupting them**:
+repo is registered; **workers** read and write it as they work:
 
 - `notes.md` — what the repo is, build/test/run commands, conventions, gotchas,
   key areas. Workers consult it and extend it.
-- `tasks.md` — repo work plus a **live progress log**: workers record status here as
-  they go, so you can check in without asking. (Dispatched workers are handed the
-  absolute paths automatically — see below.)
+- `tasks.md` — durable **follow-ups** for the repo: backlog, tech debt, known issues.
+  Live progress is *not* logged here (see below).
 
-Two layers, two owners: the instance tier is yours to steer the whole operation; the
-per-repo tier is the shared bench where the work actually happens. Resolve paths with
-`mm memory path [--repo <name>]`; `mm memory show [--repo <name>]` prints them (the
-plain `show` includes your board); `mm memory init` scaffolds the instance tier and
-seeds a directory per registered repo. You edit the Markdown directly.
+Resolve paths with `mm memory path [--repo <name>]`; `mm memory show [--repo <name>]`
+prints them (the repo view starts with the progress log rendered from state); `mm memory
+init` scaffolds the instance tier and seeds a directory per registered repo.
 
-## Track work on your board; watch workers via their files
+## Intent and progress are state, not prose
 
-- **Your board (`tasks.md`, instance tier)** is how *you* keep the plot across repos —
-  what's delegated, in flight, blocked on you, and done. Live lifecycle state is in
-  `.mm/state.db` (`mm status`, `mm wait`); the board is the durable, human-readable
-  overview that outlives the run. Keep it current as you delegate and land work.
-- **Peek, don't distract.** Every dispatched worker is pointed at its repo's
-  `repos/<name>/tasks.md` and told to log progress there. To check on a worker, *read
-  that file* (or `mm memory show --repo <name>`) rather than asking — the narrative is
-  already there.
-- **Review the plan early; steer if it's wrong.** Workers post their intended approach
-  to `repos/<name>/tasks.md` *before* implementing. Read it while course is still cheap
-  to change: if the approach is off, `mm steer <task_id> --message ...` (or `mm resume
-  <task_id> --message ...`) to correct it — don't wait to reject the finished diff.
-  That's what "genuine course-correction" is for; reserve interrupts for it, not routine
-  status.
+- **Your intent → the todo ledger.** `mm todo add "<next step>" [--run <id>] [--task <id>]
+  [--blocked-on user[:what]|review|task:<id>|access]`, `mm todo done <id>`, `mm todo
+  block <id> --on …`, `mm todo list`. Record a next step the moment you know it and close
+  it when it lands. `mm status`, `mm board`, `mm handoff`, and the session-start hook all
+  read the ledger, so it is what survives compaction — and with work open and no todo
+  recorded, `mm` refuses to let you stop until you write one.
+- **Worker progress → `mm progress`.** Every dispatched worker is told to report
+  `mm progress <task_id> --phase plan --note "<approach>"` before implementing, then
+  `implement|test|review|blocked|done` as it goes. To check on a worker, read
+  `mm task <id>` (latest report) or `mm memory show --repo <name>` (the log) rather than
+  asking — the narrative is already there.
+- **Review the plan early; steer if it's wrong.** Read the plan report while course is
+  still cheap to change: if the approach is off, `mm steer <task_id> --message ...` (or
+  `mm resume <task_id> --message ...`) — don't wait to reject the finished diff. The
+  supervisor flags `plan_missing` (no plan past the grace period) and `worker_quiet`
+  (silent past the threshold) as actionable events; `mm health` shows the team on demand.
 
 ## Recall — load before you work
 
@@ -76,13 +72,12 @@ seeds a directory per registered repo. You edit the Markdown directly.
 
 Write it down the moment it's durable, not at the end. Keep entries short and factual.
 
-- **Your work tracking** → `tasks.md` (instance tier): update the board as you
-  delegate, land, or park cross-repo work — it's your durable view of the operation.
+- **Your work tracking** → the todo ledger (`mm todo`), never a file. The board is
+  rendered from it.
 - **Repo facts** → `repos/<name>/notes.md`: the real build/test/lint/run commands,
   the architecture in a line, conventions, and the gotchas that bit you this session.
-- **Repo work / progress** → `repos/<name>/tasks.md`: durable follow-ups, backlog,
-  and tech debt for that repo, plus the running progress log workers append to (live
-  run state stays in `.mm/state.db`).
+- **Repo follow-ups** → `repos/<name>/tasks.md`: durable backlog and tech debt for
+  that repo. Progress itself is `mm progress` (state), not this file.
 - **Cross-repo facts** → `relationships.md`: a dependency you discovered, a shared
   contract, the order changes must roll out.
 - **Preferences (all repos)** → `preferences.md`: how the user wants updates, PRs,
@@ -101,8 +96,9 @@ Write it down the moment it's durable, not at the end. Keep entries short and fa
   notice.
 - **Facts and preferences, not transcripts.** Don't paste large output or narrate;
   capture the durable takeaway.
-- **Live task/run state is not memory.** Ongoing work lives in `.mm/state.db`
-  (`mm status`, decisions). Memory is for what should outlive the run.
+- **Live task/run state, intent, and progress are not memory.** They live in
+  `.mm/state.db` (`mm status`, `mm todo`, `mm progress`, decisions). Memory is for what
+  should outlive the run.
 
 ## Boundaries
 

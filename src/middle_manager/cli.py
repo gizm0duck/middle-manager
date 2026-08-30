@@ -106,6 +106,20 @@ def _cmd_config(args: argparse.Namespace) -> int:
             cfg = config_authority(overrides)
             print(f"merge authority: {'on' if cfg.authority.merge else 'off'}")
             return 0
+        if args.config_cmd == "health":
+            from middle_manager.config import save_config
+
+            cfg = load_config()
+            if args.quiet_minutes is not None:
+                cfg.health.quiet_minutes = args.quiet_minutes
+            if args.plan_minutes is not None:
+                cfg.health.plan_minutes = args.plan_minutes
+            save_config(cfg)
+            print(
+                f"worker health: flag a worker after {cfg.health.quiet_minutes}m of silence, "
+                f"or {cfg.health.plan_minutes}m without a plan"
+            )
+            return 0
         if args.config_cmd == "assessments":
             cfg = load_config()
             policy = cfg.assessments
@@ -301,6 +315,9 @@ def _cmd_task(args: argparse.Namespace) -> int:
     if task.get("branch"):
         line += f"  branch {task['branch']}"
     print(line)
+    from middle_manager import progress
+
+    print(f"progress: {progress.describe(progress.latest(args.task_id))}")
     return 0
 
 
@@ -459,6 +476,10 @@ def _cmd_memory(args: argparse.Namespace) -> int:
             if not notes.exists():
                 print(f"no memory for repo {args.repo!r} yet", file=sys.stderr)
                 return 1
+            from middle_manager import progress
+
+            print("# ---- progress (from `mm progress`) ----")
+            print(progress.render_repo_log(args.repo))
             for path in (notes, tasks):
                 if path.exists():
                     print(f"# ---- {path} ----")
@@ -483,6 +504,146 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     result = handle_hook_stdin(args.event, raw)
     print(json.dumps(result))
+    return 0
+
+
+def _cmd_handoff(args: argparse.Namespace) -> int:
+    """Print the pickup prompt (nothing is stored — durable state was recorded first)."""
+    from middle_manager.handoff import build_handoff
+
+    result = build_handoff()
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    for warning in result["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(result["prompt"])
+    return 0
+
+
+def _cmd_health(args: argparse.Namespace) -> int:
+    """Worker health: alive / quiet (possibly stuck) / dead, per in-flight task."""
+    from datetime import timedelta
+
+    from middle_manager import health
+
+    quiet_after = (
+        timedelta(minutes=args.quiet_minutes)
+        if args.quiet_minutes is not None
+        else health.quiet_threshold()
+    )
+    entries = health.check(quiet_after=quiet_after)
+    if args.json:
+        print(json.dumps(entries, indent=2))
+        return 0
+    if not entries:
+        print("no workers in flight")
+        return 0
+    for e in entries:
+        print(health.describe(e))
+    troubled = [e for e in entries if e["verdict"] != "alive"]
+    return 1 if troubled else 0
+
+
+def _cmd_todo(args: argparse.Namespace) -> int:
+    """The manager's intent ledger: what's next and what's waiting on whom."""
+    from middle_manager import board
+
+    try:
+        if args.todo_cmd == "add":
+            todo_id = board.add(
+                args.text, run_id=args.run_id, task_id=args.task_id, blocked_on=args.blocked_on
+            )
+            print(f"todo #{todo_id} added")
+            return 0
+        if args.todo_cmd == "done":
+            for todo_id in args.ids:
+                board.done(todo_id)
+            print("done: " + ", ".join(f"#{i}" for i in args.ids))
+            return 0
+        if args.todo_cmd == "drop":
+            for todo_id in args.ids:
+                board.drop(todo_id)
+            print("dropped: " + ", ".join(f"#{i}" for i in args.ids))
+            return 0
+        if args.todo_cmd == "reopen":
+            board.reopen(args.id)
+            print(f"todo #{args.id} reopened")
+            return 0
+        if args.todo_cmd == "block":
+            board.block(args.id, args.on)
+            print(f"todo #{args.id} waiting on {args.on}")
+            return 0
+        if args.todo_cmd == "unblock":
+            board.unblock(args.id)
+            print(f"todo #{args.id} unblocked")
+            return 0
+        if args.todo_cmd == "edit":
+            board.edit(args.id, args.text)
+            print(f"todo #{args.id} updated")
+            return 0
+        if args.todo_cmd == "list":
+            from middle_manager.state import init_db, store
+
+            conn = init_db()
+            status = None if args.all else "open"
+            rows = [
+                board.todo_dict(r)
+                for r in store.list_todos(conn, status=status, run_id=args.run_id)
+            ]
+            if args.json:
+                print(json.dumps(rows, indent=2))
+                return 0
+            if not rows:
+                print("no open todos" if not args.all else "no todos")
+                return 0
+            for t in rows:
+                mark = {"open": "[ ]", "done": "[x]", "dropped": "[-]"}.get(t["status"], "[?]")
+                print(f"{mark} {board.todo_line(t)[2:]}")
+            return 0
+    except board.TodoError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print("no todo subcommand given", file=sys.stderr)
+    return 2
+
+
+def _cmd_board(args: argparse.Namespace) -> int:
+    """Render the work board from the ledger + live state (and refresh the projection)."""
+    from middle_manager import board
+
+    text = board.write_board() if args.write else board.render_board()
+    print(text, end="")
+    return 0
+
+
+def _cmd_progress(args: argparse.Namespace) -> int:
+    """A worker's structured progress report (also usable by the manager to inspect)."""
+    from middle_manager import progress
+
+    if args.phase is None:
+        if args.history:
+            entries = progress.history(args.task_id)
+            if args.json:
+                print(json.dumps(entries, indent=2))
+                return 0
+            if not entries:
+                print(f"task {args.task_id}: no progress reported")
+            for e in entries:
+                print(f"{e['at']} · {progress.describe(e)}")
+            return 0
+        latest = progress.latest(args.task_id)
+        if args.json:
+            print(json.dumps(latest, indent=2))
+            return 0
+        print(f"task {args.task_id}: {progress.describe(latest)}")
+        return 0
+    try:
+        progress.record(args.task_id, phase=args.phase, note=args.note or "")
+    except progress.ProgressError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"task {args.task_id}: {args.phase} recorded")
     return 0
 
 
@@ -719,6 +880,29 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - status must never crash
         print("repos:   (state not initialized)")
     try:
+        from middle_manager import board
+        from middle_manager.state import init_db, store
+
+        conn = init_db()
+        marks = ",".join("?" for _ in (*board.IN_FLIGHT, *board.NEEDS_ME))
+        counts = dict(
+            conn.execute(
+                f"SELECT status, COUNT(*) FROM tasks WHERE status IN ({marks}) GROUP BY status",
+                (*board.IN_FLIGHT, *board.NEEDS_ME),
+            ).fetchall()
+        )
+        running = sum(counts.get(k, 0) for k in board.IN_FLIGHT)
+        waiting = sum(counts.get(k, 0) for k in board.NEEDS_ME)
+        print(f"tasks:   {running} in flight, {waiting} waiting on me")
+        nxt = board.next_steps(conn)
+        blocked = board.waiting(conn)
+        print(f"todos:   {len(nxt)} next, {len(blocked)} waiting")
+        for t in nxt[:3]:
+            print(f"  next:  #{t['id']} {t['text']}")
+        _ = store
+    except Exception:  # noqa: BLE001 - status must never crash
+        pass
+    try:
         from middle_manager import assessments
         from middle_manager.state import init_db
 
@@ -809,6 +993,9 @@ def build_parser() -> argparse.ArgumentParser:
     assessments_cfg.add_argument("--minimum-runs", type=int, default=None)
     assessments_cfg.add_argument("--failure-trigger-count", type=int, default=None)
     assessments_cfg.add_argument("--max-actions", type=int, default=None)
+    health_cfg = csub.add_parser("health", help="change the worker quiet threshold")
+    health_cfg.add_argument("--quiet-minutes", dest="quiet_minutes", type=int, default=None)
+    health_cfg.add_argument("--plan-minutes", dest="plan_minutes", type=int, default=None)
     config.set_defaults(func=_cmd_config)
 
     repo = sub.add_parser("repo", help="register and sync repositories")
@@ -927,6 +1114,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mshow.add_argument("--repo", default=None, help="show this repo's notes + tasks instead")
     memory.set_defaults(func=_cmd_memory)
+
+    todo = sub.add_parser("todo", help="the manager's intent ledger: next steps and waits")
+    tsub = todo.add_subparsers(dest="todo_cmd", required=True)
+    tadd = tsub.add_parser("add", help="record a next step")
+    tadd.add_argument("text")
+    tadd.add_argument("--run", dest="run_id", type=int, default=None)
+    tadd.add_argument("--task", dest="task_id", type=int, default=None)
+    tadd.add_argument(
+        "--blocked-on",
+        dest="blocked_on",
+        default=None,
+        help="user[:what] | review | task:<id> | access[:what]",
+    )
+    tdone = tsub.add_parser("done", help="mark todo(s) done")
+    tdone.add_argument("ids", type=int, nargs="+")
+    tdrop = tsub.add_parser("drop", help="drop todo(s) without doing them")
+    tdrop.add_argument("ids", type=int, nargs="+")
+    treopen = tsub.add_parser("reopen", help="reopen a done/dropped todo")
+    treopen.add_argument("id", type=int)
+    tblock = tsub.add_parser("block", help="mark a todo as waiting on someone/something")
+    tblock.add_argument("id", type=int)
+    tblock.add_argument("--on", required=True, help="user[:what] | review | task:<id> | access")
+    tunblock = tsub.add_parser("unblock", help="clear a todo's wait")
+    tunblock.add_argument("id", type=int)
+    tedit = tsub.add_parser("edit", help="rewrite a todo's text")
+    tedit.add_argument("id", type=int)
+    tedit.add_argument("text")
+    tlist = tsub.add_parser("list", help="list open todos (or all)")
+    tlist.add_argument("--all", action="store_true")
+    tlist.add_argument("--run", dest="run_id", type=int, default=None)
+    tlist.add_argument("--json", action="store_true")
+    todo.set_defaults(func=_cmd_todo)
+
+    board_cmd = sub.add_parser("board", help="render the work board from ledger + live state")
+    board_cmd.add_argument("--write", action="store_true", help="also refresh .mm/memory/tasks.md")
+    board_cmd.set_defaults(func=_cmd_board)
+
+    prog = sub.add_parser(
+        "progress", help="worker progress report (record with --phase; inspect without)"
+    )
+    prog.add_argument("task_id", type=int)
+    prog.add_argument("--phase", choices=["plan", "implement", "test", "review", "blocked", "done"])
+    prog.add_argument("--note", default="")
+    prog.add_argument("--history", action="store_true", help="show every report, oldest last")
+    prog.add_argument("--json", action="store_true")
+    prog.set_defaults(func=_cmd_progress)
+
+    handoff = sub.add_parser(
+        "handoff",
+        help="print a pickup prompt to resume this session later (records nothing)",
+    )
+    handoff.add_argument("--json", action="store_true", help="machine-readable output")
+    handoff.set_defaults(func=_cmd_handoff)
+
+    health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")
+    health_cmd.add_argument(
+        "--quiet-minutes",
+        dest="quiet_minutes",
+        type=int,
+        default=None,
+        help="override the configured silence threshold for this check",
+    )
+    health_cmd.add_argument("--json", action="store_true", help="machine-readable output")
+    health_cmd.set_defaults(func=_cmd_health)
 
     hook = sub.add_parser("hook", help="ingest a provider lifecycle hook (payload on stdin)")
     hook.add_argument("event", help="lifecycle event name (e.g. stop, session-start)")

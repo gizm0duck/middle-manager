@@ -37,6 +37,9 @@ class SupervisorServer:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._last_assessment_tick = 0.0
+        self._last_health_tick = 0.0
+        self._quiet_flagged: set[int] = set()
+        self._plan_flagged: set[int] = set()
 
     def start_background(self) -> None:
         self._bind()
@@ -63,6 +66,7 @@ class SupervisorServer:
         assert self._sock is not None
         while not self._stop.is_set():
             self._tick_assessments()
+            self._tick_health()
             try:
                 conn, _ = self._sock.accept()
             except TimeoutError:
@@ -82,6 +86,28 @@ class SupervisorServer:
             from middle_manager.assessments import ensure_due
 
             ensure_due()
+        except Exception:  # noqa: BLE001 - maintenance must never take down dispatch
+            return
+
+    def _tick_health(self) -> None:
+        """Poll in-flight workers; flag the ones we haven't heard from in a while."""
+        now = time.monotonic()
+        if now - self._last_health_tick < 60:
+            return
+        self._last_health_tick = now
+        try:
+            from middle_manager import health
+            from middle_manager.state import init_db
+
+            conn = init_db()
+            health.flag_quiet_workers(
+                conn,
+                quiet_after=health.quiet_threshold(),
+                already_flagged=self._quiet_flagged,
+            )
+            health.flag_missing_plans(
+                conn, grace=health.plan_grace(), already_flagged=self._plan_flagged
+            )
         except Exception:  # noqa: BLE001 - maintenance must never take down dispatch
             return
 

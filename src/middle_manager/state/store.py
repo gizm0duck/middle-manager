@@ -197,6 +197,8 @@ ACTIONABLE_KINDS = (
     "review_requested",
     "run_done",
     "error",
+    "worker_quiet",
+    "plan_missing",
 )
 
 
@@ -389,3 +391,121 @@ def usage_totals(conn: sqlite3.Connection, run_id: int) -> dict:
         (run_id,),
     ).fetchone()
     return {"input_tokens": int(row["input"]), "output_tokens": int(row["output"])}
+
+
+# --------------------------------------------------------------------------- #
+# Todos — the manager's intent ledger
+# --------------------------------------------------------------------------- #
+
+TODO_STATUSES = ("open", "done", "dropped")
+
+
+def add_todo(
+    conn: sqlite3.Connection,
+    text: str,
+    *,
+    run_id: int | None = None,
+    task_id: int | None = None,
+    blocked_on: str | None = None,
+) -> int:
+    now = _now()
+    row = conn.execute("SELECT COALESCE(MAX(position), 0) FROM todos").fetchone()
+    position = int(row[0]) + 1
+    cur = conn.execute(
+        """
+        INSERT INTO todos (run_id, task_id, text, status, blocked_on, position, created_at,
+                           updated_at)
+        VALUES (?, ?, ?, 'open', ?, ?, ?, ?)
+        """,
+        (run_id, task_id, text, blocked_on, position, now, now),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def get_todo(conn: sqlite3.Connection, todo_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+
+
+def list_todos(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = "open",
+    run_id: int | None = None,
+    limit: int | None = None,
+) -> list[sqlite3.Row]:
+    clauses, params = [], []
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = "ORDER BY position, id" if status == "open" else "ORDER BY updated_at DESC, id DESC"
+    sql = f"SELECT * FROM todos {where} {order}"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+    return list(conn.execute(sql, params).fetchall())
+
+
+def update_todo(conn: sqlite3.Connection, todo_id: int, **fields: object) -> None:
+    if not fields:
+        return
+    if fields.get("status") == "done":
+        fields.setdefault("done_at", _now())
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = [*fields.values(), _now(), todo_id]
+    conn.execute(f"UPDATE todos SET {cols}, updated_at = ? WHERE id = ?", values)
+    conn.commit()
+
+
+def open_todo_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM todos WHERE status = 'open'").fetchone()
+    return int(row[0])
+
+
+# --------------------------------------------------------------------------- #
+# Worker progress — structured phase reports (events of kind ``worker_progress``)
+# --------------------------------------------------------------------------- #
+
+
+def progress_events(
+    conn: sqlite3.Connection, *, task_id: int | None = None, repo_id: int | None = None
+) -> list[sqlite3.Row]:
+    """Progress reports, newest first, for one task or every task of a repo."""
+    if task_id is not None:
+        return list(
+            conn.execute(
+                "SELECT * FROM events WHERE task_id = ? AND kind = 'worker_progress' "
+                "ORDER BY id DESC",
+                (task_id,),
+            ).fetchall()
+        )
+    if repo_id is not None:
+        return list(
+            conn.execute(
+                "SELECT e.* FROM events e JOIN tasks t ON t.id = e.task_id "
+                "WHERE t.repo_id = ? AND e.kind = 'worker_progress' ORDER BY e.id DESC",
+                (repo_id,),
+            ).fetchall()
+        )
+    return list(
+        conn.execute(
+            "SELECT * FROM events WHERE kind = 'worker_progress' ORDER BY id DESC"
+        ).fetchall()
+    )
+
+
+def latest_progress(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
+    rows = progress_events(conn, task_id=task_id)
+    return rows[0] if rows else None
+
+
+def has_progress_phase(conn: sqlite3.Connection, task_id: int, phase: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM events WHERE task_id = ? AND kind = 'worker_progress' "
+        "AND json_extract(payload, '$.phase') = ? LIMIT 1",
+        (task_id, phase),
+    ).fetchone()
+    return row is not None

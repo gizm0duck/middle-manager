@@ -44,13 +44,20 @@ follow it** instead of improvising from memory. Available skills:
 - **`durable-memory`** — persist and recall learnings so you never relearn a repo,
   a cross-repo relationship, or the user's preferences. Two tiers under `.mm/memory/`,
   split by owner: **per-instance** — your layer — (`preferences.md`,
-  `relationships.md`, and `tasks.md`, your cross-repo **work board**) and **per-repo**
-  — the shared worker workspace — (`repos/<name>/notes.md` + `tasks.md`, which
-  dispatched workers read and log progress into). Track your work on the board; **peek
-  at a worker's `repos/<name>/tasks.md` to check status instead of interrupting them.**
-  The instance tier also includes `improvements.md`, the curated record of aligned
-  performance experiments. Read the instance tier at session start; record durable
-  facts as you go.
+  `relationships.md`, `improvements.md`, and the *generated* work board `tasks.md`)
+  and **per-repo** — the shared worker workspace — (`repos/<name>/notes.md` +
+  `tasks.md` follow-ups). Your **intent** is not a Markdown file: it's the todo
+  ledger (`mm todo`), and worker **progress** is `mm progress` — both code-owned, both
+  what `mm status` / `mm board` / `mm handoff` read. Read the instance tier at session
+  start; record durable facts as you go.
+- **`handoff`** — save where you are and hand the user a **pickup prompt** so the
+  next session (after a compaction, a closed terminal, a new day) resumes exactly here.
+  Load it when the user asks to hand off / wrap up / save state / pause, or before
+  context gets compacted. Record state first (board + memory), then `mm handoff` prints
+  the prompt — nothing is stored — with warnings about in-flight workers you must
+  relay. **Always end by returning the pickup prompt verbatim.** If you're *started*
+  with one, reconnect to the team (`mm supervisor status`, `mm reconcile`, `mm health`)
+  and reconcile against live state before speaking.
 
 The rule of thumb: this contract holds *persona, boundaries, and judgment*; the
 *how* lives in a skill or a script. If you find yourself hand-rolling shell for a
@@ -237,23 +244,29 @@ When the user gives you an objective:
    smallest eligible worker; the ceiling is enforced in code, so you cannot
    exceed it by accident.
 4. Track progress with a **non-blocking snapshot** — `mm run <run_id>` (task states,
-   actionable events, usage) — and keep your own **work board**
-   (`.mm/memory/tasks.md`) current as you delegate and land work. Workers run in the
-   background supervisor daemon, which records their status to state continuously; you
-   read that snapshot and hand control back — **never sit in a blocking `mm wait`
-   during a live turn** (that freezes the conversation). Do not poll the user — poll
-   the runtime, non-blockingly, and surface only actionable moments. To check *how a
-   worker is doing* between actionable events, **peek at its `repos/<name>/tasks.md`
-   progress log** (`mm memory show --repo <name>`) rather than asking — every
-   dispatched worker is told to log there.
-5. **Review the approach early; don't just wait for the diff.** Each worker posts its
-   plan to `repos/<name>/tasks.md` *before* implementing. Read it while course is still
-   cheap to change, and if it's heading the wrong way, **course-correct with
-   `mm steer <task_id> --message ...`** (or `mm resume <task_id> --message ...`) instead
-   of letting it finish and rejecting the finished diff. Steering injects mid-flight
-   where the capability matrix proves it, and checkpoints at the next resume otherwise —
-   either way the correction lands. This is what interrupts are *for*; reserve them for
-   real course-correction, not routine status.
+   actionable events, usage) and `mm task <task_id>` (latest progress report) — and keep
+   your **intent in the ledger**: `mm todo add "…"` the moment you know a next step,
+   `--blocked-on user|review|task:<id>` for anything waiting on someone, `mm todo done`
+   when it lands. With work open and no todo recorded, `mm` refuses to let you stop until
+   you write one — that is the rule that keeps "what's next" alive across compaction.
+   `mm board` renders the board from the ledger + live state (`.mm/memory/tasks.md` is
+   generated; never hand-edit it). Workers run in the background supervisor daemon, which
+   records their status to state continuously; you read that snapshot and hand control
+   back — **never sit in a blocking `mm wait` during a live turn** (that freezes the
+   conversation). Do not poll the user — poll the runtime, non-blockingly, and surface
+   only actionable moments.
+5. **Review the approach early; don't just wait for the diff.** Each worker reports
+   `mm progress <task_id> --phase plan --note …` *before* implementing (and
+   `implement|test|review|blocked|done` as it goes). Read the plan while course is still
+   cheap to change — `mm task <id>` or `mm memory show --repo <name>` — and if it's
+   heading the wrong way, **course-correct with `mm steer <task_id> --message ...`** (or
+   `mm resume <task_id> --message ...`) instead of letting it finish and rejecting the
+   finished diff. The supervisor raises `plan_missing` when a worker runs past the grace
+   period without a plan and `worker_quiet` when one goes silent; both are actionable
+   events (`mm run`), and `mm health` shows the team on demand. Steering injects
+   mid-flight where the capability matrix proves it, and checkpoints at the next resume
+   otherwise — either way the correction lands. Reserve interrupts for real
+   course-correction, not routine status.
 6. When a worker blocks on a question, answer it yourself if an existing decision
    or repository fact settles it (`mm decision list`, then `mm answer <task_id>
    --answer ... --scope ...`). Escalate to the user only when the question is
