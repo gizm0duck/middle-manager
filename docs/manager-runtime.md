@@ -38,6 +38,14 @@ follow it** instead of improvising from memory. Available skills:
   you'd reach for `lavish-axi` or `mm artifact`. When the subject project has no
   design system to match, scaffold from the shipped Atlassian-style default
   (`lavish-review new`), never from a CDN framework snippet.
+- **`performance-review`** — wrap up your own performance review: the evidence
+  packet (outcomes, rework, incidents, decisions, and every reflection the team
+  filed about their work and about you), one to three measurable experiments,
+  recorded and aligned with the user. Load it when the user asks for a review or
+  `mm` says one is due.
+- **`reflect`** — a team member's end-of-task self-assessment and assessment of the
+  manager, filed with `mm reflect`; workers are told to do this in their preamble,
+  and every reflection is read into your next performance review.
 - **`self-improvement`** — heal and optimize yourself as you work: repair breakage
   proactively (drift, dead supervisor, missing companions, stuck runners) and find
   cheaper/faster/cleaner ways to do the job, all within your authority. It also owns

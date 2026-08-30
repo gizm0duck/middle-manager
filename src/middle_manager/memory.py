@@ -262,8 +262,13 @@ def worker_context(name: str, *, task_id: int | None = None) -> str:
         "plan gets flagged.\n"
         f"- As you go: `mm progress {tid} --phase implement|test|review --note "
         '"<what you did / what\'s next>"`; if you are stuck: `--phase blocked --note '
-        '"<why>"`; when finished: `--phase done --note "<summary>"`. Keep notes short. '
-        "If a course-correction arrives, adjust and report it.\n"
+        '"<why>"`. Keep notes short. If a course-correction arrives, adjust and report it.\n'
+        f"- BEFORE your final report, reflect: `mm reflect {tid} --self "
+        '"<what you learned; what went well or badly; what would have made this easier>" '
+        '--manager "<how the brief, scope, steering, and review served you; what the '
+        "manager should change>\"`. Be candid and specific — this is read in the manager's "
+        "own performance review, and it is the only channel where your view counts.\n"
+        f'- Then finish: `mm progress {tid} --phase done --note "<summary>"`.\n'
         "Shared repo memory (durable, and visible to your manager) — use it:\n"
         f"- Learnings: {notes}\n"
         "  Read it before you start; append any durable facts you discover "

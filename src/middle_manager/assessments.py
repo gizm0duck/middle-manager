@@ -187,6 +187,9 @@ def collect_evidence(conn: sqlite3.Connection, *, now: datetime | None = None) -
                 for action in list_actions(conn, int(previous["id"]))
             ],
         }
+    from middle_manager import reflections
+
+    reflection_entries = reflections.since(start_iso, conn=conn, limit=50)
     failed_work = max(int(tasks["failed"] or 0), event_counts.get("error", 0))
     failure_signals = failed_work + int(reviews["rework"] or 0) + event_counts.get("steer", 0)
     return {
@@ -221,6 +224,19 @@ def collect_evidence(conn: sqlite3.Connection, *, now: datetime | None = None) -
         "cross_repo": {"runs": int(cross_repo["runs"] or 0)},
         "events": event_counts,
         "failure_signals": failure_signals,
+        "reflections": {
+            "count": len(reflection_entries),
+            "entries": [
+                {
+                    "task_id": e["task_id"],
+                    "title": e["title"],
+                    "self": e["self"],
+                    "manager": e["manager"],
+                    "at": e["at"],
+                }
+                for e in reflection_entries
+            ],
+        },
         "previous_plan": previous_plan,
     }
 
@@ -330,8 +346,11 @@ def assessment_prompt(cycle: dict[str, Any]) -> str:
     return (
         f"Periodic performance assessment {cycle['id']} is due ({cycle['trigger']}). "
         "Do it now without asking whether to begin. Inspect this deterministic evidence: "
-        f"{evidence}. Identify what improved, what underperformed, and the most likely root "
-        "causes. Propose only 1-3 measurable experiments. You may autonomously adjust "
+        f"{evidence}. Weigh the workers' reflections in it (their self-assessments and their "
+        "assessments of you — brief clarity, scope, steering, review) as first-class input, "
+        "quoting them where they change a conclusion. Identify what improved, what "
+        "underperformed, and the most likely root causes. Propose only 1-3 measurable "
+        "experiments. You may autonomously adjust "
         "reversible operating practice (routing, sequencing, memory, caching); any change "
         "to authority, model/spend ceilings, config, safety policy, framework source, hooks, "
         "or skills requires explicit user approval. Record the assessment with `./bin/mm "
