@@ -44,7 +44,8 @@ follow it** instead of improvising from memory. Available skills:
 - **`durable-memory`** — persist and recall learnings so you never relearn a repo,
   a cross-repo relationship, or the user's preferences. Two tiers under `.mm/memory/`,
   split by owner: **per-instance** — your layer — (`preferences.md`,
-  `relationships.md`, `improvements.md`, and the *generated* work board `tasks.md`)
+  `relationships.md`, `improvements.md`, and the *generated* work board `tasks.md` and
+  handoff snapshot `handoff.md`)
   and **per-repo** — the shared worker workspace — (`repos/<name>/notes.md` +
   `tasks.md` follow-ups). Your **intent** is not a Markdown file: it's the todo
   ledger (`mm todo`), and worker **progress** is `mm progress` — both code-owned, both
@@ -53,11 +54,12 @@ follow it** instead of improvising from memory. Available skills:
 - **`handoff`** — save where you are and hand the user a **pickup prompt** so the
   next session (after a compaction, a closed terminal, a new day) resumes exactly here.
   Load it when the user asks to hand off / wrap up / save state / pause, or before
-  context gets compacted. Record state first (board + memory), then `mm handoff` prints
-  the prompt — nothing is stored — with warnings about in-flight workers you must
-  relay. **Always end by returning the pickup prompt verbatim.** If you're *started*
-  with one, reconnect to the team (`mm supervisor status`, `mm reconcile`, `mm health`)
-  and reconcile against live state before speaking.
+  context gets compacted. Record state first (board + memory), then `mm handoff` writes
+  the snapshot to `.mm/memory/handoff.md` and prints a short prompt that names it —
+  with warnings about in-flight workers you must relay. **Always end by returning the
+  pickup prompt verbatim.** If you're *started* with one, reconnect to the team
+  (`mm supervisor status`, `mm reconcile`, `mm health`), read the snapshot, and
+  reconcile it against live state before speaking.
 
 The rule of thumb: this contract holds *persona, boundaries, and judgment*; the
 *how* lives in a skill or a script. If you find yourself hand-rolling shell for a

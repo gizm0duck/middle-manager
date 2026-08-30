@@ -1346,3 +1346,32 @@ later dispatch failed the same way.
 Not changed: the worker ceiling config still names `gpt-5-codex`, which a ChatGPT-account
 Codex CLI rejects; the manager omits `--model` for Codex workers (documented in
 `_resolve_and_enforce`).
+
+## Handoff snapshot moves to a file (2026-08-30)
+
+The pickup prompt printed by `mm handoff` carried the whole snapshot inline — every
+open run, every task's latest progress note, every ledger item, every risk. With a
+real run open that was a screenful the user had to copy, paste, and scroll past, and it
+grew with the work rather than staying constant. On the user's direction the snapshot
+now goes to a file and the prompt names it (this reverses the 2026-08-29 "nothing is
+written to disk" decision recorded above; the earlier packet design was dropped
+because it duplicated the ledger, whereas this file is a *projection* of it, like the
+board).
+
+- **`mm handoff`** writes `.mm/memory/handoff.md` (`memory.handoff_path()`; generated,
+  never hand-edited, overwritten on every call): a header with the generation time,
+  the snapshot lines the prompt used to carry, and a **"Known risks at handoff"**
+  section. `build_handoff` returns `{prompt, warnings, snapshot, data}`; `--json`
+  includes the path.
+- **The pickup prompt** is now a fixed handful of lines: reconnect steps, "read the
+  snapshot at `<path>` (as of <time>: N open runs, M ledger items, K known risks)",
+  load ledger + memory, reconcile against live state, then the one-line greeting. The
+  path is shown relative to the working directory when the memory tree is under it,
+  absolute otherwise. Warnings still go to stderr so the manager can call the risks
+  out in plain words above the prompt.
+- **Contract/skill/role**: `docs/manager-runtime.md`, the `handoff` skill (resume side
+  gains "read the snapshot"), `_ROLE`, and the memory README/layout describe the file.
+- **Tests**: `tests/test_handoff.py` — snapshot content lands in the file, the prompt
+  names it and stays under a dozen lines without repeating run/task detail, absolute
+  path outside cwd, empty-state prompt, CLI/JSON. `make lint`, `make test`: **174
+  green**, 5 live deselected.
