@@ -508,7 +508,7 @@ def _cmd_hook(args: argparse.Namespace) -> int:
 
 
 def _cmd_handoff(args: argparse.Namespace) -> int:
-    """Print the pickup prompt (nothing is stored — durable state was recorded first)."""
+    """Write the snapshot to `.mm/memory/handoff.md` and print the short pickup prompt."""
     from middle_manager.handoff import build_handoff
 
     result = build_handoff()
@@ -1163,7 +1163,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     handoff = sub.add_parser(
         "handoff",
-        help="print a pickup prompt to resume this session later (records nothing)",
+        help="write the snapshot to .mm/memory/handoff.md and print a short pickup prompt",
     )
     handoff.add_argument("--json", action="store_true", help="machine-readable output")
     handoff.set_defaults(func=_cmd_handoff)

@@ -17,9 +17,9 @@ Everything durable about a run already lives in `.mm/state.db` and `.mm/memory/`
 What does **not** survive a compaction or a new session is *your* working context:
 what the user actually asked for, what you decided, what you were about to do next,
 and what you're waiting on. This skill has one rule — **record state first, then hand
-off** — and one deliverable: a paste-able pickup prompt. Nothing is stored by the
-handoff itself; the todo ledger, state, and memory are the record, and the prompt is
-built from them.
+off** — and one deliverable: a short, paste-able pickup prompt. The todo ledger,
+state, and memory are the record; `mm handoff` projects them into a snapshot file
+(`.mm/memory/handoff.md`) and the prompt names that file rather than carrying it.
 
 **Every invocation ends with the pickup prompt returned to the user, verbatim.** No
 exceptions, no "nothing to hand off" — an empty ledger still gets a prompt.
@@ -38,14 +38,15 @@ exceptions, no "nothing to hand off" — an empty ledger still gets a prompt.
    `repos/<name>/notes.md`) — see the `durable-memory` skill. `mm board` shows you the
    result; `.mm/memory/tasks.md` is generated from it, so don't edit that.
 2. **Check on the team and build the prompt.** Run `./bin/mm handoff`. It reads state
-   and the ledger, pings the supervisor, runs the worker health check, and prints the
-   pickup prompt — with a **"Known risks at handoff"** block covering anything that
-   could go wrong for in-flight work while you're gone: supervisor down or hung,
-   workers whose process is gone, workers that have gone quiet (possibly stuck),
-   workers that never posted a plan, workers still running that will queue
-   results/questions nobody answers, tasks idle on a question, finished work awaiting
-   review, and an empty ledger while runs are open. (`--json` gives you the same as
-   data.)
+   and the ledger, pings the supervisor, runs the worker health check, writes the
+   snapshot to `.mm/memory/handoff.md` — the ledger, every open run and task, and a
+   **"Known risks at handoff"** section covering anything that could go wrong for
+   in-flight work while you're gone: supervisor down or hung, workers whose process is
+   gone, workers that have gone quiet (possibly stuck), workers that never posted a
+   plan, workers still running that will queue results/questions nobody answers, tasks
+   idle on a question, finished work awaiting review, and an empty ledger while runs
+   are open — and prints a short pickup prompt that points at the file. The risks also
+   go to stderr (`--json` gives you everything as data).
 3. **Return the pickup prompt.** Your reply is: one dry, in-character line; then, if
    there are risks, **say them plainly above the prompt** in your own words — the user
    decides whether to wait, answer a worker, or go ("Two workers are mid-task; they'll
@@ -64,11 +65,13 @@ When a session starts with a pickup prompt, do what it says *before speaking*:
    `needs_recovery`) and `mm health` (silent workers). Resume what dropped with
    `mm resume <id>`; check a quiet worker's latest report with `mm task <id>` and steer
    or resume it.
-2. **Load the ledger and memory** — `mm todo list`, `mm board`, then preferences,
+2. **Read the snapshot** the prompt names (`.mm/memory/handoff.md`) — the ledger, open
+   runs, and known risks as of the handoff.
+3. **Load the ledger and memory** — `mm todo list`, `mm board`, then preferences,
    relationships, improvements, and each active repo's `notes.md`.
-3. **Reconcile the snapshot against live state** — `mm run <id>` per open run. The
-   prompt is a starting point; live state wins. Workers keep working between sessions;
-   `mm task <id>` shows each one's latest progress report.
+4. **Reconcile the snapshot against live state** — `mm run <id>` per open run. The
+   snapshot is a starting point; live state wins. Workers keep working between
+   sessions; `mm task <id>` shows each one's latest progress report.
 4. Greet with where things stand, anything that went wrong in the gap, and the single
    most actionable thing. The ledger stays the living record from here.
 
@@ -78,5 +81,6 @@ When a session starts with a pickup prompt, do what it says *before speaking*:
   Don't interrupt or wait on them to "clean up" before handing off.
 - Don't invent state. If a task's status surprises you, that's what reconciliation on
   resume is for — record what you *know* in the ledger, not what you assume.
+- Never hand-edit `.mm/memory/handoff.md`; it's regenerated on every `mm handoff`.
 - `.mm/` is machine-local and gitignored, but never write secrets, tokens, or
   credentials into a todo.

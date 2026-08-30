@@ -1,4 +1,4 @@
-"""Hermetic tests for `mm handoff`: a pickup prompt built from durable state, stored nowhere."""
+"""Hermetic tests for `mm handoff`: a snapshot file plus a short prompt that names it."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def test_alive_worker_warning_when_supervisor_up(mm_home, supervisor_up, monkeyp
     assert "Worker process gone" not in text
 
 
-def test_prompt_is_self_contained_and_stores_nothing(mm_home, no_supervisor) -> None:
+def test_snapshot_goes_to_file_and_prompt_names_it(mm_home, no_supervisor, monkeypatch) -> None:
     conn = init_db()
     ids = _seed(conn)
     a = board.add("review task 2 and deliver", run_id=ids["run_id"], conn=conn)
@@ -124,24 +124,46 @@ def test_prompt_is_self_contained_and_stores_nothing(mm_home, no_supervisor) -> 
         run_id=ids["run_id"],
         task_id=ids["running"],
     )
+    monkeypatch.chdir(mm_home.parent)
 
     result = handoff.build_handoff(conn)
     prompt = result["prompt"]
+    snapshot_path = memory.memory_dir() / "handoff.md"
+    snapshot = snapshot_path.read_text()
 
+    # The file carries the snapshot: ledger, open runs and tasks, known risks.
+    assert result["snapshot"] == str(snapshot_path)
+    assert snapshot.startswith("# Handoff snapshot")
+    assert (
+        f"- Next (todo ledger): #{a} review task 2 and deliver; #{b} answer task 3: v2" in snapshot
+    )
+    assert f"- Waiting (todo ledger): #{c} confirm the endpoint (waiting on user)" in snapshot
+    assert f'Run {ids["run_id"]} "ship the widget"' in snapshot
+    assert '"widget docs" (demo) — blocked · question: "v1 or v2 endpoint?"' in snapshot
+    assert '"build widget" (demo) — in_progress · phase implement ("wiring it up")' in snapshot
+    assert "## Known risks at handoff" in snapshot
+    assert "No next step is recorded" not in snapshot
+
+    # The prompt stays short and points at the file instead of repeating it.
     assert "Pick up where we left off" in prompt
     assert "mm supervisor status" in prompt and "mm reconcile" in prompt and "mm health" in prompt
     assert "mm todo list" in prompt
-    assert f"- Next (todo ledger): #{a} review task 2 and deliver; #{b} answer task 3: v2" in prompt
-    assert f"- Waiting (todo ledger): #{c} confirm the endpoint (waiting on user)" in prompt
-    assert f'Run {ids["run_id"]} "ship the widget"' in prompt
-    assert '"widget docs" (demo) — blocked · question: "v1 or v2 endpoint?"' in prompt
-    assert '"build widget" (demo) — in_progress · phase implement ("wiring it up")' in prompt
-    assert "Known risks at handoff" in prompt
-    assert "No next step is recorded" not in prompt
+    assert "`.mm/memory/handoff.md`" in prompt
+    assert "1 open run(s), 3 ledger item(s)" in prompt and "known risk(s)" in prompt
+    assert "ship the widget" not in prompt
+    assert "v1 or v2 endpoint?" not in prompt
+    assert "Known risks at handoff" not in prompt
     assert "greet me with one dry line" in prompt
-    # Nothing written anywhere but the board projection the ledger already maintains.
-    names = {p.name for p in memory.memory_dir().iterdir()}
-    assert "handoff.md" not in names
+    assert len(prompt.splitlines()) < 12
+
+
+def test_snapshot_path_is_absolute_when_outside_cwd(mm_home, no_supervisor, tmp_path, monkeypatch):
+    conn = init_db()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    prompt = handoff.build_handoff(conn)["prompt"]
+    assert f"`{memory.memory_dir() / 'handoff.md'}`" in prompt
 
 
 def test_session_context_for_hooks(mm_home, no_supervisor) -> None:
@@ -156,9 +178,13 @@ def test_session_context_for_hooks(mm_home, no_supervisor) -> None:
 
 def test_handoff_with_nothing_open_still_returns_a_prompt(mm_home, no_supervisor) -> None:
     result = handoff.build_handoff()
-    assert "Nothing in flight; nothing waiting on me." in result["prompt"]
+    assert "nothing in flight; nothing waiting on me" in result["prompt"]
     assert result["warnings"] == []
     assert "Known risks" not in result["prompt"]
+    assert (
+        "- Nothing in flight; nothing waiting on me."
+        in (memory.memory_dir() / "handoff.md").read_text()
+    )
 
 
 def test_cli_handoff_prints_prompt_and_warnings(mm_home, no_supervisor, capsys) -> None:
@@ -172,5 +198,6 @@ def test_cli_handoff_prints_prompt_and_warnings(mm_home, no_supervisor, capsys) 
 
     assert main(["handoff", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert set(payload) == {"prompt", "warnings", "data"}
+    assert set(payload) == {"prompt", "warnings", "snapshot", "data"}
+    assert payload["snapshot"].endswith("handoff.md")
     assert payload["data"]["open_runs"][0]["objective"] == "ship the widget"
