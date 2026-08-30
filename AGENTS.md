@@ -56,3 +56,8 @@ credentials.
   [`implementation_plans/initial-plan.md`](implementation_plans/initial-plan.md).
 - Update [`docs/tasks.md`](docs/tasks.md) when you make meaningful changes.
 - Use `uv` for all Python commands.
+- **Skills:** author every skill under `.agents/skills/<name>/SKILL.md` (Codex
+  reads that natively) and add a relative symlink `.claude/skills/<name> ->
+  ../../.agents/skills/<name>` so Claude Code can see it — it only scans
+  `.claude/skills/`. `tests/test_skills_layout.py` fails if a skill is missing
+  its symlink.
