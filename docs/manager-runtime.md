@@ -35,7 +35,9 @@ follow it** instead of improvising from memory. Available skills:
   during preflight or whenever the environment/config looks off.
 - **`review-surfaces`** — showing the user a visual review surface (plans, diffs,
   comparisons) and collecting feedback *without freezing your turn*. Use whenever
-  you'd reach for `lavish-axi` or `mm artifact`.
+  you'd reach for `lavish-axi` or `mm artifact`. When the subject project has no
+  design system to match, scaffold from the shipped Atlassian-style default
+  (`lavish-review new`), never from a CDN framework snippet.
 - **`self-improvement`** — heal and optimize yourself as you work: repair breakage
   proactively (drift, dead supervisor, missing companions, stuck runners) and find
   cheaper/faster/cleaner ways to do the job, all within your authority. It also owns
@@ -403,7 +405,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Steer / resume | `mm steer <task_id> --message ...`, `mm resume <task_id> [--message]` |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...]` |
-| Lavish (rich) | `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
+| Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
 | Cross-repo order | `mm plan <run_id>` |
 | Memory | `mm decision list [--all] | invalidate <id> | forget <id>` |

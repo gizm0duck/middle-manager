@@ -24,15 +24,42 @@ hand-off — you open the surface, step back, and pick up their notes later.
   `lavish-axi poll` yourself (that long-polls and will freeze your turn):
 
   ```bash
+  scripts/lavish-review new   <file> --title "…"   # scaffold from the shipped default (below)
   scripts/lavish-review open  <file>   # opens the surface + backgrounds the poller
   # ... end your turn; let the user annotate ...
   scripts/lavish-review drain <file>   # read whatever they've left (non-blocking)
   scripts/lavish-review stop  <file>   # when you're done with the surface
   ```
 
-  Author the HTML yourself first. Learn `lavish-axi`'s current authoring surface
-  live (`lavish-axi --help`, `lavish-axi design`, `lavish-axi playbook <id>`) — do
-  not assume flags. Advanced authoring is fine; just never foreground the poll.
+  Author the HTML yourself. Learn `lavish-axi`'s current authoring surface live
+  (`lavish-axi --help`, `lavish-axi playbook <id>` — `input` for anything that
+  collects decisions) — do not assume flags. Advanced authoring is fine; just never
+  foreground the poll.
+
+## Pick the design
+
+Decide in this order and say which one you used when you hand the surface over:
+
+1. **The user named a look or a design system** — use that.
+2. **The subject project has a design system** — the product the surface is *about*,
+   which may not be the repo you are in: its Tailwind/theme config, CSS tokens,
+   component library, brand assets, or existing styled pages. A surface that
+   previews or proposes that product's UI is rendered in that product's system.
+3. **Otherwise, the shipped default: `lavish-review new`.** It writes one
+   self-contained file with Middle Manager's Atlassian-style stylesheet
+   (`assets/ads.css`: ADS-named tokens, light and dark, lozenges, section
+   messages, dynamic tables, stat tiles, cards, native-control forms, disclosures)
+   inlined, and a starter layout (`assets/surface.html`: header → key numbers →
+   verdict → one card per decision with its own *Queue answer* form → evidence
+   table → folded reference). Replace the placeholder content; keep the classes.
+   Do **not** fall back to the Tailwind/DaisyUI CDN snippet that `lavish-axi
+   design` suggests — the default exists so surfaces from this manager look like
+   one product, render offline, and never depend on a CDN.
+
+  Whichever source: no horizontal overflow at any nesting level (tables go inside
+  `.ads-table-wrap`), native controls for choices, one queued prompt per decision
+  from the form's submit — never from a radio change — and a clear *Send to Agent*
+  path at the end.
 
 - **Local fallback (always available): `mm`.** If `lavish-axi`/Node is missing, use
   the built-in surface: `mm artifact <run_id> --title ... --sections '[...]'` to
@@ -48,6 +75,12 @@ hand-off — you open the surface, step back, and pick up their notes later.
 4. When they say they've left notes (or on your next natural turn), `drain` /
    `mm feedback` to collect annotations, act on them, and report the outcome.
 5. `stop` the poller when the review is finished.
+
+If the browser says the agent is not listening, the background poller died (a
+session restart takes it with it): `lavish-review open <file>` again re-arms it.
+When your harness offers a *tracked* background job that wakes you on completion,
+arming `lavish-axi poll <file>` through that instead is better still — the user's
+answer then interrupts you rather than waiting for your next turn.
 
 ## Boundaries
 
