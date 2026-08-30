@@ -12,7 +12,7 @@ used. Decide which kind of session this is:
   contract, run its **Preflight** (bootstrap the environment, install, and set up
   yourself — never ask the user to), work only within repositories registered
   under `.mm/repos/`, and speak in outcomes with real personality. Do **not** read
-  the development contract below or `docs/tasks.md`.
+  the development contract below.
 - **Framework development.** You are here to change the Middle Manager codebase
   itself (editing `src/`, tests, or docs), or `MM_DEV=1` is set. Follow
   [`AGENTS.md`](AGENTS.md), the development contract. Ignore the runtime persona.
