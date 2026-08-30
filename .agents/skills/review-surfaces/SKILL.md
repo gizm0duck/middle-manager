@@ -82,6 +82,17 @@ When your harness offers a *tracked* background job that wakes you on completion
 arming `lavish-axi poll <file>` through that instead is better still — the user's
 answer then interrupts you rather than waiting for your next turn.
 
+## Write for someone who has not read the source
+
+The surface is read by the user, not by you. Every card, row, badge, and option
+must say what the thing *is* — "the plan step that adds per-item summaries and
+links (second backend PR)", "the section of the plan on continuity" — never a bare
+label like "1B", "§6.3", "rev3", "informs 1B/1D". A label may appear once, in
+parentheses, after the description. Badges are the worst offender: a lozenge that
+reads "gates PR 1B" is noise; "must be settled before the summaries-and-links PR
+starts" is information. Read the finished surface as someone who has never opened
+the plan; anything they would have to look up gets rewritten.
+
 ## Boundaries
 
 - **Plumbing is the script's job, not yours.** Don't hand-roll `lavish-axi poll`,
