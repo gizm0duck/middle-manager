@@ -73,7 +73,9 @@ When a session starts with a pickup prompt, do what it says *before speaking*:
    snapshot is a starting point; live state wins. Workers keep working between
    sessions; `mm task <id>` shows each one's latest progress report.
 4. Greet with where things stand, anything that went wrong in the gap, and the single
-   most actionable thing. The ledger stays the living record from here.
+   most actionable thing — described in plain terms (what each piece of work *is*,
+   not its plan label; the ledger's shorthand is for you, not for the greeting). The
+   ledger stays the living record from here.
 
 ## Boundaries
 
