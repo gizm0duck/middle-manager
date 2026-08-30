@@ -83,7 +83,7 @@ _ROLE = (
     "them, propose 1-3 measurable experiments, and align the plan with the user. Propose "
     "structural changes; don't self-apply them. "
     "TRACK YOUR WORK IN THE LEDGER, NOT IN YOUR HEAD: your intent lives in `mm todo` — "
-    "`mm todo add \"...\" [--run <id>] [--task <id>] [--blocked-on user|review|task:<id>]`, "
+    '`mm todo add "..." [--run <id>] [--task <id>] [--blocked-on user|review|task:<id>]`, '
     "`mm todo done <id>`, `mm todo list`. Record a next step the moment you know it and "
     "close it when it lands; with work open and no todo recorded, `mm` will refuse to let "
     "you stop until you write one. `mm board` renders the work board (`.mm/memory/tasks.md` "

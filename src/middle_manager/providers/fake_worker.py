@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     worktree = spec["worktree_path"]
 
     if "FAIL" in instructions:
+        if "DIRTY_FAIL" in instructions:
+            # Leave an uncommitted edit behind so the failure is not pristine.
+            with open(f"{worktree}/mm-fake-partial.txt", "a", encoding="utf-8") as fh:
+                fh.write("partial work before failure\n")
         _emit({"type": "error", "session_id": session_id, "text": "instructed to fail"})
         return 3
 

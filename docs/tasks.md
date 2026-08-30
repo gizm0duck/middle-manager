@@ -1321,3 +1321,28 @@ manager"), not the `/` menu; the symlink is what makes either path work in Claud
   matching relative symlink in `.claude/skills/` that resolves, and nothing else may
   live in `.claude/skills/`. Adding a skill without its symlink now fails `make test`.
 - `AGENTS.md` operating discipline records the rule.
+
+## Lease lifecycle on dispatch and worker failure (2026-08-30)
+
+Two runtime failures from a real session: a dispatch whose treehouse lease could not
+be acquired left a `requested` task with no runner and printed `dispatch failed:
+None`; and workers that failed instantly (Codex rejecting an explicit model name)
+kept their leases forever, so the 4-slot pool filled with dead worktrees and every
+later dispatch failed the same way.
+
+- `Supervisor.dispatch_task` now catches `LeaseError`: the task row (already created
+  because the branch name carries the task id) is marked `failed`, an `error` event
+  records the lease reason, and the caller gets `SupervisorError("task N: no worktree
+  lease: …")` instead of a bare failure.
+- `Supervisor._run_task` calls `_release_lease_if_pristine` after every run: a task
+  that ended `failed` with a clean worktree at its base SHA has its lease released
+  (branch removed) and a `lease_released` event appended. A dirty or advanced
+  worktree is kept for inspection and `mm resume`.
+- Fake worker gains a `DIRTY_FAIL` marker (writes an uncommitted file, then fails).
+- Tests: [`test_lease_lifecycle.py`](../tests/test_lease_lifecycle.py) — lease failure
+  marks the task failed with the reason and leaves no active lease; pristine failure
+  releases; dirty failure keeps.
+
+Not changed: the worker ceiling config still names `gpt-5-codex`, which a ChatGPT-account
+Codex CLI rejects; the manager omits `--model` for Codex workers (documented in
+`_resolve_and_enforce`).
