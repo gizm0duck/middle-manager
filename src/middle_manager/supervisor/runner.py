@@ -56,6 +56,23 @@ def _finalize_worktree(spec: TaskSpec, summary: str) -> str | None:
 _TERMINAL_STATUS = {"completed": "worker_done", "blocked": "blocked", "failed": "failed"}
 
 
+def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a worker process: it can call ``mm`` from its worktree.
+
+    ``mm`` resolves ``.mm`` from the cwd unless ``MM_HOME`` is set, and a worker's cwd
+    is its leased worktree — so pin ``MM_HOME`` to this instance and put the repo's
+    ``bin/`` first on PATH. That is what makes ``mm progress`` work for workers.
+    """
+    from middle_manager.manager.launch import repo_root
+    from middle_manager.paths import mm_home
+
+    env = dict(base if base is not None else os.environ)
+    env["MM_HOME"] = str(mm_home())
+    bin_dir = os.path.join(repo_root(), "bin")
+    env["PATH"] = os.pathsep.join([bin_dir, env.get("PATH", "")])
+    return env
+
+
 class RunnerGuardian:
     def __init__(self, adapter: ProviderAdapter) -> None:
         self.adapter = adapter
@@ -84,9 +101,7 @@ class RunnerGuardian:
         spool = EventSpool(spec.run_id, spec.task_id)
 
         argv = self.adapter.resume(spec) if spec.resume_session_id else self.adapter.start(spec)
-        env = None
-        if hasattr(self.adapter, "child_env"):
-            env = self.adapter.child_env()
+        env = worker_env(self.adapter.child_env() if hasattr(self.adapter, "child_env") else None)
 
         self._proc = subprocess.Popen(
             argv,

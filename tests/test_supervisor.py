@@ -64,7 +64,9 @@ def test_dispatch_wires_repo_memory_into_worker(server, source_repo, monkeypatch
     added = repos.add_repo(source_repo)
     seen: list[str] = []
     real = memory.worker_context
-    monkeypatch.setattr(memory, "worker_context", lambda name: seen.append(name) or real(name))
+    monkeypatch.setattr(
+        memory, "worker_context", lambda name, **kw: seen.append(name) or real(name, **kw)
+    )
 
     srv, client = server
     resp = client.dispatch_task(repo=added.name, title="wire memory")

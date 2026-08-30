@@ -152,7 +152,7 @@ class Supervisor:
             model=model,
             reasoning=reasoning,
             run_id=run_id,
-            memory_preamble=memory.worker_context(repo),
+            memory_preamble=memory.worker_context(repo, task_id=task_id),
         )
         adapter = _adapter_for(provider)
         runner = RunnerGuardian(adapter)

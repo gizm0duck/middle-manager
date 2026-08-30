@@ -9,7 +9,9 @@ per-task runner already normalizes worker streams without hooks.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 from typing import Any
 
@@ -56,26 +58,66 @@ def handle_hook(event: str, payload: dict[str, Any]) -> dict:
     # Codex and Claude both accept additional context at session start and a
     # blocking continuation at Stop. The stop-active guard is supplied by the
     # harness and prevents the continuation from recursively triggering itself.
-    if normalized in ("session_start", "stop"):
-        from middle_manager import assessments
-
-        context = assessments.hook_context(conn)
-        cycle = assessments.latest_cycle(conn)
-        if context and normalized == "session_start":
+    if normalized == "session_start":
+        context = session_start_context(conn)
+        if context:
             result["additionalContext"] = context
             result["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",
                 "additionalContext": context,
             }
-        elif (
-            context
-            and cycle is not None
-            and cycle["status"] == "ready"
-            and normalized == "stop"
-            and not payload.get("stop_hook_active", False)
-        ):
-            result.update({"decision": "block", "reason": context})
+    elif normalized == "stop" and not payload.get("stop_hook_active", False):
+        reason = stop_block_reason(conn)
+        if reason:
+            result.update({"decision": "block", "reason": reason})
     return result
+
+
+def session_start_context(conn) -> str | None:
+    """What a (re)starting manager needs to know before its first reply.
+
+    Fires on a fresh session *and* after a compaction, so it carries the durable
+    pickup context: open todos, live work, team health — plus any due assessment.
+    """
+    from middle_manager import assessments, handoff
+
+    parts: list[str] = []
+    with contextlib.suppress(Exception):  # a hook must never break the harness
+        parts.append(handoff.render_session_context(handoff.collect(conn)))
+    assessment = assessments.hook_context(conn)
+    if assessment:
+        parts.append(assessment)
+    return "\n\n".join(p for p in parts if p) or None
+
+
+def stop_block_reason(conn) -> str | None:
+    """Refuse to stop while work is open and no next step is recorded.
+
+    This is the one place a prompt-level habit becomes a hard rule: with tasks in
+    flight or waiting on the manager, an empty todo ledger means "what's next" would
+    be lost to the next compaction. Skipped for framework-development sessions
+    (``MM_DEV``) and when there is nothing open.
+    """
+    from middle_manager import assessments, board
+
+    assessment = assessments.hook_context(conn)
+    cycle = assessments.latest_cycle(conn)
+    if assessment and cycle is not None and cycle["status"] == "ready":
+        return assessment
+    if os.environ.get("MM_DEV"):
+        return None
+    open_tasks = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status IN "
+        "('requested','in_progress','worker_done','blocked','needs_recovery','failed')"
+    ).fetchone()[0]
+    if open_tasks and not board.open_todos(conn):
+        return (
+            f"{open_tasks} task(s) are open but no next step is recorded. Before stopping, "
+            'write down what happens next so it survives compaction: `mm todo add "..."` '
+            "for each next step (use `--blocked-on user|review|task:<id>` for anything "
+            "waiting on someone). Then reply to the user as you were going to."
+        )
+    return None
 
 
 def handle_hook_stdin(event: str, raw: str) -> dict:

@@ -29,7 +29,9 @@ Prefer the reversible repair over stopping to ask.
   steering, and tell the user in one sentence.
 - **Supervisor down** when you need to dispatch or wait → start it yourself
   (`mm supervisor serve` in the background), confirm with `mm supervisor status`.
-- **Half-alive runners or stuck tasks** → `mm reconcile`, then continue.
+- **Half-alive runners or stuck tasks** → `mm health` to see who's dead, quiet, or
+  planless; `mm reconcile` for dead runners; `mm task <id>` then steer/resume for the
+  quiet ones. Then continue.
 - **A command hangs or a path clearly isn't working** → stop it and take the better
   route (the right script or skill) instead of waiting it out. A frozen turn is a
   bug, not patience.

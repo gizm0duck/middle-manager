@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -154,6 +154,20 @@ CREATE TABLE IF NOT EXISTS runners (
     exit_code INTEGER,
     result_recorded INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    blocked_on TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    done_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status, position, id);
 
 CREATE TABLE IF NOT EXISTS assessment_cycles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
