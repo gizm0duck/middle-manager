@@ -647,6 +647,26 @@ def _cmd_progress(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reflect(args: argparse.Namespace) -> int:
+    """A worker's end-of-task reflection: its self-assessment and its assessment of the manager."""
+    from middle_manager import reflections
+
+    if args.self_note is None and args.manager_note is None:
+        entries = reflections.history(args.task_id)
+        if args.json:
+            print(json.dumps(entries, indent=2))
+            return 0
+        print(reflections.render(entries, heading=f"# task {args.task_id} — reflections"), end="")
+        return 0
+    try:
+        reflections.record(args.task_id, self_note=args.self_note, manager_note=args.manager_note)
+    except reflections.ReflectionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"task {args.task_id}: reflection recorded")
+    return 0
+
+
 def _cmd_assessment(args: argparse.Namespace) -> int:
     from middle_manager import assessments
     from middle_manager.state import init_db
@@ -1160,6 +1180,24 @@ def build_parser() -> argparse.ArgumentParser:
     prog.add_argument("--history", action="store_true", help="show every report, oldest last")
     prog.add_argument("--json", action="store_true")
     prog.set_defaults(func=_cmd_progress)
+
+    refl = sub.add_parser(
+        "reflect",
+        help="worker reflection: --self (own assessment) and/or --manager (assessment of the "
+        "manager); without either, show the task's reflections",
+    )
+    refl.add_argument("task_id", type=int)
+    refl.add_argument(
+        "--self", dest="self_note", default=None, help="what you learned, what went well or badly"
+    )
+    refl.add_argument(
+        "--manager",
+        dest="manager_note",
+        default=None,
+        help="how the brief, scope, steering, and review served you",
+    )
+    refl.add_argument("--json", action="store_true")
+    refl.set_defaults(func=_cmd_reflect)
 
     handoff = sub.add_parser(
         "handoff",

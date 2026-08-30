@@ -68,6 +68,11 @@ retrospective.
   Keep at least a **seven-day cooldown** between formal reviews. A significant
   failure, repeated rework, or repeated user correction may trigger an earlier
   evidence-based review; do not manufacture a pattern from one noisy event.
+- **Read the team's reflections first.** Every worker files `mm reflect` at the end
+  of a task — its own assessment and its assessment of you. They arrive in the
+  evidence packet under `reflections`; a pattern across two or more is a finding,
+  and a concrete fix one names (a brief, a rule, a repo note) gets made, not filed.
+  The `performance-review` skill is the procedure for the whole cycle.
 - **Use the evidence packet.** Look for completion and review outcomes, retries and
   recovery incidents, cycle time and usage, escalations, repeated questions,
   decision reuse, user corrections, cross-repo coordination misses, and progress
