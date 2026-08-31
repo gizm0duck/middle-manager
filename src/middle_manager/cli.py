@@ -393,7 +393,21 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
     try:
         if args.review_cmd == "show":
+            from middle_manager import progress
+
             bundle = build_bundle(args.task_id)
+            # The worker's own report comes first, in full: judging a diff without
+            # the evidence the worker filed is how a complete report was once read
+            # as "missing".
+            reports = progress.history(args.task_id)
+            latest = progress.latest(args.task_id)
+            if latest is not None:
+                print(
+                    f"worker report ({latest['phase']}, {len(reports)} report(s); "
+                    f"full log: mm progress {args.task_id}):"
+                )
+                print(latest["note"] or "(no note)")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
