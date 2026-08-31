@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch TEXT,
     worktree_path TEXT,
     lease_id TEXT,
+    stacked_on TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -231,6 +232,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     on a pre-existing DB are added here. Additions are idempotent (guarded by
     ``PRAGMA table_info``) so this is safe to run on fresh databases too.
     """
+    task_cols = _column_names(conn, "tasks")
+    if "stacked_on" not in task_cols:
+        # The branch a stacked task started from; delivery targets it by default.
+        conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:

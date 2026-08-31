@@ -238,6 +238,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             model=args.model,
             reasoning=args.reasoning,
             run_id=args.run_id,
+            base=args.base,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -1096,6 +1097,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--reasoning", default=None, help="worker reasoning (clamped to ceiling)")
     dispatch.add_argument(
         "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
+    )
+    dispatch.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "start the worker from origin/<branch> instead of the repo base (stacked "
+            "PRs); recorded on the task so `mm deliver` opens the PR against it"
+        ),
     )
     dispatch.set_defaults(func=_cmd_dispatch)
 

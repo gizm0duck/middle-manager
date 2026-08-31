@@ -58,6 +58,10 @@ def deliver(
     branch = task["branch"]
     if not worktree or not branch:
         raise DeliveryError("task has no worktree/branch to deliver")
+    if base is None and "stacked_on" in task.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
+        # A task dispatched with --base opens its PR against that branch unless
+        # the caller says otherwise; stacked PRs no longer depend on remembering.
+        base = task["stacked_on"] or None
 
     # The gate: never ship work that was not reviewed at its current head.
     approved, reason = is_approved_at_head(task_id)

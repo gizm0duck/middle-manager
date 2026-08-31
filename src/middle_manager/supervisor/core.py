@@ -53,6 +53,31 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def _start_from_branch(worktree_path: str, branch: str) -> str:
+    """Move a fresh worktree onto ``origin/<branch>`` and return the resulting HEAD."""
+    import subprocess
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", worktree_path, *args], capture_output=True, text=True, check=False
+        )
+
+    fetched = git("fetch", "--quiet", "origin", branch)
+    if fetched.returncode != 0:
+        raise SupervisorError(
+            f"cannot start from {branch!r}: git fetch origin {branch} failed: "
+            f"{fetched.stderr.strip()[:200]}"
+        )
+    reset = git("reset", "--hard", "--quiet", f"origin/{branch}")
+    if reset.returncode != 0:
+        raise SupervisorError(
+            f"cannot start from {branch!r}: git reset --hard origin/{branch} failed: "
+            f"{reset.stderr.strip()[:200]}"
+        )
+    head = git("rev-parse", "HEAD")
+    return head.stdout.strip()
+
+
 class Supervisor:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -76,6 +101,7 @@ class Supervisor:
         run_id: int | None = None,
         model: str | None = None,
         reasoning: str | None = None,
+        base: str | None = None,
     ) -> dict:
         conn = init_db()
         repo_row = store.get_repo(conn, repo)
@@ -136,18 +162,46 @@ class Supervisor:
                 task_id=task_id,
             )
             raise SupervisorError(f"task {task_id}: no worktree lease: {exc}") from exc
+        base_sha = lease.base_sha
+        if base:
+            # Stacked work starts from the exact tip of the branch it builds on, not
+            # from the repo's base. A worker cannot be redirected after it starts,
+            # and a wrong starting commit cost a dispatch on 2026-08-30.
+            try:
+                base_sha = _start_from_branch(lease.worktree_path, base)
+            except SupervisorError as exc:
+                store.set_task_status(conn, task_id, "failed")
+                store.append_event(
+                    conn,
+                    kind="error",
+                    payload={"task_id": task_id, "summary": str(exc)},
+                    run_id=run_id,
+                    task_id=task_id,
+                )
+                with self._lock:
+                    self._leases[task_id] = (lease, repo_row["local_path"])
+                with contextlib.suppress(Exception):
+                    self.release_task_lease(task_id, remove_branch=True)
+                raise
         store.update_task_fields(
             conn,
             task_id,
-            base_sha=lease.base_sha,
+            base_sha=base_sha,
             branch=lease.branch,
             worktree_path=lease.worktree_path,
             lease_id=lease.id,
+            stacked_on=base,
         )
         store.append_event(
             conn,
             kind="dispatched",
-            payload={"task_id": task_id, "title": title, "provider": provider, "lease": lease.id},
+            payload={
+                "task_id": task_id,
+                "title": title,
+                "provider": provider,
+                "lease": lease.id,
+                "stacked_on": base,
+            },
             run_id=run_id,
             task_id=task_id,
         )
@@ -164,7 +218,7 @@ class Supervisor:
             title=title,
             instructions=instructions,
             worktree_path=lease.worktree_path,
-            base_sha=lease.base_sha or "",
+            base_sha=base_sha or "",
             provider=provider,
             model=model,
             reasoning=reasoning,
