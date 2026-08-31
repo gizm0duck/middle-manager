@@ -9,6 +9,7 @@ supervisor restart.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import threading
 import time
@@ -52,6 +53,31 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def _start_from_branch(worktree_path: str, branch: str) -> str:
+    """Move a fresh worktree onto ``origin/<branch>`` and return the resulting HEAD."""
+    import subprocess
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", worktree_path, *args], capture_output=True, text=True, check=False
+        )
+
+    fetched = git("fetch", "--quiet", "origin", branch)
+    if fetched.returncode != 0:
+        raise SupervisorError(
+            f"cannot start from {branch!r}: git fetch origin {branch} failed: "
+            f"{fetched.stderr.strip()[:200]}"
+        )
+    reset = git("reset", "--hard", "--quiet", f"origin/{branch}")
+    if reset.returncode != 0:
+        raise SupervisorError(
+            f"cannot start from {branch!r}: git reset --hard origin/{branch} failed: "
+            f"{reset.stderr.strip()[:200]}"
+        )
+    head = git("rev-parse", "HEAD")
+    return head.stdout.strip()
+
+
 class Supervisor:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -75,6 +101,7 @@ class Supervisor:
         run_id: int | None = None,
         model: str | None = None,
         reasoning: str | None = None,
+        base: str | None = None,
     ) -> dict:
         conn = init_db()
         repo_row = store.get_repo(conn, repo)
@@ -135,18 +162,46 @@ class Supervisor:
                 task_id=task_id,
             )
             raise SupervisorError(f"task {task_id}: no worktree lease: {exc}") from exc
+        base_sha = lease.base_sha
+        if base:
+            # Stacked work starts from the exact tip of the branch it builds on, not
+            # from the repo's base. A worker cannot be redirected after it starts,
+            # and a wrong starting commit cost a dispatch on 2026-08-30.
+            try:
+                base_sha = _start_from_branch(lease.worktree_path, base)
+            except SupervisorError as exc:
+                store.set_task_status(conn, task_id, "failed")
+                store.append_event(
+                    conn,
+                    kind="error",
+                    payload={"task_id": task_id, "summary": str(exc)},
+                    run_id=run_id,
+                    task_id=task_id,
+                )
+                with self._lock:
+                    self._leases[task_id] = (lease, repo_row["local_path"])
+                with contextlib.suppress(Exception):
+                    self.release_task_lease(task_id, remove_branch=True)
+                raise
         store.update_task_fields(
             conn,
             task_id,
-            base_sha=lease.base_sha,
+            base_sha=base_sha,
             branch=lease.branch,
             worktree_path=lease.worktree_path,
             lease_id=lease.id,
+            stacked_on=base,
         )
         store.append_event(
             conn,
             kind="dispatched",
-            payload={"task_id": task_id, "title": title, "provider": provider, "lease": lease.id},
+            payload={
+                "task_id": task_id,
+                "title": title,
+                "provider": provider,
+                "lease": lease.id,
+                "stacked_on": base,
+            },
             run_id=run_id,
             task_id=task_id,
         )
@@ -163,7 +218,7 @@ class Supervisor:
             title=title,
             instructions=instructions,
             worktree_path=lease.worktree_path,
-            base_sha=lease.base_sha or "",
+            base_sha=base_sha or "",
             provider=provider,
             model=model,
             reasoning=reasoning,
@@ -278,9 +333,18 @@ class Supervisor:
         adapter = _adapter_for(provider)
         can_interrupt = getattr(adapter, "supports_interrupt_steer", lambda: False)()
 
-        terminal = task["status"] in ("worker_done", "blocked", "failed")
-        if terminal:
-            return {"mode": "checkpoint", **self.resume_task(task_id, message)}
+        # A steer only reaches a worker that is actually mid-turn. A finished,
+        # delivered, blocked, or failed task — or one whose runner process has
+        # already exited — has no turn to interrupt and no checkpoint coming, so
+        # the only way the message can land is by resuming the session with it.
+        # (Queueing it "for the checkpoint" of a turn that already ended is how a
+        # steer silently vanished on 2026-08-31.)
+        if not self._has_live_turn(conn, task):
+            return {
+                "mode": "resume",
+                "note": "no live worker turn; resumed the session with the steer",
+                **self.resume_task(task_id, message),
+            }
 
         if can_interrupt:
             with self._lock:
@@ -312,8 +376,57 @@ class Supervisor:
         return {
             "mode": "checkpoint_pending",
             "task_id": task_id,
-            "note": "provider does not support mid-flight steer; queued for checkpoint",
+            "note": (
+                "provider does not support mid-flight steer; queued and applied "
+                "automatically when the current turn ends"
+            ),
         }
+
+    NO_LIVE_TURN_STATUSES = ("worker_done", "delivered", "blocked", "failed", "needs_recovery")
+
+    def _has_live_turn(self, conn, task) -> bool:
+        """True only while a worker process is actually running a turn for the task."""
+        if task["status"] in self.NO_LIVE_TURN_STATUSES:
+            return False
+        runner = conn.execute(
+            "SELECT status FROM runners WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+            (task["id"],),
+        ).fetchone()
+        return bool(runner) and runner["status"] in ("starting", "running")
+
+    def _apply_pending_steer(self, spec: TaskSpec) -> None:
+        """Deliver a checkpoint-queued steer now that the worker's turn has ended.
+
+        ``steer_task`` promises "applied at the checkpoint"; this is that
+        checkpoint. The newest ``checkpoint_pending`` steer not yet followed by a
+        ``steer_applied`` event is resumed into the session exactly once.
+        """
+        conn = init_db()
+        rows = conn.execute(
+            "SELECT id, kind, payload FROM events WHERE task_id = ? "
+            "AND kind IN ('steer', 'steer_applied') ORDER BY id DESC",
+            (spec.task_id,),
+        ).fetchall()
+        pending: tuple[int, str] | None = None
+        for row in rows:
+            if row["kind"] == "steer_applied":
+                break  # everything older was already delivered
+            payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else {}
+            if payload.get("mode") == "checkpoint_pending":
+                pending = (int(row["id"]), str(payload.get("message") or ""))
+                break
+        if pending is None:
+            return
+        event_id, message = pending
+        store.append_event(
+            conn,
+            kind="steer_applied",
+            payload={"task_id": spec.task_id, "steer_event": event_id},
+            run_id=spec.run_id,
+            task_id=spec.task_id,
+        )
+        with contextlib.suppress(Exception):  # a failed resume is visible in events
+            self.resume_task(spec.task_id, message)
 
     def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
         try:
@@ -331,6 +444,8 @@ class Supervisor:
         else:
             if result.status == "blocked" and result.question:
                 self._maybe_auto_answer(spec, result.question)
+            else:
+                self._apply_pending_steer(spec)
         # A task that failed without touching its worktree has nothing worth
         # keeping; hand the slot back so the pool cannot fill up with dead leases.
         with contextlib.suppress(Exception):  # lease hygiene never breaks worker completion
@@ -508,11 +623,19 @@ class Supervisor:
         terminal = {"worker_done", "blocked", "failed", "delivered", "cancelled"}
         return all(t["status"] in terminal for t in tasks)
 
-    def wait_actionable(self, run_id: int, timeout: float = 30.0) -> dict:
+    def wait_actionable(self, run_id: int, timeout: float = 30.0, after_seq: int = 0) -> dict:
+        """Block until the run has actionable events newer than ``after_seq`` (a cursor).
+
+        Without the cursor a caller keeps seeing the same finished worker forever;
+        watchers keyed on status strings then produce false "done" ticks. Pass the
+        highest ``seq`` already handled to hear only what is new.
+        """
         deadline = time.monotonic() + timeout
         while True:
             conn = init_db()
-            actionable = store.actionable_events(conn, run_id)
+            actionable = [
+                e for e in store.actionable_events(conn, run_id) if int(e["seq"]) > after_seq
+            ]
             if actionable or self._all_terminal(run_id):
                 return {
                     "run_id": run_id,

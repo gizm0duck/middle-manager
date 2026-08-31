@@ -2,7 +2,10 @@
 
 Canonical state lives under a gitignored ``.mm/`` directory (see the technical
 plan). The location is the current working directory by default, overridable
-with the ``MM_HOME`` environment variable (used by tests and advanced setups).
+with the ``MM_HOME`` environment variable. The ``bin/mm`` launcher always sets
+``MM_HOME`` to its own checkout's ``.mm/`` (unless already set), so the control
+plane addresses the same instance no matter which directory it is invoked from;
+the cwd fallback exists for tests and for running the module directly.
 """
 
 from __future__ import annotations

@@ -214,18 +214,31 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    from middle_manager import preflight
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    # Preflight first: refuse before any task state exists, and say why plainly.
+    if args.brief and args.instructions:
+        print("dispatch: pass --brief <file> or --instructions, not both", file=sys.stderr)
+        return 1
+    try:
+        instructions = preflight.read_brief(args.brief) if args.brief else (args.instructions or "")
+        preflight.check_disk()
+    except preflight.PreflightError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 1
 
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
             title=args.title,
-            instructions=args.instructions or "",
+            instructions=instructions,
             provider=args.provider,
             model=args.model,
             reasoning=args.reasoning,
             run_id=args.run_id,
+            base=args.base,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -234,6 +247,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if args.brief:
+        archived = preflight.archive_brief(args.repo, int(resp["task_id"]), instructions)
+        print(f"brief archived at {archived}")
     return 0
 
 
@@ -242,7 +258,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.wait_actionable(args.run_id, timeout=args.timeout)
+        resp = client.wait_actionable(args.run_id, timeout=args.timeout, after_seq=args.after_seq)
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -378,7 +394,21 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
     try:
         if args.review_cmd == "show":
+            from middle_manager import progress
+
             bundle = build_bundle(args.task_id)
+            # The worker's own report comes first, in full: judging a diff without
+            # the evidence the worker filed is how a complete report was once read
+            # as "missing".
+            reports = progress.history(args.task_id)
+            latest = progress.latest(args.task_id)
+            if latest is not None:
+                print(
+                    f"worker report ({latest['phase']}, {len(reports)} report(s); "
+                    f"full log: mm progress {args.task_id}):"
+                )
+                print(latest["note"] or "(no note)")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -543,6 +573,16 @@ def _cmd_health(args: argparse.Namespace) -> int:
         print(health.describe(e))
     troubled = [e for e in entries if e["verdict"] != "alive"]
     return 1 if troubled else 0
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    """The team heartbeat: one relayable line of state per tick, on a cadence."""
+    from middle_manager import watch
+
+    try:
+        return watch.run(interval=args.interval, once=args.once, as_json=args.json)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _cmd_todo(args: argparse.Namespace) -> int:
@@ -1040,6 +1080,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--title", required=True, help="task title/objective")
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
+        "--brief",
+        default=None,
+        help=(
+            "read the task instructions from this file; refused if missing or empty, "
+            "and archived under .mm/briefs/<repo>/task-<id>.md after dispatch"
+        ),
+    )
+    dispatch.add_argument(
         "--provider",
         default="fake",
         choices=["fake", "claude", "codex"],
@@ -1050,6 +1098,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument(
         "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
     )
+    dispatch.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "start the worker from origin/<branch> instead of the repo base (stacked "
+            "PRs); recorded on the task so `mm deliver` opens the PR against it"
+        ),
+    )
     dispatch.set_defaults(func=_cmd_dispatch)
 
     wait = sub.add_parser(
@@ -1059,6 +1115,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wait.add_argument("run_id", type=int)
     wait.add_argument("--timeout", type=float, default=30.0)
+    wait.add_argument(
+        "--after-seq",
+        dest="after_seq",
+        type=int,
+        default=0,
+        help="only report actionable events with seq greater than this (a cursor)",
+    )
     wait.set_defaults(func=_cmd_wait)
 
     run = sub.add_parser(
@@ -1205,6 +1268,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     handoff.add_argument("--json", action="store_true", help="machine-readable output")
     handoff.set_defaults(func=_cmd_handoff)
+
+    watch_cmd = sub.add_parser(
+        "watch",
+        help=(
+            "team heartbeat: print one line of state (in-flight workers, tasks waiting "
+            "on you, new events) now and every --interval seconds; relay each tick"
+        ),
+    )
+    watch_cmd.add_argument(
+        "--interval",
+        type=float,
+        default=300.0,
+        help="seconds between ticks (default 300 — the 5-minute check-in)",
+    )
+    watch_cmd.add_argument("--once", action="store_true", help="print one tick and exit")
+    watch_cmd.add_argument("--json", action="store_true", help="machine-readable ticks")
+    watch_cmd.set_defaults(func=_cmd_watch)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")
     health_cmd.add_argument(
