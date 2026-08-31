@@ -214,14 +214,26 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    from middle_manager import preflight
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    # Preflight first: refuse before any task state exists, and say why plainly.
+    if args.brief and args.instructions:
+        print("dispatch: pass --brief <file> or --instructions, not both", file=sys.stderr)
+        return 1
+    try:
+        instructions = preflight.read_brief(args.brief) if args.brief else (args.instructions or "")
+        preflight.check_disk()
+    except preflight.PreflightError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 1
 
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
             title=args.title,
-            instructions=args.instructions or "",
+            instructions=instructions,
             provider=args.provider,
             model=args.model,
             reasoning=args.reasoning,
@@ -234,6 +246,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if args.brief:
+        archived = preflight.archive_brief(args.repo, int(resp["task_id"]), instructions)
+        print(f"brief archived at {archived}")
     return 0
 
 
@@ -1039,6 +1054,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--repo", required=True, help="registered repository name")
     dispatch.add_argument("--title", required=True, help="task title/objective")
     dispatch.add_argument("--instructions", default=None, help="task instructions")
+    dispatch.add_argument(
+        "--brief",
+        default=None,
+        help=(
+            "read the task instructions from this file; refused if missing or empty, "
+            "and archived under .mm/briefs/<repo>/task-<id>.md after dispatch"
+        ),
+    )
     dispatch.add_argument(
         "--provider",
         default="fake",
