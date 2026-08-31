@@ -9,6 +9,7 @@ supervisor restart.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import threading
 import time
@@ -278,9 +279,18 @@ class Supervisor:
         adapter = _adapter_for(provider)
         can_interrupt = getattr(adapter, "supports_interrupt_steer", lambda: False)()
 
-        terminal = task["status"] in ("worker_done", "blocked", "failed")
-        if terminal:
-            return {"mode": "checkpoint", **self.resume_task(task_id, message)}
+        # A steer only reaches a worker that is actually mid-turn. A finished,
+        # delivered, blocked, or failed task — or one whose runner process has
+        # already exited — has no turn to interrupt and no checkpoint coming, so
+        # the only way the message can land is by resuming the session with it.
+        # (Queueing it "for the checkpoint" of a turn that already ended is how a
+        # steer silently vanished on 2026-08-31.)
+        if not self._has_live_turn(conn, task):
+            return {
+                "mode": "resume",
+                "note": "no live worker turn; resumed the session with the steer",
+                **self.resume_task(task_id, message),
+            }
 
         if can_interrupt:
             with self._lock:
@@ -312,8 +322,57 @@ class Supervisor:
         return {
             "mode": "checkpoint_pending",
             "task_id": task_id,
-            "note": "provider does not support mid-flight steer; queued for checkpoint",
+            "note": (
+                "provider does not support mid-flight steer; queued and applied "
+                "automatically when the current turn ends"
+            ),
         }
+
+    NO_LIVE_TURN_STATUSES = ("worker_done", "delivered", "blocked", "failed", "needs_recovery")
+
+    def _has_live_turn(self, conn, task) -> bool:
+        """True only while a worker process is actually running a turn for the task."""
+        if task["status"] in self.NO_LIVE_TURN_STATUSES:
+            return False
+        runner = conn.execute(
+            "SELECT status FROM runners WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+            (task["id"],),
+        ).fetchone()
+        return bool(runner) and runner["status"] in ("starting", "running")
+
+    def _apply_pending_steer(self, spec: TaskSpec) -> None:
+        """Deliver a checkpoint-queued steer now that the worker's turn has ended.
+
+        ``steer_task`` promises "applied at the checkpoint"; this is that
+        checkpoint. The newest ``checkpoint_pending`` steer not yet followed by a
+        ``steer_applied`` event is resumed into the session exactly once.
+        """
+        conn = init_db()
+        rows = conn.execute(
+            "SELECT id, kind, payload FROM events WHERE task_id = ? "
+            "AND kind IN ('steer', 'steer_applied') ORDER BY id DESC",
+            (spec.task_id,),
+        ).fetchall()
+        pending: tuple[int, str] | None = None
+        for row in rows:
+            if row["kind"] == "steer_applied":
+                break  # everything older was already delivered
+            payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else {}
+            if payload.get("mode") == "checkpoint_pending":
+                pending = (int(row["id"]), str(payload.get("message") or ""))
+                break
+        if pending is None:
+            return
+        event_id, message = pending
+        store.append_event(
+            conn,
+            kind="steer_applied",
+            payload={"task_id": spec.task_id, "steer_event": event_id},
+            run_id=spec.run_id,
+            task_id=spec.task_id,
+        )
+        with contextlib.suppress(Exception):  # a failed resume is visible in events
+            self.resume_task(spec.task_id, message)
 
     def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
         try:
@@ -331,6 +390,8 @@ class Supervisor:
         else:
             if result.status == "blocked" and result.question:
                 self._maybe_auto_answer(spec, result.question)
+            else:
+                self._apply_pending_steer(spec)
         # A task that failed without touching its worktree has nothing worth
         # keeping; hand the slot back so the pool cannot fill up with dead leases.
         with contextlib.suppress(Exception):  # lease hygiene never breaks worker completion

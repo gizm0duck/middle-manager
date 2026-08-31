@@ -49,7 +49,7 @@ def test_blocked_then_resume_completes(server, source_repo) -> None:
     # Steering a terminal (blocked) task resumes it with the answer.
     steer = client.steer_task(task_id, "use /v2/users")
     assert steer["ok"]
-    assert steer["mode"] == "checkpoint"
+    assert steer["mode"] == "resume"  # no live turn → resumed with the steer
 
     _wait_status(client, task_id, "worker_done")
     rs = client.run_status(resp["run_id"])
