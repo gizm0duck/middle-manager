@@ -238,6 +238,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             model=args.model,
             reasoning=args.reasoning,
             run_id=args.run_id,
+            base=args.base,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -257,7 +258,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.wait_actionable(args.run_id, timeout=args.timeout)
+        resp = client.wait_actionable(args.run_id, timeout=args.timeout, after_seq=args.after_seq)
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -393,7 +394,21 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
     try:
         if args.review_cmd == "show":
+            from middle_manager import progress
+
             bundle = build_bundle(args.task_id)
+            # The worker's own report comes first, in full: judging a diff without
+            # the evidence the worker filed is how a complete report was once read
+            # as "missing".
+            reports = progress.history(args.task_id)
+            latest = progress.latest(args.task_id)
+            if latest is not None:
+                print(
+                    f"worker report ({latest['phase']}, {len(reports)} report(s); "
+                    f"full log: mm progress {args.task_id}):"
+                )
+                print(latest["note"] or "(no note)")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -1083,6 +1098,14 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument(
         "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
     )
+    dispatch.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "start the worker from origin/<branch> instead of the repo base (stacked "
+            "PRs); recorded on the task so `mm deliver` opens the PR against it"
+        ),
+    )
     dispatch.set_defaults(func=_cmd_dispatch)
 
     wait = sub.add_parser(
@@ -1092,6 +1115,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wait.add_argument("run_id", type=int)
     wait.add_argument("--timeout", type=float, default=30.0)
+    wait.add_argument(
+        "--after-seq",
+        dest="after_seq",
+        type=int,
+        default=0,
+        help="only report actionable events with seq greater than this (a cursor)",
+    )
     wait.set_defaults(func=_cmd_wait)
 
     run = sub.add_parser(

@@ -141,6 +141,7 @@ class SupervisorServer:
                         run_id=request.get("run_id"),
                         model=request.get("model"),
                         reasoning=request.get("reasoning"),
+                        base=request.get("base"),
                     ),
                 }
             if cmd == "task_status":
@@ -151,7 +152,9 @@ class SupervisorServer:
                 return {
                     "ok": True,
                     **sup.wait_actionable(
-                        int(request["run_id"]), float(request.get("timeout", 30.0))
+                        int(request["run_id"]),
+                        float(request.get("timeout", 30.0)),
+                        int(request.get("after_seq", 0) or 0),
                     ),
                 }
             if cmd == "resume_task":

@@ -40,9 +40,14 @@ class SupervisorClient:
     def run_status(self, run_id: int) -> dict:
         return self._call({"cmd": "run_status", "run_id": run_id})
 
-    def wait_actionable(self, run_id: int, timeout: float = 30.0) -> dict:
+    def wait_actionable(self, run_id: int, timeout: float = 30.0, after_seq: int = 0) -> dict:
         return self._call(
-            {"cmd": "wait_actionable", "run_id": run_id, "timeout": timeout},
+            {
+                "cmd": "wait_actionable",
+                "run_id": run_id,
+                "timeout": timeout,
+                "after_seq": after_seq,
+            },
             timeout=timeout + 10,
         )
 

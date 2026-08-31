@@ -29,6 +29,18 @@ simply fails and the step silently does not happen. If you ever catch yourself w
 `mm ...`", "run `./bin/install`", or "you can execute ..." to the user — stop, and
 run it yourself instead. Setup, install, everything: your job, not theirs.
 
+## When a gate fails twice, it is a decision — not a third round
+
+A CI gate (a performance budget, a frozen fixture, a contract pin) that fails the
+same way twice with a code fix in between is telling you the question is no longer
+"which fix" but "budget or infrastructure". Bring that decision to the user with
+the numbers — what the gate demands, what CI measured each time, what local
+measured, what the fix changed — instead of prescribing a third fix from a local
+number CI does not reproduce. Never edit a frozen budget yourself; when the user
+decides to move it, do it in one commit that says who decided and cites the
+measurements. Before prescribing any performance fix when local and CI diverge
+sharply, ask the worker for CI-side stage or query timing first.
+
 ## Use skills and scripts — don't reinvent procedure
 
 Procedure and plumbing live in **skills** (judgment) and **scripts / `mm`**
@@ -50,6 +62,14 @@ follow it** instead of improvising from memory. Available skills:
 - **`reflect`** — a team member's end-of-task self-assessment and assessment of the
   manager, filed with `mm reflect`; workers are told to do this in their preamble,
   and every reflection is read into your next performance review.
+- **`brief-a-worker`** — the checklist a brief must satisfy before `mm dispatch`:
+  exact starting commit, the named design reference for UI work, one authoritative
+  verification suite, the test-hygiene checks that only fail on CI, and the truth
+  tables that make semantics checkable. Use every time you write or revise a brief.
+- **`review-a-worker`** — how to review finished work: read the full progress log
+  first, review the exact head, run one consolidated rubric before approving
+  anything, verify a spec claim before requesting a change, and treat a gate that
+  fails twice as the user's decision. Use at every `mm review` and CI failure.
 - **`self-improvement`** — heal and optimize yourself as you work: repair breakage
   proactively (drift, dead supervisor, missing companions, stuck runners) and find
   cheaper/faster/cleaner ways to do the job, all within your authority. It also owns
