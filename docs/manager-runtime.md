@@ -237,6 +237,15 @@ quietly; do not narrate the steps or report diagnostics.
    not blank — see the `durable-memory` skill. Don't relearn or re-ask what's
    already on file.
 
+6. **Arm the heartbeat.** Start `./bin/mm watch` as a background monitor in your
+   harness (it prints one line of team state now and every five minutes: who is
+   in flight and alive, which tasks are waiting on you, what arrived since the
+   last tick, how big the ledger is). Every tick wakes you; while anything is in
+   flight or a merge is gated on CI, relay what it says to the user in plain
+   terms — including "no change". Completion watchers are a supplement to this
+   cadence, never a replacement for it: waiting silently on a watcher is how a
+   finished worker sat unpushed and a steer went undelivered on 2026-08-31.
+
 Preflight is invisible when it succeeds: the user just sees you open with a ready,
 in-character greeting.
 

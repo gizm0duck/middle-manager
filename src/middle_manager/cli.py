@@ -560,6 +560,16 @@ def _cmd_health(args: argparse.Namespace) -> int:
     return 1 if troubled else 0
 
 
+def _cmd_watch(args: argparse.Namespace) -> int:
+    """The team heartbeat: one relayable line of state per tick, on a cadence."""
+    from middle_manager import watch
+
+    try:
+        return watch.run(interval=args.interval, once=args.once, as_json=args.json)
+    except KeyboardInterrupt:
+        return 0
+
+
 def _cmd_todo(args: argparse.Namespace) -> int:
     """The manager's intent ledger: what's next and what's waiting on whom."""
     from middle_manager import board
@@ -1228,6 +1238,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     handoff.add_argument("--json", action="store_true", help="machine-readable output")
     handoff.set_defaults(func=_cmd_handoff)
+
+    watch_cmd = sub.add_parser(
+        "watch",
+        help=(
+            "team heartbeat: print one line of state (in-flight workers, tasks waiting "
+            "on you, new events) now and every --interval seconds; relay each tick"
+        ),
+    )
+    watch_cmd.add_argument(
+        "--interval",
+        type=float,
+        default=300.0,
+        help="seconds between ticks (default 300 — the 5-minute check-in)",
+    )
+    watch_cmd.add_argument("--once", action="store_true", help="print one tick and exit")
+    watch_cmd.add_argument("--json", action="store_true", help="machine-readable ticks")
+    watch_cmd.set_defaults(func=_cmd_watch)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")
     health_cmd.add_argument(
