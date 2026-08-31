@@ -569,11 +569,19 @@ class Supervisor:
         terminal = {"worker_done", "blocked", "failed", "delivered", "cancelled"}
         return all(t["status"] in terminal for t in tasks)
 
-    def wait_actionable(self, run_id: int, timeout: float = 30.0) -> dict:
+    def wait_actionable(self, run_id: int, timeout: float = 30.0, after_seq: int = 0) -> dict:
+        """Block until the run has actionable events newer than ``after_seq`` (a cursor).
+
+        Without the cursor a caller keeps seeing the same finished worker forever;
+        watchers keyed on status strings then produce false "done" ticks. Pass the
+        highest ``seq`` already handled to hear only what is new.
+        """
         deadline = time.monotonic() + timeout
         while True:
             conn = init_db()
-            actionable = store.actionable_events(conn, run_id)
+            actionable = [
+                e for e in store.actionable_events(conn, run_id) if int(e["seq"]) > after_seq
+            ]
             if actionable or self._all_terminal(run_id):
                 return {
                     "run_id": run_id,

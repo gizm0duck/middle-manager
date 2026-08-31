@@ -257,7 +257,7 @@ def _cmd_wait(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.wait_actionable(args.run_id, timeout=args.timeout)
+        resp = client.wait_actionable(args.run_id, timeout=args.timeout, after_seq=args.after_seq)
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1106,6 +1106,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wait.add_argument("run_id", type=int)
     wait.add_argument("--timeout", type=float, default=30.0)
+    wait.add_argument(
+        "--after-seq",
+        dest="after_seq",
+        type=int,
+        default=0,
+        help="only report actionable events with seq greater than this (a cursor)",
+    )
     wait.set_defaults(func=_cmd_wait)
 
     run = sub.add_parser(

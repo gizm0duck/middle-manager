@@ -151,7 +151,9 @@ class SupervisorServer:
                 return {
                     "ok": True,
                     **sup.wait_actionable(
-                        int(request["run_id"]), float(request.get("timeout", 30.0))
+                        int(request["run_id"]),
+                        float(request.get("timeout", 30.0)),
+                        int(request.get("after_seq", 0) or 0),
                     ),
                 }
             if cmd == "resume_task":
