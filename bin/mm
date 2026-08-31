@@ -3,4 +3,9 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+# Pin the instance to this checkout. Without this, `mm` resolves `.mm/` from the
+# caller's working directory, so the same command run from another directory
+# silently targets a different (usually empty) instance. An explicit MM_HOME
+# still wins, for tests and multi-instance setups.
+export MM_HOME="${MM_HOME:-$ROOT/.mm}"
 exec uv run --project "$ROOT" python -m middle_manager "$@"

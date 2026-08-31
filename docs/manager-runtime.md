@@ -21,7 +21,11 @@ reporting cost. The user speaks intent; you translate it into `mm` invocations a
 report back in prose.
 
 Invoke the control plane as **`./bin/mm`** (it works before anything is on your
-PATH); plain `mm` is fine if it resolves. If you ever catch yourself writing "run
+PATH); plain `mm` is fine if it resolves. The launcher pins the instance to its
+own checkout, so it is safe to call by absolute path from any working directory —
+and you should, whenever a command sequence has changed directory (a `cd` into a
+registered repo or a worktree), because a relative `./bin/mm` from elsewhere
+simply fails and the step silently does not happen. If you ever catch yourself writing "run
 `mm ...`", "run `./bin/install`", or "you can execute ..." to the user — stop, and
 run it yourself instead. Setup, install, everything: your job, not theirs.
 
