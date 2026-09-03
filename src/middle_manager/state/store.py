@@ -296,6 +296,56 @@ def live_runners(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     )
 
 
+def task_runners(conn: sqlite3.Connection, task_id: int) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM runners WHERE task_id = ? ORDER BY started_at, id", (task_id,)
+        ).fetchall()
+    )
+
+
+def live_runners_for_task(conn: sqlite3.Connection, task_id: int) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM runners WHERE task_id = ? AND status IN ('starting','running') "
+            "ORDER BY started_at",
+            (task_id,),
+        ).fetchall()
+    )
+
+
+def supersede_runners(
+    conn: sqlite3.Connection,
+    task_id: int,
+    *,
+    reason: str,
+    except_runner_id: str | None = None,
+) -> list[dict]:
+    """Retire a task's live runners so their late exit cannot rewrite task status.
+
+    A resumed task has a *new* session; the superseded session's exit code (often
+    ``1`` from the interrupt that ended it) arrives afterwards and used to overwrite
+    ``in_progress`` with ``failed`` while the resumed worker was still running.
+    Superseded runners are recorded by session id and ignored at finalization.
+    """
+    retired: list[dict] = []
+    for row in live_runners_for_task(conn, task_id):
+        if except_runner_id is not None and row["id"] == except_runner_id:
+            continue
+        conn.execute(
+            "UPDATE runners SET superseded_at = ?, supersede_reason = ? WHERE id = ?",
+            (_now(), reason, row["id"]),
+        )
+        retired.append({"runner": row["id"], "session_id": row["session_id"], "pid": row["pid"]})
+    conn.commit()
+    return retired
+
+
+def is_runner_superseded(conn: sqlite3.Connection, runner_id: str) -> bool:
+    row = conn.execute("SELECT superseded_at FROM runners WHERE id = ?", (runner_id,)).fetchone()
+    return bool(row is not None and row["superseded_at"])
+
+
 # --------------------------------------------------------------------------- #
 # Sessions and usage
 # --------------------------------------------------------------------------- #

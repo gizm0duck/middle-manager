@@ -78,6 +78,9 @@ class RunnerGuardian:
         self.adapter = adapter
         self._proc: subprocess.Popen | None = None
         self._interrupt = threading.Event()
+        # Set when this runner's session was retired mid-flight (a resume or a
+        # steer's interrupt started a newer session for the same task).
+        self.superseded = False
 
     def interrupt(self) -> None:
         """Request a cooperative stop of the running worker."""
@@ -117,6 +120,7 @@ class RunnerGuardian:
         store.set_task_status(conn, spec.task_id, "in_progress")
 
         events = []
+        session_seen: str | None = spec.resume_session_id
         assert self._proc.stdout is not None
         for raw in self._proc.stdout:
             ev = self.adapter.parse_event(raw)
@@ -132,6 +136,7 @@ class RunnerGuardian:
                 task_id=spec.task_id,
             )
             if ev.session_id:
+                session_seen = ev.session_id
                 store.upsert_session(
                     conn,
                     task_id=spec.task_id,
@@ -159,6 +164,37 @@ class RunnerGuardian:
                 output_tokens=result.usage.output_tokens,
             )
 
+        # A runner superseded by a resume (or by a steer's interrupt) is no longer
+        # the task's session. Its exit — usually a nonzero code from the interrupt
+        # that ended it — must not rewrite the task's status or raise an actionable
+        # error, or a live resumed worker reads as `failed` (2026-09-01, codex).
+        session_id = result.session_id or session_seen
+        if store.is_runner_superseded(conn, runner_id):
+            self.superseded = True
+            store.update_runner(
+                conn,
+                runner_id,
+                status="superseded",
+                exit_code=exit_code if exit_code is not None else -1,
+                result_recorded=1,
+            )
+            store.append_event(
+                conn,
+                kind="runner_superseded",
+                payload={
+                    "task_id": spec.task_id,
+                    "runner": runner_id,
+                    "session_id": session_id,
+                    "exit_code": exit_code,
+                    "worker_status": result.status,
+                    "summary": result.summary,
+                },
+                run_id=spec.run_id,
+                task_id=spec.task_id,
+            )
+            self._proc = None
+            return result
+
         task_status = _TERMINAL_STATUS.get(result.status, "failed")
         store.set_task_status(conn, spec.task_id, task_status)
 
@@ -166,7 +202,8 @@ class RunnerGuardian:
         if result.status == "completed" and not result.head_sha:
             result.head_sha = _finalize_worktree(spec, result.summary)
 
-        # Emit an actionable event for the manager/human loop.
+        # Emit an actionable event for the manager/human loop. Every terminal event
+        # carries the session it came from so a late arrival can be attributed.
         if result.status == "completed":
             store.append_event(
                 conn,
@@ -175,6 +212,7 @@ class RunnerGuardian:
                     "task_id": spec.task_id,
                     "head_sha": result.head_sha,
                     "summary": result.summary,
+                    "session_id": session_id,
                 },
                 run_id=spec.run_id,
                 task_id=spec.task_id,
@@ -183,7 +221,11 @@ class RunnerGuardian:
             store.append_event(
                 conn,
                 kind="question",
-                payload={"task_id": spec.task_id, "question": result.question},
+                payload={
+                    "task_id": spec.task_id,
+                    "question": result.question,
+                    "session_id": session_id,
+                },
                 run_id=spec.run_id,
                 task_id=spec.task_id,
             )
@@ -195,6 +237,7 @@ class RunnerGuardian:
                     "task_id": spec.task_id,
                     "summary": result.summary,
                     "exit_code": exit_code,
+                    "session_id": session_id,
                     "stderr": stderr[-2000:],
                 },
                 run_id=spec.run_id,

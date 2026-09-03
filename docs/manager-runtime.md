@@ -452,7 +452,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>`, `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
-| Steer / resume | `mm steer <task_id> --message ...`, `mm resume <task_id> [--message]` |
+| Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...]` |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
