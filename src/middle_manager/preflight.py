@@ -68,9 +68,30 @@ def check_disk(path: str | Path | None = None, *, floor_gb: float | None = None)
         raise PreflightError(
             f"only {free_gb:.1f} GB free on the volume holding {probe} (floor {floor:g} GB; "
             f"set {MIN_FREE_GB_ENV} to change it) — free space before dispatching; a "
-            "worktree checkout plus a dependency install needs several GB."
+            f"worktree checkout plus a dependency install needs several GB. {reclaim_hint()}"
         )
     return free_gb
+
+
+def reclaim_hint() -> str:
+    """Point a refused dispatch at the space it already owns.
+
+    Most of the time the disk is full of the harness's own finished worktrees —
+    20 GB of delivered tasks on 2026-09-02 — so a refusal that only says "free
+    space" sends the manager hunting when one command would do it.
+    """
+    from middle_manager.worktree.reclaim import human_bytes, reclaimable_bytes
+
+    freeable = reclaimable_bytes()
+    if freeable <= 0:
+        return (
+            "`mm worktree prune` has nothing to reclaim right now; "
+            "`mm worktree list` shows what each slot is holding."
+        )
+    return (
+        f"`mm worktree prune` would reclaim {human_bytes(freeable)} from the worktrees of "
+        "finished tasks (`mm worktree list` shows what each slot is holding)."
+    )
 
 
 def archive_brief(repo: str, task_id: int, text: str) -> Path:
