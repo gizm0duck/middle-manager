@@ -118,6 +118,37 @@ def check(
     return out
 
 
+def claude_tool_profile() -> dict[str, Any]:
+    """The tool profile a Claude worker would be launched with right now.
+
+    A Claude worker with no allowed tools has no shell, and that used to be
+    invisible until a dispatch produced a worker that could not run a command.
+    Health answers it before anyone dispatches.
+    """
+    from middle_manager.providers.claude import effective_allowed_tools
+
+    tools, source = effective_allowed_tools()
+    return {
+        "tools": tools,
+        "count": len(tools),
+        "source": source,
+        "ok": bool(tools),
+    }
+
+
+def describe_claude_tools(profile: dict[str, Any]) -> str:
+    if not profile["ok"]:
+        return (
+            f"claude worker tools: NONE ({profile['source']} is empty) — a dispatch would be "
+            "refused; run `mm config claude --reset`"
+        )
+    shown = ", ".join(profile["tools"][:6])
+    more = f", +{profile['count'] - 6} more" if profile["count"] > 6 else ""
+    return (
+        f"claude worker tools: {profile['count']} patterns from {profile['source']} — {shown}{more}"
+    )
+
+
 def humanize(seconds: int | None) -> str:
     if seconds is None:
         return "never heard from"

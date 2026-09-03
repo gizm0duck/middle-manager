@@ -11,6 +11,7 @@ known, flat-ish schema.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -69,6 +70,55 @@ class AssessmentPolicy:
     max_actions: int = 3
 
 
+def default_claude_allowed_tools() -> list[str]:
+    """The documented Claude worker tool profile.
+
+    Claude Code only gives a worker a shell when it is launched with
+    ``--allowedTools``. That list used to come *only* from
+    ``MM_CLAUDE_ALLOWED_TOOLS`` in the supervisor's own environment and was
+    persisted nowhere, so every ``mm supervisor serve`` had to export it first and
+    a dispatch after a restart silently produced a worker with no shell
+    (2026-09-02).
+
+    This is the profile the Claude Code permission classifier accepted on
+    2026-09-02, proved end to end by smoke task 77: progress reporting, uv, a
+    commit, and a push. A broader list including ``rm``, ``gh`` and ``export`` was
+    classifier-blocked, so it is deliberately absent — and workers never open PRs
+    or hold forge credentials anyway.
+    """
+    from middle_manager.manager.launch import repo_root
+
+    return [
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "Bash(cd:*)",
+        "Bash(git:*)",
+        "Bash(uv:*)",
+        "Bash(make:*)",
+        "Bash(pytest:*)",
+        "Bash(python:*)",
+        "Bash(ruff:*)",
+        f"Bash({os.path.join(repo_root(), 'bin', 'mm')}:*)",
+        "Bash(./bin/mm:*)",
+        "Bash(mm:*)",
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(mkdir:*)",
+        "Bash(jq:*)",
+        "Bash(pnpm:*)",
+    ]
+
+
+@dataclass
+class ClaudeProfile:
+    """Settings that shape a Claude worker's session."""
+
+    allowed_tools: list[str] = field(default_factory=default_claude_allowed_tools)
+
+
 @dataclass
 class HealthPolicy:
     """How long a worker may stay silent before it is flagged as possibly stuck."""
@@ -87,6 +137,7 @@ class MMConfig:
     tools: ToolsPolicy = field(default_factory=ToolsPolicy)
     assessments: AssessmentPolicy = field(default_factory=AssessmentPolicy)
     health: HealthPolicy = field(default_factory=HealthPolicy)
+    claude: ClaudeProfile = field(default_factory=ClaudeProfile)
 
     def validate(self) -> None:
         if self.manager.provider not in PROVIDERS:
@@ -123,6 +174,14 @@ class MMConfig:
             raise ConfigError("health.quiet_minutes must be at least 1")
         if self.health.plan_minutes < 1:
             raise ConfigError("health.plan_minutes must be at least 1")
+        if not isinstance(self.claude.allowed_tools, list):
+            raise ConfigError("claude.allowed_tools must be a list of tool patterns")
+        for pattern in self.claude.allowed_tools:
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ConfigError(
+                    f"claude.allowed_tools holds a bad entry {pattern!r}; each one is a Claude "
+                    "Code tool pattern such as 'Read' or 'Bash(uv:*)'"
+                )
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +192,7 @@ class MMConfig:
             "tools": asdict(self.tools),
             "assessments": asdict(self.assessments),
             "health": asdict(self.health),
+            "claude": asdict(self.claude),
         }
 
 
@@ -145,6 +205,7 @@ def _from_dict(data: dict) -> MMConfig:
         tools=ToolsPolicy(**data.get("tools", {})),
         assessments=AssessmentPolicy(**data.get("assessments", {})),
         health=HealthPolicy(**data.get("health", {})),
+        claude=ClaudeProfile(**data.get("claude", {})),
     )
     return cfg
 
@@ -179,16 +240,22 @@ def _toml_scalar(value: object) -> str:
     return f'"{escaped}"'
 
 
+def _toml_value(value: object) -> str:
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_scalar(v) for v in value) + "]"
+    return _toml_scalar(value)
+
+
 def _dumps_toml(data: dict) -> str:
     """Serialize the known config shape: top-level scalars then [tables]."""
     lines: list[str] = []
     scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
     tables = {k: v for k, v in data.items() if isinstance(v, dict)}
     for key, value in scalars.items():
-        lines.append(f"{key} = {_toml_scalar(value)}")
+        lines.append(f"{key} = {_toml_value(value)}")
     for table, values in tables.items():
         lines.append("")
         lines.append(f"[{table}]")
         for key, value in values.items():
-            lines.append(f"{key} = {_toml_scalar(value)}")
+            lines.append(f"{key} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"

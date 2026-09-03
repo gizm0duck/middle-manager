@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 
+from middle_manager.config import ConfigError, default_claude_allowed_tools, load_config
 from middle_manager.providers.base import (
     ProviderAdapter,
     ProviderEvent,
@@ -21,6 +22,29 @@ from middle_manager.providers.capability import (
     allows_interrupt_steer,
     capabilities_for,
 )
+
+ALLOWED_TOOLS_ENV = "MM_CLAUDE_ALLOWED_TOOLS"
+
+
+def effective_allowed_tools() -> tuple[list[str], str]:
+    """The tool patterns a Claude worker will be launched with, and where they came from.
+
+    ``MM_CLAUDE_ALLOWED_TOOLS`` (a comma-separated list) wins when it is set — the
+    escape hatch for a one-off session — otherwise the persisted
+    ``claude.allowed_tools`` config setting decides. Without a config file yet, the
+    documented default profile applies: a worker with no shell is never the answer.
+
+    An empty result is a real answer, not a fallback: a deliberately emptied env var
+    or config list means "no tools", and dispatch refuses rather than quietly
+    launching a worker that cannot run a command.
+    """
+    raw = os.environ.get(ALLOWED_TOOLS_ENV)
+    if raw is not None:
+        return [part.strip() for part in raw.split(",") if part.strip()], ALLOWED_TOOLS_ENV
+    try:
+        return list(load_config().claude.allowed_tools), "config claude.allowed_tools"
+    except ConfigError:
+        return list(default_claude_allowed_tools()), "built-in default profile"
 
 
 class ClaudeAdapter(ProviderAdapter):
@@ -34,9 +58,9 @@ class ClaudeAdapter(ProviderAdapter):
             argv += ["--model", spec.model]
         # acceptEdits auto-accepts file edits without a full permission bypass.
         argv += ["--permission-mode", "acceptEdits"]
-        allowed = os.environ.get("MM_CLAUDE_ALLOWED_TOOLS")
+        allowed, _source = effective_allowed_tools()
         if allowed:
-            argv += ["--allowedTools", allowed]
+            argv += ["--allowedTools", ",".join(allowed)]
         return argv
 
     def start(self, spec: TaskSpec) -> list[str]:
