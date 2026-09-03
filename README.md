@@ -156,6 +156,7 @@ hidden. Peek behind the curtain anytime:
 mm doctor                              # harnesses, capability-matrix drift, schema
 mm setup --non-interactive --manager-provider claude --worker-provider codex
 mm config assessments --completed-runs 5 --max-days 14 --cooldown-days 7
+mm config claude --reset                # restore the documented worker tool profile
 mm tools install                       # download/verify pinned companions (setup does this)
 mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
@@ -178,8 +179,9 @@ mm assessment status                  # cadence and current performance-review c
 
 All my working state lives under `.mm/` (gitignored — it's my desk, not the repo):
 
-- `config.toml` — manager profile, worker ceiling, cost posture, authority, and
-  self-assessment cadence.
+- `config.toml` — manager profile, worker ceiling, cost posture, authority,
+  self-assessment cadence, and the tool profile Claude workers launch with
+  (`claude.allowed_tools`; `MM_CLAUDE_ALLOWED_TOOLS` overrides it for a session).
 - `state.db` — SQLite source of truth (repos, runs, tasks, decisions, sessions,
   events, usage, reviews, and self-assessment cycles).
 - `repos/` — read-only base clones. The only repositories that exist to me.

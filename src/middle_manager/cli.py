@@ -106,6 +106,21 @@ def _cmd_config(args: argparse.Namespace) -> int:
             cfg = config_authority(overrides)
             print(f"merge authority: {'on' if cfg.authority.merge else 'off'}")
             return 0
+        if args.config_cmd == "claude":
+            from middle_manager.config import default_claude_allowed_tools, save_config
+
+            cfg = load_config()
+            if args.reset:
+                cfg.claude.allowed_tools = default_claude_allowed_tools()
+            if args.allowed_tools is not None:
+                cfg.claude.allowed_tools = [
+                    part.strip() for part in args.allowed_tools.split(",") if part.strip()
+                ]
+            save_config(cfg)
+            from middle_manager import health as _health
+
+            print(_health.describe_claude_tools(_health.claude_tool_profile()))
+            return 0
         if args.config_cmd == "health":
             from middle_manager.config import save_config
 
@@ -610,16 +625,18 @@ def _cmd_health(args: argparse.Namespace) -> int:
         else health.quiet_threshold()
     )
     entries = health.check(quiet_after=quiet_after)
+    tools = health.claude_tool_profile()
     if args.json:
-        print(json.dumps(entries, indent=2))
+        print(json.dumps({"workers": entries, "claude_tools": tools}, indent=2))
         return 0
+    print(health.describe_claude_tools(tools))
     if not entries:
         print("no workers in flight")
-        return 0
+        return 0 if tools["ok"] else 1
     for e in entries:
         print(health.describe(e))
     troubled = [e for e in entries if e["verdict"] != "alive"]
-    return 1 if troubled else 0
+    return 1 if troubled or not tools["ok"] else 0
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
@@ -1100,6 +1117,17 @@ def build_parser() -> argparse.ArgumentParser:
     assessments_cfg.add_argument("--minimum-runs", type=int, default=None)
     assessments_cfg.add_argument("--failure-trigger-count", type=int, default=None)
     assessments_cfg.add_argument("--max-actions", type=int, default=None)
+    claude_cfg = csub.add_parser("claude", help="the tool profile Claude workers launch with")
+    claude_cfg.add_argument(
+        "--allowed-tools",
+        dest="allowed_tools",
+        default=None,
+        help="comma-separated Claude Code tool patterns, e.g. 'Read,Edit,Bash(git:*)'",
+    )
+    claude_cfg.add_argument(
+        "--reset", action="store_true", help="restore the documented default profile"
+    )
+
     health_cfg = csub.add_parser("health", help="change the worker quiet threshold")
     health_cfg.add_argument("--quiet-minutes", dest="quiet_minutes", type=int, default=None)
     health_cfg.add_argument("--plan-minutes", dest="plan_minutes", type=int, default=None)

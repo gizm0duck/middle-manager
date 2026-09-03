@@ -17,7 +17,7 @@ import time
 from middle_manager import decisions
 from middle_manager.config import ConfigError, load_config
 from middle_manager.providers.base import TaskSpec
-from middle_manager.providers.claude import ClaudeAdapter
+from middle_manager.providers.claude import ClaudeAdapter, effective_allowed_tools
 from middle_manager.providers.codex import CodexAdapter
 from middle_manager.providers.fake import FakeProvider
 from middle_manager.router import CeilingError, WorkerProfile, choose_worker, enforce_ceiling
@@ -126,6 +126,18 @@ class Supervisor:
         # Enforce the hard worker ceiling for real providers (runtime, not prompt).
         if provider in ("claude", "codex"):
             model, reasoning = self._resolve_and_enforce(provider, model, reasoning)
+        if provider == "claude":
+            # A Claude worker with no allowed tools has no shell: it cannot run the
+            # suite, commit, or even report progress. That used to happen silently
+            # whenever the supervisor was started without MM_CLAUDE_ALLOWED_TOOLS.
+            allowed, source = effective_allowed_tools()
+            if not allowed:
+                raise SupervisorError(
+                    f"claude worker would have no tools at all ({source} is empty) — it could "
+                    "not run a command, commit, or report progress. Restore the profile with "
+                    "`mm config claude --reset`, or set one with "
+                    "`mm config claude --allowed-tools 'Read,Edit,Bash(git:*),...'`."
+                )
 
         if run_id is None:
             run_id = store.create_run(conn, title)

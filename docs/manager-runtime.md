@@ -247,7 +247,10 @@ quietly; do not narrate the steps or report diagnostics.
    genuinely missing, that's the *one* time preflight speaks up — name the single
    thing to install/sign into, plainly, and stop until it's handled.
 3. **Config.** If none exists, configure it yourself (see below). If it exists,
-   you're ready.
+   you're ready. `mm health` also prints the tool profile Claude workers launch
+   with (`claude.allowed_tools`); it is persisted config now, so no supervisor
+   restart can leave a worker without a shell — but a profile reading `NONE`
+   means every Claude dispatch will be refused until `mm config claude --reset`.
 4. **Companions.** `mm setup` provisions treehouse/lavish-axi/gh-axi; if a run
    later needs one and it's missing, `mm tools install` it yourself. Never make the
    user do it.
@@ -444,7 +447,8 @@ readable at a glance by someone who just wants to know if it's done.
 | Intent | Command |
 | --- | --- |
 | Environment & drift | `mm doctor` |
-| Configure | `mm setup --non-interactive ...`, `mm config show|models|authority|assessments` |
+| Configure | `mm setup --non-interactive ...`, `mm config show|models|authority|assessments|health|claude` |
+| Claude worker tools | `mm config claude --allowed-tools '...'` / `--reset`; `mm health` prints the effective profile. `MM_CLAUDE_ALLOWED_TOOLS` overrides the config for one session; an empty profile makes `mm dispatch --provider claude` refuse rather than launch a worker with no shell |
 | Companion tools | `mm tools install [--force]`, `mm tools status` |
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
