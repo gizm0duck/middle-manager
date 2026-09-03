@@ -68,6 +68,14 @@ worker's choice matches the source, the checkpoint was wrong — say so in the l
 
 ## 5. Approve, deliver, and say what shipped
 
-`mm review approve <id>` at the exact head, `mm deliver <id> --base <branch>` for
-stacked work (or the task's recorded stacked base), then tell the user in plain
-terms what landed, what was flagged and not done, and what needs them.
+`mm review approve <id>` at the exact head, then `mm deliver <id>` — it opens the
+pull request against the task's recorded stack parent (dispatched with `--base`),
+or against `main` for a bottom layer; pass `--base` only to override. Then tell the
+user in plain terms what landed, what was flagged and not done, and what needs them,
+naming the stack and the layer rather than each PR as separate work.
+
+When merging is authorised, merge a stack **bottom-up, one layer at a time**: after
+each merge confirm the next layer was retargeted to `main` by GitHub's cascading
+rebase (`gh pr view <n> --json baseRefName`) before merging it, and if a task in
+the stack is resumed or re-delivered after a cascade, fetch and reset its worktree
+to the rebased remote branch first — never force-push a stale head over it.
