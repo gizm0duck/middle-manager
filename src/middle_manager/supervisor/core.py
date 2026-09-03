@@ -476,7 +476,15 @@ class Supervisor:
                 task_id=task_id,
             )
 
-    NO_LIVE_TURN_STATUSES = ("worker_done", "delivered", "blocked", "failed", "needs_recovery")
+    NO_LIVE_TURN_STATUSES = (
+        "worker_done",
+        "delivered",
+        "closed",
+        "cancelled",
+        "blocked",
+        "failed",
+        "needs_recovery",
+    )
 
     def _has_live_turn(self, conn, task) -> bool:
         """True only while a worker process is actually running a turn for the task."""
@@ -721,7 +729,7 @@ class Supervisor:
         tasks = store.list_tasks(conn, run_id)
         if not tasks:
             return False
-        terminal = {"worker_done", "blocked", "failed", "delivered", "cancelled"}
+        terminal = {"worker_done", "blocked", "failed", "delivered", "closed", "cancelled"}
         return all(t["status"] in terminal for t in tasks)
 
     def wait_actionable(self, run_id: int, timeout: float = 30.0, after_seq: int = 0) -> dict:

@@ -13,6 +13,7 @@ import os
 import sys
 
 from middle_manager import __version__
+from middle_manager.lifecycle import TASK_STATUSES
 
 
 def _cmd_version(args: argparse.Namespace) -> int:
@@ -363,6 +364,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_task(args: argparse.Namespace) -> int:
+    """Snapshot a task, or run one of the lifecycle bookkeeping commands."""
+    from middle_manager.lifecycle import LifecycleError, close_task, set_task_status
+
+    try:
+        if args.task_cmd == "close":
+            res = close_task(args.task_id, args.reason)
+            lease = res.get("lease") or {}
+            print(
+                f"task {args.task_id}: {res['previous_status']} -> closed "
+                f"({res['reason']}); {lease.get('note', 'no lease on record')}"
+            )
+            return 0
+        if args.task_cmd == "set-status":
+            res = set_task_status(args.task_id, args.status, args.note)
+            note = f" — {args.note}" if args.note else ""
+            print(f"task {args.task_id}: {res['from']} -> {res['to']}{note}")
+            return 0
+    except LifecycleError as exc:
+        print(f"task {args.task_cmd}: {exc}", file=sys.stderr)
+        return 1
+    return _cmd_task_show(args)
+
+
+def _cmd_task_show(args: argparse.Namespace) -> int:
     """Non-blocking snapshot of a single task. Returns immediately; never waits."""
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -389,6 +414,18 @@ def _cmd_task(args: argparse.Namespace) -> int:
     from middle_manager import progress
 
     print(f"progress: {progress.describe(progress.latest(args.task_id))}")
+    return 0
+
+
+def _cmd_lease(args: argparse.Namespace) -> int:
+    from middle_manager.lifecycle import LifecycleError, release_task_lease
+
+    try:
+        res = release_task_lease(args.task_id, reason=args.reason, remove_branch=args.remove_branch)
+    except LifecycleError as exc:
+        print(f"lease release: {exc}", file=sys.stderr)
+        return 1
+    print(f"task {args.task_id}: {res['note']}")
     return 0
 
 
@@ -497,9 +534,13 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_deliver(args: argparse.Namespace) -> int:
-    from middle_manager.delivery import DeliveryError, deliver
+    from middle_manager.delivery import DeliveryError, deliver, record_merged
 
     try:
+        if args.merged:
+            res = record_merged(args.task_id, args.merged)
+            print(f"task {res.task_id}: {res.note}")
+            return 0
         res = deliver(
             args.task_id,
             push=not args.no_push,
@@ -1223,10 +1264,34 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--json", action="store_true", help="machine-readable output")
     run.set_defaults(func=_cmd_run)
 
-    task = sub.add_parser("task", help="non-blocking snapshot of a single task")
-    task.add_argument("task_id", type=int)
-    task.add_argument("--json", action="store_true", help="machine-readable output")
+    task = sub.add_parser("task", help="inspect a task, or close/repair its bookkeeping")
+    tksub = task.add_subparsers(dest="task_cmd", required=True)
+    tkshow = tksub.add_parser("show", help="non-blocking snapshot of a single task")
+    tkshow.add_argument("task_id", type=int)
+    tkshow.add_argument("--json", action="store_true", help="machine-readable output")
+    tkclose = tksub.add_parser(
+        "close", help="end a task that will not be delivered, and give its slot back"
+    )
+    tkclose.add_argument("task_id", type=int)
+    tkclose.add_argument("--reason", required=True, help="why this task is over")
+    tkset = tksub.add_parser("set-status", help="repair a task's status, with a note")
+    tkset.add_argument("task_id", type=int)
+    tkset.add_argument("status", choices=list(TASK_STATUSES))
+    tkset.add_argument("--note", default=None, help="why the status was corrected")
     task.set_defaults(func=_cmd_task)
+
+    lease = sub.add_parser("lease", help="worktree lease bookkeeping")
+    lsub = lease.add_subparsers(dest="lease_cmd", required=True)
+    lrelease = lsub.add_parser("release", help="release a stuck lease and free the slot")
+    lrelease.add_argument("task_id", type=int)
+    lrelease.add_argument("--reason", default="released by hand", help="why it was released")
+    lrelease.add_argument(
+        "--remove-branch",
+        dest="remove_branch",
+        action="store_true",
+        help="also delete the lease branch (only when its commits are safe elsewhere)",
+    )
+    lease.set_defaults(func=_cmd_lease)
 
     resume = sub.add_parser("resume", help="resume a task's provider session")
     resume.add_argument("task_id", type=int)
@@ -1265,6 +1330,12 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--no-pr", dest="no_pr", action="store_true")
     deliver.add_argument("--remote", default="origin")
     deliver.add_argument("--base", default=None, help="PR base branch")
+    deliver.add_argument(
+        "--merged",
+        default=None,
+        metavar="SHA",
+        help="record delivery against a commit already merged upstream; pushes nothing",
+    )
     deliver.set_defaults(func=_cmd_deliver)
 
     artifact = sub.add_parser("artifact", help="write a Lavish HTML review artifact")
@@ -1478,9 +1549,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Keep ``mm task <id>`` working now that ``task`` has subcommands."""
+    if len(argv) >= 2 and argv[0] == "task" and argv[1].isdigit():
+        return [argv[0], "show", *argv[1:]]
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_argv(list(argv if argv is not None else sys.argv[1:])))
     return args.func(args)
 
 

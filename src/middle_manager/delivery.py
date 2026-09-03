@@ -8,6 +8,7 @@ head. Push uses plain git (works against any origin); PR creation uses ``gh``
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 
@@ -18,6 +19,9 @@ from middle_manager.state import init_db, store
 
 class DeliveryError(Exception):
     pass
+
+
+_SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}\Z")
 
 
 @dataclass
@@ -114,4 +118,58 @@ def deliver(
     return DeliveryResult(task_id, branch, head, pushed, pr_url, note)
 
 
-__all__ = ["DeliveryError", "DeliveryResult", "deliver", "ReviewError"]
+def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> DeliveryResult:
+    """Record delivery against a commit that is already merged upstream. Pushes nothing.
+
+    When the manager merges a task's PR on GitHub outside ``mm deliver``, the task
+    stays ``worker_done``: the heartbeat keeps listing it as work awaiting the
+    manager, and the worktree is never eligible for reclamation. There is nothing
+    left to push and no review gate to satisfy — the commit shipped — so this is
+    pure bookkeeping: it names the merge commit and closes the task out.
+
+    A squash or rebase merge produces a *new* commit that the task's worktree has
+    never seen, so the SHA is validated by shape only and taken at its word.
+    """
+    if not _SHA_RE.match((merged_sha or "").strip()):
+        raise DeliveryError(
+            f"--merged wants the commit SHA the work landed as; {merged_sha!r} is not one "
+            "(7-40 hex characters)"
+        )
+    merged_sha = merged_sha.strip().lower()
+    conn = init_db()
+    task = store.get_task(conn, task_id)
+    if task is None:
+        raise DeliveryError(f"task {task_id} not found")
+    branch = task["branch"] or ""
+    store.set_task_status(conn, task_id, "delivered")
+    store.append_event(
+        conn,
+        kind="delivered",
+        payload={
+            "task_id": task_id,
+            "branch": branch,
+            "head_sha": merged_sha,
+            "pr_url": None,
+            "merged_outside_mm": True,
+            "note": note or "recorded against an already-merged commit; nothing was pushed",
+        },
+        run_id=task["run_id"],
+        task_id=task_id,
+    )
+    return DeliveryResult(
+        task_id=task_id,
+        branch=branch,
+        head_sha=merged_sha,
+        pushed=False,
+        pr_url=None,
+        note=f"recorded as delivered at {merged_sha[:8]} (already merged; nothing pushed)",
+    )
+
+
+__all__ = [
+    "DeliveryError",
+    "DeliveryResult",
+    "ReviewError",
+    "deliver",
+    "record_merged",
+]

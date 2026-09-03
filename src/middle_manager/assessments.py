@@ -99,7 +99,7 @@ def collect_evidence(conn: sqlite3.Connection, *, now: datetime | None = None) -
               AND NOT EXISTS (
                 SELECT 1 FROM tasks t
                 WHERE t.run_id = r.id
-                  AND t.status NOT IN ('worker_done', 'delivered', 'cancelled')
+                  AND t.status NOT IN ('worker_done', 'delivered', 'closed', 'cancelled')
               )
             )
           )

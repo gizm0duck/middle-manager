@@ -169,6 +169,10 @@ mm answer <task_id> --answer "use /v2/health" --scope run   # recorded + reused
 mm decision list                       # inspect / invalidate / forget my memory
 mm review show <task_id> && mm review approve <task_id>
 mm deliver <task_id>                   # refused unless approved at current head
+mm deliver <task_id> --merged <sha>    # PR merged on GitHub by hand: record it, push nothing
+mm task close <task_id> --reason "superseded"   # end it, free the worktree slot
+mm task set-status <task_id> in_progress --note "status was stale"
+mm lease release <task_id>             # hand a stuck worktree slot back
 mm artifact <run_id> --title "Design review" --sections '[...]'   # Lavish HTML
 mm plan <run_id>                       # cross-repo rollout order
 mm usage <run_id>                      # model token accounting (I watch the bill)
