@@ -62,6 +62,14 @@ paid for once already.
   ensure target, and the expected single head.
 - **Generated artifacts**: which commands regenerate them and that they are
   committed; the frozen fixtures that must stay byte-identical.
+- **Receipts come from the worker's shell, never from a test.** A test that writes to the
+  brief's evidence directory (an absolute path such as `/private/tmp/...`) passes locally
+  and errors on CI, where the path does not exist (task 91, 2026-09-03). Tests write only
+  under pytest's `tmp_path`; the worker copies the dump into the evidence directory with
+  its own commands.
+- **Claude-provider briefs do not name a branch.** The runtime's command rules pin the push
+  to the task's lease branch (`mm/task-<n>-...`); a brief naming another branch is ignored
+  and confuses the worker. The manager opens the PR from the lease branch.
 - **Merge main before pushing a PR that sat**: the forge runs no pull-request checks
   on a conflicting PR, so it shows "no checks" rather than failing.
 
