@@ -6,6 +6,8 @@ without any model. Behavior is driven by instruction markers:
 
 - ``ASK:<question>`` -> emit a blocked/question result and stop (no commit).
 - ``FAIL`` -> emit no result event and exit non-zero (failure path).
+- ``HOLD:<seconds>`` -> stay in a live turn for that long before finishing, so a
+  test can steer, interrupt, or supersede a worker that is genuinely mid-turn.
 - otherwise -> write a file, commit, and emit a completed result with the head SHA.
 """
 
@@ -31,6 +33,16 @@ def _git(args: list[str], cwd: str) -> str:
     return proc.stdout.strip()
 
 
+def _hold_seconds(instructions: str) -> float:
+    for token in instructions.split():
+        if token.startswith("HOLD:"):
+            try:
+                return max(0.0, float(token[len("HOLD:") :]))
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--spec", required=True)
@@ -51,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
                 fh.write("partial work before failure\n")
         _emit({"type": "error", "session_id": session_id, "text": "instructed to fail"})
         return 3
+
+    hold = _hold_seconds(instructions)
+    if hold:
+        # A genuinely live turn. An interrupt lands here and exits non-zero with no
+        # result event — exactly what a real interrupted worker looks like.
+        _emit({"type": "progress", "session_id": session_id, "text": f"holding {hold}s"})
+        time.sleep(hold)
 
     if instructions.startswith("ASK:"):
         question = instructions[len("ASK:") :].strip() or "need direction"

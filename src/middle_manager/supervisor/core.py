@@ -288,6 +288,12 @@ class Supervisor:
             (task_id,),
         ).fetchone()
         session_id = sess["provider_session_id"] if sess else None
+        # Any runner still attached to the old session is retired here: it is no
+        # longer the task's worker, and its (usually nonzero) exit must not land on
+        # the task after this resume. Then say the truth about the task *now* —
+        # it is being worked again, not `failed` from the session we just replaced.
+        superseded = store.supersede_runners(conn, task_id, reason="resume")
+        store.set_task_status(conn, task_id, "in_progress")
         spec = TaskSpec(
             task_id=task_id,
             title=task["title"],
@@ -311,12 +317,23 @@ class Supervisor:
         store.append_event(
             conn,
             kind="resumed",
-            payload={"task_id": task_id, "session_id": session_id, "message": message},
+            payload={
+                "task_id": task_id,
+                "session_id": session_id,
+                "message": message,
+                "superseded_runners": superseded,
+                "status": "in_progress",
+            },
             run_id=task["run_id"],
             task_id=task_id,
         )
         thread.start()
-        return {"task_id": task_id, "resumed_session": session_id}
+        return {
+            "task_id": task_id,
+            "resumed_session": session_id,
+            "status": "in_progress",
+            "superseded_runners": superseded,
+        }
 
     def steer_task(self, task_id: int, message: str) -> dict:
         """Steer a task.
@@ -347,23 +364,7 @@ class Supervisor:
             }
 
         if can_interrupt:
-            with self._lock:
-                runner = self._runners.get(task_id)
-            if runner is not None:
-                runner.interrupt()
-            # After the interrupt lands, resume with the steer message.
-            store.append_event(
-                conn,
-                kind="steer",
-                payload={"task_id": task_id, "mode": "interrupt", "message": message},
-                run_id=task["run_id"],
-                task_id=task_id,
-            )
-            return {
-                "mode": "interrupt",
-                "task_id": task_id,
-                "note": "interrupt delivered; resume applies the steer",
-            }
+            return self._interrupt_steer(conn, task, message)
 
         # Checkpoint steering: record the pending steer to apply at completion.
         store.append_event(
@@ -381,6 +382,87 @@ class Supervisor:
                 "automatically when the current turn ends"
             ),
         }
+
+    # How long the auto-resume waits for an interrupted worker process to exit
+    # before resuming anyway (the resume is by session id, so it is safe either way).
+    INTERRUPT_DRAIN_SECONDS = 60.0
+
+    def _interrupt_steer(self, conn, task, message: str) -> dict:
+        """Interrupt the live turn and resume it with the steer, staying in_progress.
+
+        The interrupted process exits nonzero and its adapter reports ``failed``.
+        Before the signal goes out the runner is marked superseded, so that exit is
+        recorded against the retired session instead of stamping the task — a steer
+        is a redirection, not a failure (2026-09-02, task 78). The resume carrying
+        the steer text is fired as soon as the old process is gone.
+        """
+        task_id = int(task["id"])
+        with self._lock:
+            runner = self._runners.get(task_id)
+        superseded = store.supersede_runners(conn, task_id, reason="steer-interrupt")
+        store.set_task_status(conn, task_id, "in_progress")
+        if runner is not None:
+            runner.interrupt()
+        store.append_event(
+            conn,
+            kind="steer",
+            payload={
+                "task_id": task_id,
+                "mode": "interrupt_resume",
+                "message": message,
+                "superseded_runners": superseded,
+                "status": "in_progress",
+            },
+            run_id=task["run_id"],
+            task_id=task_id,
+        )
+        thread = threading.Thread(
+            target=self._resume_after_interrupt,
+            args=(task_id, message, [r["runner"] for r in superseded]),
+            daemon=True,
+        )
+        thread.start()
+        return {
+            "mode": "interrupt_resume",
+            "task_id": task_id,
+            "status": "in_progress",
+            "superseded_runners": superseded,
+            "note": (
+                "interrupt delivered; the session is being resumed with the steer — "
+                "the task stays in_progress"
+            ),
+        }
+
+    def _resume_after_interrupt(self, task_id: int, message: str, runner_ids: list[str]) -> None:
+        """Wait for the interrupted worker process to die, then resume with the steer."""
+        deadline = time.monotonic() + self.INTERRUPT_DRAIN_SECONDS
+        while time.monotonic() < deadline:
+            conn = init_db()
+            pending = False
+            for runner_id in runner_ids:
+                row = store.get_runner(conn, runner_id)
+                if row is None or row["result_recorded"]:
+                    continue
+                if _pid_alive(row["pid"]):
+                    pending = True
+            if not pending:
+                break
+            time.sleep(0.1)
+        try:
+            self.resume_task(task_id, message)
+        except Exception as exc:  # noqa: BLE001 - a failed resume is visible in events
+            conn = init_db()
+            task = store.get_task(conn, task_id)
+            store.append_event(
+                conn,
+                kind="error",
+                payload={
+                    "task_id": task_id,
+                    "summary": f"steer interrupt landed but the resume failed: {exc!r}",
+                },
+                run_id=task["run_id"] if task else None,
+                task_id=task_id,
+            )
 
     NO_LIVE_TURN_STATUSES = ("worker_done", "delivered", "blocked", "failed", "needs_recovery")
 
@@ -433,7 +515,11 @@ class Supervisor:
             result = runner.run(spec)
         except Exception as exc:  # noqa: BLE001 - record, never crash the supervisor
             conn = init_db()
-            store.set_task_status(conn, spec.task_id, "failed")
+            # Only stamp the task when this runner is still the task's session; a
+            # crash in a session that a resume already replaced says nothing about
+            # the worker now running.
+            if not store.live_runners_for_task(conn, spec.task_id):
+                store.set_task_status(conn, spec.task_id, "failed")
             store.append_event(
                 conn,
                 kind="error",
@@ -442,6 +528,9 @@ class Supervisor:
                 task_id=spec.task_id,
             )
         else:
+            if runner.superseded:
+                # A retired session's ending is not this task's checkpoint.
+                return
             if result.status == "blocked" and result.question:
                 self._maybe_auto_answer(spec, result.question)
             else:

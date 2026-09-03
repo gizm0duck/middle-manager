@@ -349,7 +349,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     if not resp.get("ok"):
         print(f"resume failed: {resp.get('error')}", file=sys.stderr)
         return 1
-    print(f"resuming task {args.task_id} (session {resp.get('resumed_session')})")
+    print(
+        f"resuming task {args.task_id} (session {resp.get('resumed_session')}) — "
+        f"status {resp.get('status', 'in_progress')}"
+    )
     return 0
 
 
@@ -365,7 +368,11 @@ def _cmd_steer(args: argparse.Namespace) -> int:
     if not resp.get("ok"):
         print(f"steer failed: {resp.get('error')}", file=sys.stderr)
         return 1
-    print(f"steer task {args.task_id}: mode={resp.get('mode')} {resp.get('note', '')}")
+    status = resp.get("status")
+    line = f"steer task {args.task_id}: mode={resp.get('mode')}"
+    if status:
+        line += f" status={status}"
+    print(f"{line} {resp.get('note', '')}".rstrip())
     return 0
 
 

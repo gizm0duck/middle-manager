@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -153,7 +153,9 @@ CREATE TABLE IF NOT EXISTS runners (
     started_at TEXT NOT NULL,
     heartbeat_at TEXT,
     exit_code INTEGER,
-    result_recorded INTEGER NOT NULL DEFAULT 0
+    result_recorded INTEGER NOT NULL DEFAULT 0,
+    superseded_at TEXT,
+    supersede_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS todos (
@@ -236,6 +238,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "stacked_on" not in task_cols:
         # The branch a stacked task started from; delivery targets it by default.
         conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on TEXT")
+    runner_cols = _column_names(conn, "runners")
+    for col in ("superseded_at", "supersede_reason"):
+        # A runner superseded by a resume must not stamp the task when it finally
+        # exits: its late exit code belongs to a session nobody is waiting on.
+        if col not in runner_cols:
+            conn.execute(f"ALTER TABLE runners ADD COLUMN {col} TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:
