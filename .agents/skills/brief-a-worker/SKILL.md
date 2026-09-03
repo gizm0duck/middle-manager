@@ -88,7 +88,17 @@ paid for once already.
   between, the budget-versus-infrastructure decision goes to the user with the
   evidence — not a third code round.
 
-## 6. Before you send it
+## 6. Don't restate the environment's command rules
+
+A `claude` dispatch already prepends them: one plain command per call, no pipes /
+`&&` / `;` / inline env assignment / redirection, `cd` on its own, push with
+`git push origin HEAD:<branch>`, never open a PR (the manager does that from the
+pushed branch), and record any denied command verbatim under "Flagged, not done".
+That block is generated from the branch the task actually leased, so it is always
+right and always identical. Repeating it by hand in a brief is how it drifts.
+Codex workers have a real shell and are deliberately not given the block.
+
+## 7. Before you send it
 
 `test -s` the file; confirm disk and pool capacity (`mm dispatch` checks the disk);
 read the brief once as the worker: is there any instruction it would have to guess?

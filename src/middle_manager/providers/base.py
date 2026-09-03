@@ -21,6 +21,9 @@ class TaskSpec:
     run_id: int | None = None
     resume_session_id: str | None = None
     steer_message: str | None = None
+    # The lease branch the worker pushes to. Set by the supervisor at dispatch;
+    # provider command rules name it so the worker never has to guess.
+    branch: str | None = None
     # Repo-memory preamble prepended to a fresh worker's prompt so it consults and
     # updates the repo's shared notes/tasks. Set by the supervisor at dispatch.
     memory_preamble: str | None = None

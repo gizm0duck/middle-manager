@@ -29,7 +29,10 @@ def _spec(provider, **kw):
 
 def test_claude_start_argv_no_bypass() -> None:
     argv = ClaudeAdapter().start(_spec("claude", model="haiku"))
-    assert argv[:3] == ["claude", "-p", "do the thing"]
+    assert argv[:2] == ["claude", "-p"]
+    # The prompt leads with the environment's command rules (see
+    # tests/test_command_rules.py) and ends with the brief itself.
+    assert argv[2].endswith("do the thing")
     assert "stream-json" in argv
     assert "--model" in argv and "haiku" in argv
     assert "--permission-mode" in argv and "acceptEdits" in argv
@@ -39,8 +42,8 @@ def test_claude_start_argv_no_bypass() -> None:
 def test_claude_start_prepends_memory_preamble() -> None:
     spec = _spec("claude", memory_preamble="Shared repo memory: read notes.md, log tasks.md")
     prompt = ClaudeAdapter().start(spec)[2]
-    assert prompt.startswith("Shared repo memory:")
-    assert "do the thing" in prompt  # original task preserved after the preamble
+    assert "Shared repo memory:" in prompt
+    assert prompt.index("Shared repo memory:") < prompt.index("do the thing")
 
 
 def test_claude_resume_uses_session() -> None:
