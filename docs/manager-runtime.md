@@ -460,7 +460,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
-| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` |
+| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |

@@ -22,6 +22,7 @@ from middle_manager.providers.capability import (
     allows_interrupt_steer,
     capabilities_for,
 )
+from middle_manager.providers.command_rules import command_rules
 
 ALLOWED_TOOLS_ENV = "MM_CLAUDE_ALLOWED_TOOLS"
 
@@ -52,6 +53,15 @@ class ClaudeAdapter(ProviderAdapter):
 
     def probe(self) -> dict:
         return capabilities_for("claude")
+
+    def worker_prompt(self, spec: TaskSpec) -> str:
+        """The command rules come first, then the memory preamble and the brief.
+
+        Briefs used to repeat these rules by hand. They are the environment's
+        rules, not the task's, so the runtime states them — once, identically,
+        every time.
+        """
+        return f"{command_rules(self.name, spec.branch)}\n---\n\n{super().worker_prompt(spec)}"
 
     def _common(self, argv: list[str], spec: TaskSpec) -> list[str]:
         if spec.model:
