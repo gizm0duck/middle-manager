@@ -160,6 +160,8 @@ mm tools install                       # download/verify pinned companions (setu
 mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
 mm supervisor serve                    # per-task runners, durable state
+mm worktree list                       # every leased slot: task, state, size
+mm worktree prune --dry-run            # what finished work is still holding disk
 mm dispatch --repo your-repo --title "add health endpoint" --provider claude
 mm wait <run_id>                       # block until something needs a human
 mm answer <task_id> --answer "use /v2/health" --scope run   # recorded + reused

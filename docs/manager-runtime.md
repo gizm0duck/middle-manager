@@ -448,6 +448,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Companion tools | `mm tools install [--force]`, `mm tools status` |
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
+| Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>`, `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |

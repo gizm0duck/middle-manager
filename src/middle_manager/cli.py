@@ -253,6 +253,46 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_worktree(args: argparse.Namespace) -> int:
+    from middle_manager.worktree.reclaim import human_bytes, list_worktrees, prune
+
+    if args.worktree_cmd == "list":
+        entries = list_worktrees(args.repo)
+        if args.json:
+            print(json.dumps([vars(e) for e in entries], indent=2))
+            return 0
+        if not entries:
+            print("no leased worktrees")
+            return 0
+        print(f"{'SLOT':<14}{'TASK':<7}{'STATUS':<14}{'STATE':<10}{'SIZE':>10}  BRANCH")
+        for e in entries:
+            state = "gone" if not e.exists else ("dirty" if e.dirty else "clean")
+            if e.exists and not e.dirty and e.unpushed_commits > 0:
+                state = f"+{e.unpushed_commits} local"
+            task = str(e.task_id) if e.task_id else "-"
+            print(
+                f"{e.slot:<14}{task:<7}{(e.task_status or '?'):<14}{state:<10}"
+                f"{human_bytes(e.size_bytes):>10}  {e.branch}"
+            )
+        total = sum(e.size_bytes for e in entries)
+        free = sum(e.size_bytes for e in entries if e.reclaimable)
+        print(f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable")
+        return 0
+
+    res = prune(args.repo, dry_run=args.dry_run)
+    verb = "would remove" if res["dry_run"] else "removed"
+    for r in res["removed"]:
+        print(f"  {verb} {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
+    for r in res["skipped"]:
+        print(f"  kept {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
+    print(
+        f"{verb} {len(res['removed'])} worktree(s), "
+        f"{human_bytes(res['reclaimed_bytes'])} reclaimed; "
+        f"{len(res['skipped'])} kept ({human_bytes(res['held_bytes'])})"
+    )
+    return 0
+
+
 def _cmd_wait(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -1114,6 +1154,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dispatch.set_defaults(func=_cmd_dispatch)
+
+    worktree = sub.add_parser("worktree", help="inspect and reclaim leased worktrees")
+    wtsub = worktree.add_subparsers(dest="worktree_cmd", required=True)
+    wtlist = wtsub.add_parser("list", help="slot, task, status, branch, dirty/clean, size")
+    wtlist.add_argument("--repo", default=None, help="only this registered repo")
+    wtlist.add_argument("--json", action="store_true", help="machine-readable output")
+    wtprune = wtsub.add_parser(
+        "prune", help="remove the worktrees of finished tasks that hold nothing unique"
+    )
+    wtprune.add_argument("--repo", default=None, help="only this registered repo")
+    wtprune.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="report what would go without touching anything",
+    )
+    worktree.set_defaults(func=_cmd_worktree)
 
     wait = sub.add_parser(
         "wait",
