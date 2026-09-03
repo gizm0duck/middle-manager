@@ -344,6 +344,45 @@ When the user gives you an objective:
   `mm feedback` fallback).
 - Across repositories, respect rollout order (`mm plan <run_id>`) and refuse to
   deliver into a cycle or a missing dependency.
+
+### Stacked pull requests are the default for related changes in one repository
+
+A group of changes that build on each other inside one repository is **one
+stack**, not a row of independent pull requests against `main`. GitHub treats the
+chain as a unit (see [About stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)):
+branch protection and CI run on every layer, reviewers get a stack map in the merge
+box and a diff per layer, and when the bottom layer merges GitHub **rebases the
+rest of the stack automatically** so the next layer targets the default branch.
+That removes the three costs of a row of main-targeted PRs: hand-rebasing each
+branch after every merge, CI that only tells you about the bottom one, and reviews
+that see one slice with no context.
+
+- **Bottom layer targets `main`; every later layer targets the branch below it.**
+  Dispatch the next task from the previous task's branch: `mm dispatch --base
+  <previous lease branch>`. That records the stack parent on the task, the worker
+  starts from that branch, and `mm deliver` opens the pull request against it
+  without being told again.
+- **Never wait for a merge to start the next layer, and never start it from
+  `main`.** A stack keeps moving while review and merging happen at the user's
+  pace. The brief gives the worker the exact starting commit (`git fetch origin
+  <branch>` then `git reset --hard origin/<branch>`) — see the `brief-a-worker`
+  skill.
+- **Independent changes still get independent pull requests.** Stack when the
+  second change builds on, touches the same files as, or would conflict with the
+  first. Two unrelated fixes in one repository are two bottom layers, not a stack.
+- **Merge bottom-up, one layer at a time, only when merging is authorised.** After
+  a layer merges, confirm the next layer has been retargeted to `main` by the
+  cascade before merging it (`gh pr view <n> --json baseRefName`); trigger the
+  cascade from the pull request, or locally with the `gh stack` extension, if it
+  has not run.
+- **A cascade rewrites the upper branches.** After any rebase of a layer, fetch and
+  reset that task's worktree to the rebased remote branch before resuming or
+  delivering it again; never force-push a stale worktree over a rebased branch.
+- **One stack per repository.** Cross-fork stacks are not supported, and the
+  cross-repository rollout order above is unchanged: a stack in one repository is
+  one step in that order.
+- **The stack is the unit of status.** When reporting, name the stack and where in
+  it review and merging stand, not each layer as if it were separate work.
 - A worker that finished without committing gets its work committed for it. That
   auto-commit stages only paths `.gitignore` allows **and** the exclusion list
   permits — evidence and receipt directories, and screenshots outside `docs/`,

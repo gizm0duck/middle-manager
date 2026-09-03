@@ -22,10 +22,16 @@ paid for once already.
 - **Durable file, never a shell substitution.** Write the brief under
   `.mm/briefs/<repo>/` and dispatch with `--brief <file>`. The tool refuses an empty
   file; a session restart once wiped a scratch brief and a worker started blank.
-- **Exact starting commit, in commands.** For stacked work: `git fetch origin
-  <branch> && git reset --hard origin/<branch>` and the SHA the worker must see. Never
+- **Exact starting commit, in commands.** Related changes in one repository are a
+  **stack** by default (see the runtime contract, "Stacked pull requests"): the
+  starting commit for the next layer is the previous task's lease branch, dispatched
+  with `mm dispatch --base <previous lease branch>` so the stack parent is recorded and
+  `mm deliver` targets it. The brief still spells it out: `git fetch origin <branch>`
+  then `git reset --hard origin/<branch>` and the SHA the worker must see. Never
   "merge the base in" — a fresh worktree loses nothing and a merge fails when main
-  has moved. Name the base branch the PR opens against.
+  has moved. Start from `origin/main` only for a bottom layer or an independent change.
+  Name the base branch the PR opens against (Claude briefs: the runtime's command
+  rules already pin the push to the lease branch; name only the base).
 - **Scope fence, both directions.** What is in (the plan section, verbatim), what is
   explicitly out (the neighbouring sections by name), and the two report headings
   the worker must fill: "Outside scope, required to build" and "Flagged, not done".
