@@ -14,9 +14,11 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from middle_manager.providers.base import ProviderAdapter, TaskSpec, WorkerResult
 from middle_manager.state import init_db, store
+from middle_manager.supervisor import autocommit
 from middle_manager.supervisor.spool import EventSpool
 
 
@@ -25,18 +27,29 @@ def _git(args: list[str], cwd: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def _finalize_worktree(spec: TaskSpec, summary: str) -> str | None:
-    """Ensure completed work is committed; return the head SHA, or None.
+@dataclass
+class Finalized:
+    """The outcome of the end-of-task auto-commit."""
+
+    head_sha: str | None = None
+    committed: list[str] = field(default_factory=list)
+    excluded: list[str] = field(default_factory=list)
+
+
+def _finalize_worktree(spec: TaskSpec, summary: str) -> Finalized:
+    """Ensure completed work is committed; report what was staged and what was not.
 
     Workers may or may not commit. The manager owns the reviewable commit, so a
     completed task with a dirty worktree is committed here with a generated
-    message. Returns the current head SHA of the leased worktree.
+    message — but only for the paths that belong on the branch. Evidence and
+    receipt directories a worker wrote for the review are held back (see
+    ``supervisor.autocommit``); they stay in the worktree and are named in the
+    task's event, never silently swept into the commit.
     """
     if not spec.worktree_path:
-        return None
-    status = _git(["status", "--porcelain"], cwd=spec.worktree_path)
-    if status.strip():
-        _git(["add", "-A"], cwd=spec.worktree_path)
+        return Finalized()
+    committed, excluded = autocommit.stage(spec.worktree_path)
+    if committed:
         _git(
             [
                 "-c",
@@ -50,7 +63,7 @@ def _finalize_worktree(spec: TaskSpec, summary: str) -> str | None:
             cwd=spec.worktree_path,
         )
     head = _git(["rev-parse", "HEAD"], cwd=spec.worktree_path)
-    return head or None
+    return Finalized(head_sha=head or None, committed=committed, excluded=excluded)
 
 
 _TERMINAL_STATUS = {"completed": "worker_done", "blocked": "blocked", "failed": "failed"}
@@ -199,8 +212,29 @@ class RunnerGuardian:
         store.set_task_status(conn, spec.task_id, task_status)
 
         # For a completed task, guarantee a reviewable commit and record head.
+        finalized = None
         if result.status == "completed" and not result.head_sha:
-            result.head_sha = _finalize_worktree(spec, result.summary)
+            finalized = _finalize_worktree(spec, result.summary)
+            result.head_sha = finalized.head_sha
+            # Say out loud what the auto-commit staged and what it held back, so a
+            # missing file is a recorded decision rather than a surprise at review.
+            store.append_event(
+                conn,
+                kind="autocommit",
+                payload={
+                    "task_id": spec.task_id,
+                    "head_sha": finalized.head_sha,
+                    "committed": finalized.committed,
+                    "excluded": finalized.excluded,
+                    "summary": (
+                        f"auto-committed {len(finalized.committed)} path(s); "
+                        f"left {len(finalized.excluded)} out of the commit"
+                        + (f": {', '.join(finalized.excluded)}" if finalized.excluded else "")
+                    ),
+                },
+                run_id=spec.run_id,
+                task_id=spec.task_id,
+            )
 
         # Emit an actionable event for the manager/human loop. Every terminal event
         # carries the session it came from so a late arrival can be attributed.
@@ -213,6 +247,7 @@ class RunnerGuardian:
                     "head_sha": result.head_sha,
                     "summary": result.summary,
                     "session_id": session_id,
+                    "excluded_from_commit": finalized.excluded if finalized else [],
                 },
                 run_id=spec.run_id,
                 task_id=spec.task_id,

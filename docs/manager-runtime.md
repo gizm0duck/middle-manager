@@ -344,6 +344,13 @@ When the user gives you an objective:
   `mm feedback` fallback).
 - Across repositories, respect rollout order (`mm plan <run_id>`) and refuse to
   deliver into a cycle or a missing dependency.
+- A worker that finished without committing gets its work committed for it. That
+  auto-commit stages only paths `.gitignore` allows **and** the exclusion list
+  permits — evidence and receipt directories, and screenshots outside `docs/`,
+  stay in the worktree. Whatever it held back is named in the task's `autocommit`
+  event and in `worker_done`, so a missing file is a recorded decision, not a
+  surprise. Change the list with `MM_AUTOCOMMIT_EXCLUDE` (comma-separated;
+  a leading `!` keeps a path an earlier rule excluded).
 
 > **Never block. The only thing you ever block on is producing your reply to the
 > user.** Everything else runs in the background: workers execute in the supervisor

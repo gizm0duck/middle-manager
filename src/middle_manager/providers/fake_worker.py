@@ -8,6 +8,8 @@ without any model. Behavior is driven by instruction markers:
 - ``FAIL`` -> emit no result event and exit non-zero (failure path).
 - ``HOLD:<seconds>`` -> stay in a live turn for that long before finishing, so a
   test can steer, interrupt, or supersede a worker that is genuinely mid-turn.
+- ``NOCOMMIT`` -> write work AND an evidence directory, then finish without
+  committing, so the supervisor's end-of-task auto-commit is what runs.
 - otherwise -> write a file, commit, and emit a completed result with the head SHA.
 """
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -92,6 +95,24 @@ def main(argv: list[str] | None = None) -> int:
         fh.write(f"work for task {spec['task_id']}: {spec['title']}\n")
         if steer:
             fh.write(f"steer: {steer}\n")
+    if "NOCOMMIT" in instructions:
+        # A worker that left review evidence behind and never committed: the
+        # supervisor's end-of-task auto-commit decides what belongs on the branch.
+        os.makedirs(f"{worktree}/evidence", exist_ok=True)
+        with open(f"{worktree}/evidence/after.png", "w", encoding="utf-8") as fh:
+            fh.write("pretend screenshot\n")
+        _emit({"type": "progress", "session_id": session_id, "text": "left work uncommitted"})
+        _emit(
+            {
+                "type": "result",
+                "session_id": session_id,
+                "status": "completed",
+                "summary": f"implemented {spec['title']}",
+                "usage": {"input_tokens": 250, "output_tokens": 40},
+            }
+        )
+        return 0
+
     _git(["add", "."], cwd=worktree)
     _git(
         [
