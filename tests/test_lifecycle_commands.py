@@ -254,3 +254,8 @@ def test_deliver_merged_does_not_need_an_approved_review(server, source_repo):
     assert res.pushed is False
     assert res.pr_url is None
     assert _status(task_id) == "delivered"
+    # The landing goes on the task itself, so the heartbeat stops asking the
+    # forge about a branch whose merge is already known.
+    task = store.get_task(init_db(), task_id)
+    assert task["merged_sha"] == "0123456789abcdef0123456789abcdef01234567"
+    assert task["merged_at"]

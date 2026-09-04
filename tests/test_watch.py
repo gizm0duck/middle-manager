@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from middle_manager import board, cli, watch
+from middle_manager import board, cli, delivery, watch
 from middle_manager.state import init_db, store
 
 
@@ -204,15 +204,61 @@ def test_a_branch_with_no_pull_request_yet_adds_no_noise(home, tmp_path, monkeyp
     assert f"needs me: t{task_id} worker_done" in line
 
 
-def test_a_merged_pull_request_is_reported_without_asking_for_checks(
+def test_a_merged_pull_request_is_news_once_and_then_never_asked_about_again(
     home, tmp_path, monkeypatch
 ) -> None:
     conn = home
+    delivered_task(conn, tmp_path, "harness/landing")
+    fake_forge(monkeypatch, pr=OPEN_PR, checks=[{"name": "Unit tests", "bucket": "pass"}])
+
+    first = watch.tick(conn)
+    assert "prs: PR #779 -> main: ci pass, mergeable" in watch.render(first)
+    settled = watch.settled_index(None, first["prs"])
+    assert settled == {}  # an open pull request has not stopped moving
+
+    calls = fake_forge(monkeypatch, pr={**OPEN_PR, "state": "MERGED"})
+    second = watch.tick(conn, previous_prs=watch.pr_index(first["prs"]), settled_prs=settled)
+    line = watch.render(second)
+    assert "changed: PR #779 open -> merged" in line
+    assert "prs:" not in line  # the flip is the news; it earns no standing segment
+    assert [c[1] for c in calls] == ["list"]  # nothing left to ask the checks about
+    settled = watch.settled_index(settled, second["prs"])
+
+    calls.clear()
+    third = watch.tick(conn, previous_prs=watch.pr_index(second["prs"]), settled_prs=settled)
+    assert calls == []  # a terminal state cannot change: stop paying for it
+    assert third["pr_changes"] == []
+    assert "prs:" not in watch.render(third)
+
+
+def test_run_stops_polling_a_pull_request_once_it_has_landed(home, tmp_path, monkeypatch) -> None:
+    conn = home
     delivered_task(conn, tmp_path, "harness/landed")
     calls = fake_forge(monkeypatch, pr={**OPEN_PR, "state": "MERGED"})
+    out = io.StringIO()
+    naps: list[float] = []
 
-    assert "prs: PR #779 -> main: merged" in watch.render(watch.tick(conn))
-    assert [c[1] for c in calls] == ["list"]
+    def fake_sleep(seconds: float) -> None:
+        naps.append(seconds)
+        if len(naps) == 3:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        watch.run(interval=300, out=out, sleep=fake_sleep)
+    assert [c[1] for c in calls] == ["list"]  # three ticks, one query, then silence
+    assert "prs:" not in out.getvalue()
+
+
+def test_a_recorded_merge_is_never_looked_up_at_all(home, tmp_path, monkeypatch) -> None:
+    conn = home
+    task_id = delivered_task(conn, tmp_path, "harness/recorded")
+    calls = fake_forge(monkeypatch, pr=OPEN_PR, checks=[{"name": "Unit tests", "bucket": "pass"}])
+    delivery.record_merged(task_id, "a" * 40)
+
+    snap = watch.tick(conn)
+    assert snap["prs"] == []  # the merge is on the record; the forge has nothing to add
+    assert calls == []
+    assert "prs:" not in watch.render(snap)
 
 
 def test_a_tick_asks_the_forge_once_per_branch(home, tmp_path, monkeypatch) -> None:
