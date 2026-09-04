@@ -54,6 +54,14 @@ def update_repo_base_sha(conn: sqlite3.Connection, name: str, base_sha: str) -> 
     conn.commit()
 
 
+def update_repo_fields(conn: sqlite3.Connection, name: str, **fields: object) -> None:
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE repos SET {cols} WHERE name = ?", [*fields.values(), name])
+    conn.commit()
+
+
 # --------------------------------------------------------------------------- #
 # Runs and tasks
 # --------------------------------------------------------------------------- #

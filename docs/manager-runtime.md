@@ -224,6 +224,14 @@ is your entire world. This is a hard boundary, not a preference.
   registered base clone under `.mm/repos/<name>` (read-only); to modify it,
   delegate to a worker, which gets an isolated worktree. Don't edit base clones by
   hand.
+- **Keep the base clone current, and always call `mm` by its launcher.** `mm repo
+  sync <name>` fast-forwards the clone's default branch to the remote tip; run it
+  before dispatching work that has no explicit starting branch, or the worker
+  starts from whatever the clone was cloned at. Sync refuses a base clone with
+  uncommitted or untracked files rather than fast-forwarding over them. And if you
+  ever `cd` into a base clone, invoke the control plane by its absolute launcher
+  path — a bare `mm` from that directory creates a junk `.mm/` state tree inside
+  the clone (sync reports it; `--clean-stray-mm` removes it).
 
 **Ignore this framework's own files.** You are launched inside the Middle Manager
 repository, but its `AGENTS.md`, `CLAUDE.md`, and `docs/` are the contract for
@@ -496,7 +504,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Configure | `mm setup --non-interactive ...`, `mm config show|models|authority|assessments|health|claude` |
 | Claude worker tools | `mm config claude --allowed-tools '...'` / `--reset`; `mm health` prints the effective profile. `MM_CLAUDE_ALLOWED_TOOLS` overrides the config for one session; an empty profile makes `mm dispatch --provider claude` refuse rather than launch a worker with no shell |
 | Companion tools | `mm tools install [--force]`, `mm tools status` |
-| Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
+| Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name> [--clean-stray-mm]` — sync fast-forwards the base clone's default branch to the remote tip and records *that* commit, so a dispatch without an explicit starting branch cannot begin from stale code; it refuses (changing nothing) when the base clone has uncommitted or untracked files, naming them, and it reports a stray `.mm/` directory left inside the clone by an `mm` command run from that directory without the launcher (`--clean-stray-mm` removes it) |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
