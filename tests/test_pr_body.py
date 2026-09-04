@@ -144,11 +144,57 @@ def test_a_section_the_closing_report_missed_is_carried_from_an_earlier_report(
     assert "The migration needs a second pass." in body
 
 
-def test_the_stack_section_names_the_branch_the_work_was_started_from(task) -> None:
-    store.update_task_fields(task.conn, task.id, stacked_on="harness/first-layer")
+def test_a_brief_whose_first_section_is_why_says_why_once(task) -> None:
+    """The composed "## Why" already names the section; a bold lead repeats the word."""
+    preflight.archive_brief(
+        "papaya",
+        task.id,
+        "# Rebuild the review surface\n\n## Why\n\nShane, 2026-09-04: every body was "
+        "rewritten by hand.\n\n## In scope\n\nThe three fixes.\n",
+    )
     body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
-    assert "`harness/first-layer`" in body
+    assert "**Why**" not in body
+    assert body.count("## Why") == 1
+    assert "Shane, 2026-09-04: every body was rewritten by hand." in body
+    assert "The three fixes." not in body  # the next section of the same depth ends it
+
+
+def test_a_brief_whose_first_section_has_another_name_keeps_its_bold_lead(task) -> None:
+    preflight.archive_brief(
+        "papaya",
+        task.id,
+        "# Rebuild the review surface\n\n## Problem\n\nThe body said only that the "
+        "delivery was automated.\n",
+    )
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "**Problem**" in body
+    assert "The body said only that the delivery was automated." in body
+
+
+def test_the_stack_section_names_the_branch_the_work_was_started_from(task) -> None:
+    store.update_task_fields(task.conn, task.id, stacked_on="mm/task-7-abc")
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "`mm/task-7-abc`" in body
     assert "Merge that one first" in body
+    assert "Bottom of its stack" not in body
+
+
+def test_a_task_started_from_the_default_branch_is_the_bottom_of_its_stack(task) -> None:
+    """`--base main` records the default branch, which is not a layer below."""
+    store.update_task_fields(task.conn, task.id, stacked_on="main")
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "Bottom of its stack" in body
+    assert "Merge that one first" not in body
+
+
+def test_the_newest_report_stands_in_when_the_done_note_has_not_landed(task) -> None:
+    """Task 114: the closing report arrived seconds after delivery, not before it."""
+    progress.record(task.id, phase="implement", note="Halfway.", conn=task.conn)
+    progress.record(task.id, phase="review", note="Self-review clean; suite green.", conn=task.conn)
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "The worker's latest report, filed at the `review` phase:" in body
+    assert "Self-review clean; suite green." in body
+    assert "filed no closing report" not in body
 
 
 def test_a_task_with_no_brief_and_no_reports_still_produces_a_valid_body(task) -> None:
