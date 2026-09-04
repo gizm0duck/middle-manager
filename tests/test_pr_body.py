@@ -37,6 +37,7 @@ The dark theme still has a contrast problem on the diffstat.
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("MM_HOME", str(tmp_path / ".mm"))
     monkeypatch.delenv(pr_body.FOOTER_ENV, raising=False)
+    monkeypatch.delenv(pr_body.SESSION_URL_ENV, raising=False)
     return init_db()
 
 
@@ -161,13 +162,25 @@ def test_a_task_with_no_brief_and_no_reports_still_produces_a_valid_body(task) -
     assert body.endswith("\n")
 
 
-def test_the_harness_footer_is_appended_when_the_environment_supplies_one(
-    task, monkeypatch
-) -> None:
-    monkeypatch.setenv(pr_body.FOOTER_ENV, "Generated with a harness\n\nhttps://example/session")
+def test_the_footer_credits_middle_manager_and_the_worker_by_default(task, monkeypatch) -> None:
+    monkeypatch.delenv(pr_body.SESSION_URL_ENV, raising=False)
     body = pr_body.compose(task.id, head_sha="c" * 40, conn=task.conn)
-    assert body.rstrip().endswith("https://example/session")
-    assert "Delivered by Middle Manager" in body
+    assert "Driven by Middle Manager" in body
+    assert "implemented by a dispatched" in body
+    assert "Generated with" not in body
+
+
+def test_the_session_link_rides_the_attribution_when_supplied(task, monkeypatch) -> None:
+    monkeypatch.setenv(pr_body.SESSION_URL_ENV, "https://example/session")
+    body = pr_body.compose(task.id, head_sha="c" * 40, conn=task.conn)
+    assert "Driven by Middle Manager" in body
+    assert "Session: https://example/session" in body
+
+
+def test_extra_footer_lines_are_appended_after_the_attribution(task, monkeypatch) -> None:
+    monkeypatch.setenv(pr_body.FOOTER_ENV, "Deployed by the release train")
+    body = pr_body.compose(task.id, head_sha="c" * 40, conn=task.conn)
+    assert body.index("Driven by Middle Manager") < body.index("Deployed by the release train")
 
 
 # --------------------------------------------------------------------------- #
