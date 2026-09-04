@@ -237,6 +237,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if args.brief and args.instructions:
         print("dispatch: pass --brief <file> or --instructions, not both", file=sys.stderr)
         return 1
+    if not args.title and not args.brief:
+        print(
+            "dispatch: name the objective with --title, or pass --brief <file> and let the "
+            "brief's first Markdown heading name it",
+            file=sys.stderr,
+        )
+        return 1
     try:
         instructions = preflight.read_brief(args.brief) if args.brief else (args.instructions or "")
         preflight.check_disk()
@@ -244,11 +251,23 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
 
+    title = args.title
+    if not title:
+        title = preflight.title_from_brief(instructions)
+        if not title:
+            print(
+                f"dispatch: {args.brief} has no Markdown heading to take the objective from — "
+                "open the brief with a '# ...' heading, or pass --title",
+                file=sys.stderr,
+            )
+            return 1
+        print(f'objective taken from the brief\'s first heading: "{title}"')
+
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
-            title=args.title,
+            title=title,
             instructions=instructions,
             provider=args.provider,
             model=args.model,
@@ -1193,7 +1212,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     dispatch = sub.add_parser("dispatch", help="dispatch a task to a registered repo")
     dispatch.add_argument("--repo", required=True, help="registered repository name")
-    dispatch.add_argument("--title", required=True, help="task title/objective")
+    dispatch.add_argument(
+        "--title",
+        default=None,
+        help=(
+            "the objective, in one line; optional when --brief is given, which takes it "
+            "from the brief's first Markdown heading. An explicit --title always wins"
+        ),
+    )
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
         "--brief",

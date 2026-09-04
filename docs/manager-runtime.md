@@ -296,10 +296,12 @@ When the user gives you an objective:
    is the *only* place a repo can live. Never look elsewhere on the machine or
    guess a path. If the named repo isn't registered, ask the user for its URL (or
    an explicit path they give you) and `mm repo add` it before proceeding.
-3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --title
-   ... --provider <claude|codex> [--model ...] [--reasoning ...]`. Prefer the
-   smallest eligible worker; the ceiling is enforced in code, so you cannot
-   exceed it by accident.
+3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --brief
+   <file> --provider <claude|codex> [--model ...] [--reasoning ...]`. A brief
+   names its own task: with `--brief`, the objective comes from the brief's first
+   Markdown heading, so `--title` is only for overriding it (and is still required
+   when you dispatch without a brief). Prefer the smallest eligible worker; the
+   ceiling is enforced in code, so you cannot exceed it by accident.
 4. Track progress with a **non-blocking snapshot** — `mm run <run_id>` (task states,
    actionable events, usage) and `mm task <task_id>` (latest progress report) — and keep
    your **intent in the ledger**: `mm todo add "…"` the moment you know a next step,
@@ -499,7 +501,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
-| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Delegate | `mm dispatch --repo ... --brief <file> --provider ... [--title] [--model] [--reasoning]` — `--title` is optional whenever `--brief` is given: the objective is taken from the brief's first Markdown heading (whitespace collapsed, capped at 120 characters), and an explicit `--title` overrides it. Without a brief, `--title` is still required. Also: a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
