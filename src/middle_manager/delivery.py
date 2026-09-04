@@ -46,18 +46,43 @@ def _pr_tool() -> str | None:
     return None
 
 
+def _forge_for_task(conn, task) -> tuple[str, str | None]:
+    """The remote to push through and the ``owner/name`` to open the PR against.
+
+    A repo registered from a local path has a local ``origin``: pushing there
+    reaches nobody and there is no forge to open a pull request on. The
+    registration now carries the forge URL, and the base clone gets a ``forge``
+    remote when its ``origin`` is not it — so delivery pushes and opens the pull
+    request where the work is actually reviewed.
+    """
+    from middle_manager import repos
+
+    repo_id = task["repo_id"] if "repo_id" in task.keys() else None  # noqa: SIM118 - sqlite3.Row
+    if not repo_id:
+        return "origin", None
+    row = conn.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
+    if row is None:
+        return "origin", None
+    try:
+        return repos.upstream_remote(row), repos.forge_slug(row["forge_url"])
+    except repos.RepoError:
+        return "origin", repos.forge_slug(row["forge_url"])
+
+
 def deliver(
     task_id: int,
     *,
     push: bool = True,
     open_pr: bool = True,
-    remote: str = "origin",
+    remote: str | None = None,
     base: str | None = None,
 ) -> DeliveryResult:
     conn = init_db()
     task = store.get_task(conn, task_id)
     if task is None:
         raise DeliveryError(f"task {task_id} not found")
+    forge_remote, forge_slug = _forge_for_task(conn, task)
+    remote = remote or forge_remote
     worktree = task["worktree_path"]
     branch = task["branch"]
     if not worktree or not branch:
@@ -100,6 +125,10 @@ def deliver(
             ]
             if base:
                 argv += ["--base", base]
+            if forge_slug:
+                # The worktree's `origin` may be a local clone; name the forge
+                # explicitly so `gh` opens the pull request in the right place.
+                argv += ["--repo", forge_slug]
             proc = _run(argv, cwd=worktree)
             if proc.returncode == 0:
                 pr_url = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else None
@@ -111,7 +140,14 @@ def deliver(
     store.append_event(
         conn,
         kind="delivered",
-        payload={"task_id": task_id, "branch": branch, "head_sha": head, "pr_url": pr_url},
+        payload={
+            "task_id": task_id,
+            "branch": branch,
+            "head_sha": head,
+            "pr_url": pr_url,
+            "remote": remote,
+            "forge": forge_slug,
+        },
         run_id=task["run_id"],
         task_id=task_id,
     )

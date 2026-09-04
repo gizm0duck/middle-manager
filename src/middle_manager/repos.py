@@ -44,8 +44,43 @@ STRAY_MM_CAUSE = (
 )
 
 
+# Where a pull request can actually be opened. A repo registered from a local
+# path has a local `origin`, which is no forge at all: on 2026-09-04 a worker on
+# a path-registered repo pushed fine and `mm deliver` had nowhere to open the
+# pull request, so the manager pushed to GitHub and opened it by hand.
+_FORGE_URL_PATTERNS = (
+    re.compile(r"^https://(?:[^@/]+@)?github\.com/(?P<owner>[^/]+)/(?P<name>[^/]+?)(?:\.git)?/?$"),
+    re.compile(r"^git@github\.com:(?P<owner>[^/]+)/(?P<name>[^/]+?)(?:\.git)?/?$"),
+    re.compile(r"^ssh://git@github\.com/(?P<owner>[^/]+)/(?P<name>[^/]+?)(?:\.git)?/?$"),
+)
+
+# The second remote a base clone gets when its own `origin` is not the forge.
+# Rewriting `origin` would break the clone's relationship with the local checkout
+# it was cloned from (and every worktree already leased off it), so the forge is
+# added alongside it under a name nothing else uses. Worktrees share the base
+# clone's remote configuration, so a worker's worktree can fetch and push there
+# without any extra setup.
+FORGE_REMOTE = "forge"
+
+
 class RepoError(Exception):
     pass
+
+
+def forge_slug(url: str | None) -> str | None:
+    """``owner/name`` for a GitHub URL, else None. This is what ``gh --repo`` wants."""
+    if not url:
+        return None
+    for pattern in _FORGE_URL_PATTERNS:
+        match = pattern.match(url.strip())
+        if match:
+            return f"{match.group('owner')}/{match.group('name')}"
+    return None
+
+
+def is_forge_url(url: str | None) -> bool:
+    """True for a GitHub URL (https or ssh) — somewhere a pull request can be opened."""
+    return forge_slug(url) is not None
 
 
 @dataclass
@@ -55,6 +90,7 @@ class AddedRepo:
     local_path: str
     default_branch: str | None
     base_sha: str | None
+    forge_url: str | None = None
 
 
 @dataclass
@@ -104,7 +140,68 @@ def _resolve_source(url_or_path: str) -> str:
     return url_or_path
 
 
-def add_repo(url_or_path: str, name: str | None = None) -> AddedRepo:
+def remote_url(path: str, remote: str = "origin") -> str | None:
+    """A git repository's URL for ``remote``, or None when it has none."""
+    rc, out, _err = _git_ok(["remote", "get-url", remote], cwd=path)
+    return out or None if rc == 0 else None
+
+
+def ensure_forge_remote(local_path: str, forge_url: str | None) -> str:
+    """Make the forge reachable from the base clone, and name the remote to use.
+
+    When the clone's own ``origin`` is already the forge, that is the remote —
+    nothing to add. Otherwise the forge is added as a *second* remote
+    (``forge``), because rewriting ``origin`` would cut the clone off from the
+    local checkout it was cloned from. Returns the remote name to fetch and push
+    with.
+    """
+    if not forge_url:
+        return "origin"
+    origin = remote_url(local_path)
+    if origin and origin.rstrip("/") == forge_url.rstrip("/"):
+        return "origin"
+    existing = remote_url(local_path, FORGE_REMOTE)
+    if existing is None:
+        _git(["remote", "add", FORGE_REMOTE, forge_url], cwd=local_path)
+    elif existing.rstrip("/") != forge_url.rstrip("/"):
+        _git(["remote", "set-url", FORGE_REMOTE, forge_url], cwd=local_path)
+    return FORGE_REMOTE
+
+
+def upstream_remote(row) -> str:
+    """The remote a registered repo's work actually travels through."""
+    forge = row["forge_url"] if "forge_url" in row.keys() else None  # noqa: SIM118 - sqlite3.Row
+    if not forge:
+        return "origin"
+    return ensure_forge_remote(row["local_path"], forge)
+
+
+def _resolve_forge_url(source: str, forge_url: str | None) -> str:
+    """Decide where this repo's pull requests will be opened, or refuse.
+
+    An explicit ``--forge-url`` always wins. Otherwise a forge URL registered
+    directly is its own forge, and a local path inherits the forge from its own
+    ``origin``. A local path whose origin is another local path — or which has no
+    origin at all — has no forge, and registering it silently is what left a
+    delivered task with nowhere to open a pull request.
+    """
+    if forge_url:
+        return forge_url.strip()
+    if is_forge_url(source):
+        return source
+    origin = remote_url(source) if os.path.isdir(source) else None
+    if is_forge_url(origin):
+        assert origin is not None
+        return origin
+    detail = f"its origin is {origin!r}" if origin else "it has no origin remote"
+    raise RepoError(
+        f"{source} has no forge to open pull requests against ({detail}). Register it "
+        "with `mm repo add <path> --forge-url https://github.com/<owner>/<repo>` so "
+        "delivery knows where the pull request goes."
+    )
+
+
+def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = None) -> AddedRepo:
     ensure_layout()
     conn = init_db()
     repo_name = name or derive_name(url_or_path)
@@ -112,11 +209,13 @@ def add_repo(url_or_path: str, name: str | None = None) -> AddedRepo:
         raise RepoError(f"repo {repo_name!r} is already registered")
 
     source = _resolve_source(url_or_path)
+    resolved_forge = _resolve_forge_url(source, forge_url)
     dest = repos_dir() / repo_name
     if dest.exists():
         raise RepoError(f"destination {dest} already exists")
 
     _git(["clone", "--quiet", source, str(dest)])
+    ensure_forge_remote(str(dest), resolved_forge)
 
     default_branch: str | None
     try:
@@ -135,10 +234,11 @@ def add_repo(url_or_path: str, name: str | None = None) -> AddedRepo:
         local_path=str(dest),
         default_branch=default_branch,
         base_sha=base_sha,
+        forge_url=resolved_forge,
     )
     # Seed per-repo memory so learnings about this repo persist across sessions.
     seed_repo_memory(repo_name, origin=source, default_branch=default_branch)
-    return AddedRepo(repo_name, source, str(dest), default_branch, base_sha)
+    return AddedRepo(repo_name, source, str(dest), default_branch, base_sha, resolved_forge)
 
 
 def list_repos() -> list[dict]:
@@ -184,12 +284,12 @@ def stray_mm_dir(local_path: str) -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
-def _default_branch(conn, row) -> str:
+def _default_branch(row, remote: str) -> str:
     recorded = row["default_branch"]
     if recorded:
         return str(recorded)
     rc, out, _err = _git_ok(
-        ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=row["local_path"]
+        ["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], cwd=row["local_path"]
     )
     if rc == 0 and out:
         return out.split("/", 1)[-1]
@@ -266,9 +366,10 @@ def sync_repo(name: str, *, clean_stray_mm: bool = False) -> SyncResult:
             "remove these, then sync again."
         )
 
-    _git(["fetch", "--quiet", "--prune", "origin"], cwd=local_path)
-    branch = _default_branch(conn, row)
-    base_sha, moved = _fast_forward(local_path, branch, "origin")
+    remote = upstream_remote(row)
+    _git(["fetch", "--quiet", "--prune", remote], cwd=local_path)
+    branch = _default_branch(row, remote)
+    base_sha, moved = _fast_forward(local_path, branch, remote)
     store.update_repo_base_sha(conn, name, base_sha)
     if row["default_branch"] != branch:
         store.update_repo_fields(conn, name, default_branch=branch)
@@ -279,6 +380,7 @@ def sync_repo(name: str, *, clean_stray_mm: bool = False) -> SyncResult:
         base_sha=base_sha,
         previous_sha=previous,
         fast_forwarded=moved,
+        remote=remote,
         already_current=not moved,
     )
 

@@ -220,6 +220,12 @@ is your entire world. This is a hard boundary, not a preference.
   you don't have, say so and ask for its URL (or an explicit local path *they*
   give you), then `mm repo add` it. You bring a repo under management by
   registering it, never by wandering the filesystem to find it.
+- **Every repo needs a forge.** Registration records where this repo's pull
+  requests get opened. A path registration inherits it from that checkout's own
+  `origin`; if that origin is another local clone, `mm repo add` refuses until you
+  pass `--forge-url` — ask the user for the GitHub URL rather than registering a
+  repo whose delivery would have nowhere to go. If `mm doctor` flags a repo with
+  no forge, fix it before dispatching work you intend to deliver.
 - **Inspect at the managed clone; change via a worker.** To look at a repo, use its
   registered base clone under `.mm/repos/<name>` (read-only); to modify it,
   delegate to a worker, which gets an isolated worktree. Don't edit base clones by
@@ -504,7 +510,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Configure | `mm setup --non-interactive ...`, `mm config show|models|authority|assessments|health|claude` |
 | Claude worker tools | `mm config claude --allowed-tools '...'` / `--reset`; `mm health` prints the effective profile. `MM_CLAUDE_ALLOWED_TOOLS` overrides the config for one session; an empty profile makes `mm dispatch --provider claude` refuse rather than launch a worker with no shell |
 | Companion tools | `mm tools install [--force]`, `mm tools status` |
-| Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name> [--clean-stray-mm]` — sync fast-forwards the base clone's default branch to the remote tip and records *that* commit, so a dispatch without an explicit starting branch cannot begin from stale code; it refuses (changing nothing) when the base clone has uncommitted or untracked files, naming them, and it reports a stray `.mm/` directory left inside the clone by an `mm` command run from that directory without the launcher (`--clean-stray-mm` removes it) |
+| Repositories | `mm repo add <url|path> [--forge-url <url>]`, `mm repo list`, `mm repo sync <name> [--clean-stray-mm]` — registration records the **forge**: a URL registration is its own forge, a path registration inherits the forge from that path's `origin`, and a path whose origin is local (or missing) is refused until `--forge-url` names one, because a repo with nowhere to open a pull request strands every delivery. `mm repo list` shows it, sync fetches from it, `mm deliver` pushes and opens the pull request there, and `mm doctor` flags any repo without one. Sync sync fast-forwards the base clone's default branch to the remote tip and records *that* commit, so a dispatch without an explicit starting branch cannot begin from stale code; it refuses (changing nothing) when the base clone has uncommitted or untracked files, naming them, and it reports a stray `.mm/` directory left inside the clone by an `mm` command run from that directory without the launcher (`--clean-stray-mm` removes it) |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
@@ -513,7 +519,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
-| Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
+| Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--remote ...]` — pushes to the repo's registered forge and opens the pull request there (`--remote` overrides); `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
