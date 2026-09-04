@@ -17,9 +17,17 @@ import pytest
 from conftest import make_git_repo
 from middle_manager import preflight, repos
 from middle_manager.cli import main
+from middle_manager.paths import worktree_pools_dir
 from middle_manager.state import init_db, store
 from middle_manager.worktree.lease import LeaseManager
-from middle_manager.worktree.reclaim import human_bytes, list_worktrees, prune, reclaimable_bytes
+from middle_manager.worktree.reclaim import (
+    human_bytes,
+    list_worktrees,
+    orphan_slots,
+    pool_roots,
+    prune,
+    reclaimable_bytes,
+)
 
 
 def _git(path, *args):
@@ -245,6 +253,186 @@ def test_cli_prune_dry_run_reports_and_leaves_the_slot(repo, capsys):
     out = capsys.readouterr().out
     assert "would remove" in out
     assert Path(lease.worktree_path).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Orphans: slot directories on disk that no active lease owns
+#
+# The first real prune reclaimed nine backend slots while thirteen frontend slot
+# directories — clean, delivered, about 10 GB — were invisible, because their
+# leases had been released or were created by an earlier mm instance.
+# --------------------------------------------------------------------------- #
+
+
+def _base_clone(repo) -> str:
+    return store.get_repo(init_db(), repo.name)["local_path"]
+
+
+def _orphan_slot(repo, name: str, *, root: Path | None = None, nested: bool = False):
+    """A pool slot on disk holding a real checkout that no lease ever recorded."""
+    pool = root or worktree_pools_dir()
+    pool.mkdir(parents=True, exist_ok=True)
+    slot = pool / name
+    checkout = slot / "repo" if nested else slot
+    _git(_base_clone(repo), "worktree", "add", "-q", "-b", f"orphan/{name}", str(checkout), "HEAD")
+    return slot, checkout
+
+
+def _orphans(repo_filter=None):
+    return {e.slot: e for e in orphan_slots(repo_filter)}
+
+
+def test_orphaned_slots_are_found_with_branch_state_and_size(repo):
+    slot, _checkout = _orphan_slot(repo, "clean-slot")
+
+    entry = _orphans()["clean-slot"]
+
+    assert entry.orphaned is True
+    assert entry.task_id is None
+    assert entry.repo == repo.name
+    assert entry.branch == "orphan/clean-slot"
+    assert entry.dirty is False
+    assert entry.unpushed_commits == 0
+    assert entry.size_bytes > 0
+    assert entry.reclaimable is True
+    assert "no active lease" in entry.reason
+    assert slot.exists()
+
+
+def test_a_dirty_orphan_is_reported_but_never_reclaimable(repo):
+    _slot, checkout = _orphan_slot(repo, "dirty-slot")
+    Path(checkout, "unsaved.txt").write_text("not committed anywhere\n")
+
+    entry = _orphans()["dirty-slot"]
+
+    assert entry.dirty is True
+    assert entry.reclaimable is False
+    assert "uncommitted" in entry.reason
+
+
+def test_an_orphan_holding_an_unpushed_commit_is_never_reclaimable(repo):
+    _slot, checkout = _orphan_slot(repo, "unpushed-slot")
+    _commit_in(checkout)
+
+    entry = _orphans()["unpushed-slot"]
+
+    assert entry.unpushed_commits == 1
+    assert entry.reclaimable is False
+    assert "exist only here" in entry.reason
+
+
+def test_a_leased_slot_is_never_also_reported_as_an_orphan(repo):
+    task_id, lease = _lease_a_task(repo, status="delivered")
+
+    entries = list_worktrees()
+
+    assert [e.task_id for e in entries if not e.orphaned] == [task_id]
+    assert [e for e in entries if e.orphaned] == []
+    assert Path(lease.worktree_path).exists()
+
+
+def test_list_shows_leases_and_orphans_together(repo):
+    _lease_a_task(repo, status="in_progress")
+    _orphan_slot(repo, "clean-slot")
+
+    entries = list_worktrees()
+
+    assert len(entries) == 2
+    assert sorted(e.orphaned for e in entries) == [False, True]
+
+
+def test_treehouse_pool_roots_are_walked_for_every_registered_repo(repo, tmp_path, monkeypatch):
+    """Treehouse names its pool root ``<repo>-<hash>`` and nests the checkout inside."""
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    root = home / f"{repo.name}-bbcd55"
+    _orphan_slot(repo, "1", root=root, nested=True)
+
+    assert root in pool_roots()
+    entry = _orphans()["1"]
+    assert entry.orphaned is True
+    assert entry.checkout.endswith("/1/repo")
+    assert entry.path == str(root / "1")
+    assert entry.reclaimable is True
+
+
+def test_orphans_filter_by_repo(mm_home, tmp_path):
+    first = repos.add_repo(make_git_repo(tmp_path / "one"))
+    second = repos.add_repo(make_git_repo(tmp_path / "two"))
+    _orphan_slot(first, "from-one")
+    _orphan_slot(second, "from-two")
+
+    assert sorted(_orphans("one")) == ["from-one"]
+    assert sorted(_orphans()) == ["from-one", "from-two"]
+
+
+def test_prune_reclaims_a_clean_orphan_and_keeps_the_rest(repo):
+    clean, _ = _orphan_slot(repo, "clean-slot")
+    dirty, dirty_checkout = _orphan_slot(repo, "dirty-slot")
+    Path(dirty_checkout, "unsaved.txt").write_text("not committed anywhere\n")
+    held, held_checkout = _orphan_slot(repo, "unpushed-slot")
+    _commit_in(held_checkout)
+
+    res = prune()
+
+    assert [r["path"] for r in res["removed"]] == [str(clean)]
+    assert res["removed"][0]["orphaned"] is True
+    assert res["removed"][0]["task_status"] == "orphaned"
+    assert not clean.exists()
+    assert dirty.exists() and held.exists()
+    assert {Path(r["path"]).name for r in res["skipped"]} == {"dirty-slot", "unpushed-slot"}
+
+
+def test_prune_removes_the_whole_treehouse_slot_not_just_the_checkout(repo, tmp_path, monkeypatch):
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    slot, checkout = _orphan_slot(repo, "1", root=home / f"{repo.name}-bbcd55", nested=True)
+
+    prune()
+
+    assert not checkout.exists()
+    assert not slot.exists(), "the numbered slot directory is the space; it must go too"
+
+
+def test_dry_run_leaves_an_orphan_on_disk(repo):
+    slot, _ = _orphan_slot(repo, "clean-slot")
+
+    res = prune(dry_run=True)
+
+    assert [r["path"] for r in res["removed"]] == [str(slot)]
+    assert slot.exists()
+
+
+def test_prune_records_an_event_for_a_reclaimed_orphan(repo):
+    _orphan_slot(repo, "clean-slot")
+    prune()
+    conn = init_db()
+    payloads = [
+        json.loads(r["payload"])
+        for r in conn.execute(
+            "SELECT payload FROM events WHERE kind = 'worktree_pruned'"
+        ).fetchall()
+    ]
+    assert [p["orphaned"] for p in payloads] == [True]
+
+
+def test_a_pool_directory_that_is_not_a_checkout_is_left_alone(repo):
+    pool = worktree_pools_dir()
+    pool.mkdir(parents=True, exist_ok=True)
+    (pool / "not-a-worktree").mkdir()
+    (pool / "not-a-worktree" / "notes.txt").write_text("someone's scratch dir\n")
+
+    assert _orphans() == {}
+    res = prune()
+    assert res["removed"] == [] and res["skipped"] == []
+    assert (pool / "not-a-worktree").exists()
+
+
+def test_cli_list_labels_orphans(repo, capsys):
+    _orphan_slot(repo, "clean-slot")
+    assert main(["worktree", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "orphaned" in out
 
 
 # --------------------------------------------------------------------------- #

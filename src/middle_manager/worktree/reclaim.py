@@ -13,15 +13,31 @@ task is over **and** the checkout holds nothing that exists nowhere else:
 
 Anything else is skipped and listed with the reason, so a full disk never costs
 work that was never pushed.
+
+The leases table is not the whole inventory. On 2026-09-03 the first real prune
+gave back 7.0 GB from nine backend slots while thirteen frontend slot directories
+under ``~/.treehouse/papaya-frontend-monorepo-bbcd55`` — about 10 GB, all clean,
+all from delivered tasks — did not appear in ``mm worktree list`` at all: their
+leases were released, or were created by an earlier mm instance whose database
+this one never saw. So inventory also walks the pool directories themselves (the
+treehouse pool roots for each registered repo, and the plain pool under
+``.mm/worktree-pools/``) and labels any slot no active lease owns as
+**orphaned**. Orphans are reclaimed under exactly the same safety rules — clean,
+and every commit already on a remote — because nothing about being unowned makes
+losing work cheaper.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
+import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from middle_manager.paths import treehouse_home, worktree_pools_dir
 from middle_manager.state import init_db, store
 from middle_manager.worktree.lease import Lease, LeaseError, LeaseManager
 
@@ -47,11 +63,24 @@ class WorktreeEntry:
     reason: str = ""
     backend: str = "git"
     repo_path: str = ""
+    orphaned: bool = False
+    checkout_path: str = ""
 
     @property
     def slot(self) -> str:
         """The pool slot name — the last path segment, which is what `du` shows."""
         return Path(self.path).name
+
+    @property
+    def checkout(self) -> str:
+        """Where git actually lives for this slot.
+
+        For a leased slot that is the slot itself. A treehouse pool slot is a
+        numbered directory holding the checkout one level down, and the size on
+        disk belongs to the numbered directory while the git questions belong to
+        the checkout, so the two are tracked separately.
+        """
+        return self.checkout_path or self.path
 
 
 def _git(args: list[str], cwd: str) -> tuple[int, str]:
@@ -86,16 +115,16 @@ def _inspect(entry: WorktreeEntry) -> WorktreeEntry:
         return entry
 
     entry.size_bytes = directory_size(entry.path)
-    rc, out = _git(["status", "--porcelain"], entry.path)
+    rc, out = _git(["status", "--porcelain"], entry.checkout)
     if rc != 0:
         entry.reason = "not a readable git worktree; leaving it alone"
         return entry
     entry.dirty = bool(out.strip())
 
-    rc, out = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"], entry.path)
+    rc, out = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"], entry.checkout)
     entry.unpushed_commits = int(out) if rc == 0 and out.isdigit() else -1
 
-    if entry.task_status not in RECLAIMABLE_STATUSES:
+    if not entry.orphaned and entry.task_status not in RECLAIMABLE_STATUSES:
         entry.reason = f"task is {entry.task_status or 'unknown'}, not finished with"
         return entry
     if entry.dirty:
@@ -106,12 +135,177 @@ def _inspect(entry: WorktreeEntry) -> WorktreeEntry:
         entry.reason = f"{count} commit(s) exist only here — nothing on a remote holds them"
         return entry
     entry.reclaimable = True
-    entry.reason = f"task {entry.task_status}, clean, every commit is on a remote"
+    entry.reason = (
+        "no active lease owns this slot, clean, every commit is on a remote"
+        if entry.orphaned
+        else f"task {entry.task_status}, clean, every commit is on a remote"
+    )
     return entry
 
 
-def list_worktrees(repo: str | None = None) -> list[WorktreeEntry]:
-    """Every active lease, newest first, with its task, cleanliness, and size."""
+# --------------------------------------------------------------------------- #
+# Pool directories on disk — the slots no lease in this database owns
+# --------------------------------------------------------------------------- #
+
+
+def _resolved(path: str | Path) -> str:
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
+
+
+def _pool_root_under(path: str, home: Path) -> Path | None:
+    """The pool root a recorded worktree path sits in, if it is under ``home``."""
+    try:
+        rel = Path(path).relative_to(home)
+    except ValueError:
+        return None
+    return home / rel.parts[0] if rel.parts else None
+
+
+def pool_roots(conn: sqlite3.Connection | None = None) -> list[Path]:
+    """Every directory that hands out worktree slots on this machine.
+
+    Three sources, because no single one is complete: the plain pool this process
+    creates, the treehouse pool root for each registered repo (treehouse names it
+    ``<repo>-<hash>``, so it is matched by prefix), and the root implied by any
+    worktree path this database has ever recorded — which is how slots left by an
+    earlier mm instance are found at all.
+    """
+    conn = conn or init_db()
+    home = treehouse_home()
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def offer(candidate: Path) -> None:
+        key = _resolved(candidate)
+        if key in seen:
+            return
+        seen.add(key)
+        if candidate.is_dir():
+            roots.append(candidate)
+
+    offer(worktree_pools_dir())
+    for repo_row in store.list_repos(conn):
+        with contextlib.suppress(OSError):
+            for match in sorted(home.glob(f"{repo_row['name']}-*")):
+                offer(match)
+    for row in conn.execute("SELECT worktree_path FROM leases").fetchall():
+        root = _pool_root_under(row["worktree_path"] or "", home)
+        if root is not None:
+            offer(root)
+    return roots
+
+
+def _is_checkout(path: Path) -> bool:
+    return (path / ".git").exists()
+
+
+def _slot_checkout(slot: Path) -> Path | None:
+    """The git checkout in a pool slot: the slot itself, or the one directory inside it."""
+    if _is_checkout(slot):
+        return slot
+    try:
+        children = sorted(p for p in slot.iterdir() if p.is_dir())
+    except OSError:
+        return None
+    for child in children:
+        if _is_checkout(child):
+            return child
+    return None
+
+
+def _main_repo_of(checkout: str) -> str:
+    """The base clone a linked worktree belongs to, or "" when it cannot be told."""
+    rc, out = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)
+    if rc != 0 or not out:
+        rc, out = _git(["rev-parse", "--git-common-dir"], checkout)
+        if rc != 0 or not out:
+            return ""
+        out = str((Path(checkout) / out).resolve()) if not Path(out).is_absolute() else out
+    common = Path(out)
+    return _resolved(common.parent if common.name == ".git" else common)
+
+
+def _branch_of(checkout: str) -> str:
+    rc, out = _git(["rev-parse", "--abbrev-ref", "HEAD"], checkout)
+    return out if rc == 0 else ""
+
+
+def orphan_slots(
+    repo: str | None = None, *, conn: sqlite3.Connection | None = None
+) -> list[WorktreeEntry]:
+    """Slot directories on disk that no active lease owns, inspected like any other.
+
+    A directory is only reported when it is recognisably a checkout, so an
+    unrelated file someone dropped in a pool root is never a prune candidate.
+    """
+    conn = conn or init_db()
+    owned = set()
+    for row in conn.execute("SELECT worktree_path FROM leases WHERE status = 'active'").fetchall():
+        path = row["worktree_path"] or ""
+        owned.add(_resolved(path))
+        owned.add(_resolved(Path(path).parent))
+    repos_by_path = {_resolved(r["local_path"]): r["name"] for r in store.list_repos(conn)}
+
+    entries: list[WorktreeEntry] = []
+    for root in pool_roots(conn):
+        try:
+            children = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for slot in children:
+            if _resolved(slot) in owned:
+                continue
+            checkout = _slot_checkout(slot)
+            if checkout is None or _resolved(checkout) in owned:
+                continue
+            owner = repos_by_path.get(_main_repo_of(str(checkout)))
+            if repo is not None and owner != repo:
+                continue
+            entries.append(
+                _inspect(
+                    WorktreeEntry(
+                        lease_id="",
+                        path=str(slot),
+                        repo=owner,
+                        task_id=None,
+                        task_status=None,
+                        branch=_branch_of(str(checkout)),
+                        orphaned=True,
+                        checkout_path=str(checkout),
+                    )
+                )
+            )
+    return entries
+
+
+def remove_orphan_slot(entry: WorktreeEntry) -> None:
+    """Give an unowned slot back: unregister the worktree, then take the directory.
+
+    The base clone is asked to drop the worktree first so its administrative files
+    go too; the slot directory itself is removed afterwards because a treehouse
+    slot is a numbered wrapper around the checkout and would otherwise stay.
+    """
+    main = _main_repo_of(entry.checkout)
+    if main:
+        rc, _out = _git(["worktree", "remove", "--force", entry.checkout], main)
+        if rc != 0:
+            _git(["worktree", "prune"], main)
+    if Path(entry.path).exists():
+        shutil.rmtree(entry.path, ignore_errors=True)
+    if Path(entry.path).exists():
+        raise LeaseError(f"{entry.path} is still on disk")
+
+
+def list_worktrees(repo: str | None = None, *, include_orphans: bool = True) -> list[WorktreeEntry]:
+    """Every leased slot and every orphaned one, with task, cleanliness, and size.
+
+    Leases come first (newest first), then the slots on disk that no active lease
+    owns. A failure to walk the pools never costs the caller the lease inventory —
+    ``mm dispatch`` asks this question before every dispatch.
+    """
     conn = init_db()
     rows = conn.execute(
         """
@@ -142,6 +336,11 @@ def list_worktrees(repo: str | None = None) -> list[WorktreeEntry]:
                 )
             )
         )
+    if include_orphans:
+        # A pool walk crosses directories nobody here owns; it must never cost the
+        # caller the lease inventory it actually asked for.
+        with contextlib.suppress(Exception):
+            entries.extend(orphan_slots(repo, conn=conn))
     return entries
 
 
@@ -167,12 +366,13 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
         record = {
             "lease": entry.lease_id,
             "task_id": entry.task_id,
-            "task_status": entry.task_status,
+            "task_status": "orphaned" if entry.orphaned else entry.task_status,
             "path": entry.path,
             "branch": entry.branch,
             "repo": entry.repo,
             "size_bytes": entry.size_bytes,
             "reason": entry.reason,
+            "orphaned": entry.orphaned,
         }
         if not entry.reclaimable:
             record["dirty"] = entry.dirty
@@ -181,6 +381,18 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
             continue
         if dry_run:
             removed.append(record)
+            continue
+        if entry.orphaned:
+            # No lease to release and no task to stamp: the directory is the whole
+            # record, so removing it is the whole operation.
+            try:
+                remove_orphan_slot(entry)
+            except (LeaseError, OSError) as exc:
+                record["reason"] = f"could not remove: {exc}"
+                skipped.append(record)
+                continue
+            removed.append(record)
+            store.append_event(conn, kind="worktree_pruned", payload=record)
             continue
         lease = Lease(
             id=entry.lease_id,

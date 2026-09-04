@@ -278,7 +278,7 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
             print(json.dumps([vars(e) for e in entries], indent=2))
             return 0
         if not entries:
-            print("no leased worktrees")
+            print("no leased or orphaned worktrees")
             return 0
         print(f"{'SLOT':<14}{'TASK':<7}{'STATUS':<14}{'STATE':<10}{'SIZE':>10}  BRANCH")
         for e in entries:
@@ -286,13 +286,21 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
             if e.exists and not e.dirty and e.unpushed_commits > 0:
                 state = f"+{e.unpushed_commits} local"
             task = str(e.task_id) if e.task_id else "-"
+            status = "orphaned" if e.orphaned else (e.task_status or "?")
             print(
-                f"{e.slot:<14}{task:<7}{(e.task_status or '?'):<14}{state:<10}"
+                f"{e.slot:<14}{task:<7}{status:<14}{state:<10}"
                 f"{human_bytes(e.size_bytes):>10}  {e.branch}"
             )
         total = sum(e.size_bytes for e in entries)
         free = sum(e.size_bytes for e in entries if e.reclaimable)
-        print(f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable")
+        orphans = [e for e in entries if e.orphaned]
+        line = f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable"
+        if orphans:
+            line += (
+                f" — {len(orphans)} of them orphaned "
+                f"({human_bytes(sum(e.size_bytes for e in orphans))}, no active lease owns them)"
+            )
+        print(line)
         return 0
 
     res = prune(args.repo, dry_run=args.dry_run)
@@ -1224,13 +1232,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.set_defaults(func=_cmd_dispatch)
 
-    worktree = sub.add_parser("worktree", help="inspect and reclaim leased worktrees")
+    worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
     wtsub = worktree.add_subparsers(dest="worktree_cmd", required=True)
-    wtlist = wtsub.add_parser("list", help="slot, task, status, branch, dirty/clean, size")
+    wtlist = wtsub.add_parser(
+        "list",
+        help=(
+            "slot, task, status, branch, dirty/clean, size — leased slots plus the "
+            "pool directories on disk no active lease owns (shown as orphaned)"
+        ),
+    )
     wtlist.add_argument("--repo", default=None, help="only this registered repo")
     wtlist.add_argument("--json", action="store_true", help="machine-readable output")
     wtprune = wtsub.add_parser(
-        "prune", help="remove the worktrees of finished tasks that hold nothing unique"
+        "prune",
+        help=(
+            "remove the worktrees of finished tasks, and the orphaned slots, that "
+            "hold nothing unique"
+        ),
     )
     wtprune.add_argument("--repo", default=None, help="only this registered repo")
     wtprune.add_argument(

@@ -19,6 +19,18 @@ def _force_git_lease_backend(monkeypatch):
     monkeypatch.setenv("MM_LEASE_BACKEND", "git")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_treehouse_home(tmp_path, monkeypatch):
+    """Keep the pool scan off the developer's real treehouse pool.
+
+    ``mm worktree list`` walks the treehouse pool roots of every registered repo,
+    and ``prune`` deletes what it finds there. A test registering a repo whose
+    name happened to prefix a real pool directory would otherwise put the
+    developer's own worktrees in range.
+    """
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(tmp_path / "treehouse-home"))
+
+
 @pytest.fixture
 def mm_home(tmp_path, monkeypatch):
     """Point .mm state at an isolated temp dir for the test."""
