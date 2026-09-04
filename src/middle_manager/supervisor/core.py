@@ -107,11 +107,31 @@ class Supervisor:
         model: str | None = None,
         reasoning: str | None = None,
         base: str | None = None,
+        stack_on: int | None = None,
     ) -> dict:
         conn = init_db()
         repo_row = store.get_repo(conn, repo)
         if repo_row is None:
             raise SupervisorError(f"repo {repo!r} is not registered (mm repo add)")
+
+        # A stack is a chain of tasks. Naming the task this one builds on derives
+        # the starting branch from its lease, so the manager never has to look up
+        # (or misremember) a branch name.
+        if stack_on is not None:
+            parent = store.get_task(conn, stack_on)
+            if parent is None:
+                raise SupervisorError(f"cannot stack on task {stack_on}: no such task")
+            if not parent["branch"]:
+                raise SupervisorError(
+                    f"cannot stack on task {stack_on}: it has no branch yet "
+                    "(it never got a worktree, so there is nothing to build on)"
+                )
+            if base and base != parent["branch"]:
+                raise SupervisorError(
+                    f"--stack-on {stack_on} means starting from {parent['branch']!r}, but "
+                    f"--base says {base!r}; pass one or the other"
+                )
+            base = parent["branch"]
 
         # Validate the task packet contract before doing any work.
         packet = {
@@ -212,6 +232,7 @@ class Supervisor:
             worktree_path=lease.worktree_path,
             lease_id=lease.id,
             stacked_on=base,
+            stacked_on_task=stack_on,
         )
         store.append_event(
             conn,
@@ -222,6 +243,7 @@ class Supervisor:
                 "provider": provider,
                 "lease": lease.id,
                 "stacked_on": base,
+                "stacked_on_task": stack_on,
             },
             run_id=run_id,
             task_id=task_id,
@@ -324,6 +346,16 @@ class Supervisor:
             (task_id,),
         ).fetchone()
         session_id = sess["provider_session_id"] if sess else None
+        # A cascade may have rewritten this task's branch while it was stopped.
+        # Resuming a worker into a worktree that is behind its own remote ends in
+        # a force-push over the cascade, so the worktree is moved onto the remote
+        # first — or the resume is refused when both sides hold commits.
+        from middle_manager import stacks
+
+        try:
+            stacks.sync_worktree_with_remote(task_id)
+        except stacks.StackError as exc:
+            raise SupervisorError(str(exc)) from exc
         # Any runner still attached to the old session is retired here: it is no
         # longer the task's worker, and its (usually nonzero) exit must not land on
         # the task after this resume. Then say the truth about the task *now* —

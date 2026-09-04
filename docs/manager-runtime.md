@@ -410,10 +410,16 @@ branch after every merge, CI that only tells you about the bottom one, and revie
 that see one slice with no context.
 
 - **Bottom layer targets `main`; every later layer targets the branch below it.**
-  Dispatch the next task from the previous task's branch: `mm dispatch --base
-  <previous lease branch>`. That records the stack parent on the task, the worker
-  starts from that branch, and `mm deliver` opens the pull request against it
-  without being told again.
+  Dispatch the next task *on the previous task*: `mm dispatch --stack-on
+  <previous task_id>`. The starting branch is derived from that task's lease, the
+  stack parent is recorded, the worker starts from that branch, and `mm deliver`
+  opens the pull request against it without being told again. (`--base <branch>`
+  still works when you genuinely mean a branch rather than a task.)
+- **`mm stack <task_id>` is how you read a stack.** It renders bottom-up — the
+  order it has to merge in — with each layer's branch, pull request and its base,
+  review state, and whether that base still matches the layer below, which is the
+  question that decides whether the cascade has run. Any layer's id renders the
+  whole stack; a run id renders every task in the run.
 - **Never wait for a merge to start the next layer, and never start it from
   `main`.** A stack keeps moving while review and merging happen at the user's
   pace. The brief gives the worker the exact starting commit (`git fetch origin
@@ -424,12 +430,19 @@ that see one slice with no context.
   first. Two unrelated fixes in one repository are two bottom layers, not a stack.
 - **Merge bottom-up, one layer at a time, only when merging is authorised.** After
   a layer merges, confirm the next layer has been retargeted to `main` by the
-  cascade before merging it (`gh pr view <n> --json baseRefName`); trigger the
+  cascade before merging it — `mm stack <task_id>` says so per layer; trigger the
   cascade from the pull request, or locally with the `gh stack` extension, if it
-  has not run.
-- **A cascade rewrites the upper branches.** After any rebase of a layer, fetch and
-  reset that task's worktree to the rebased remote branch before resuming or
-  delivering it again; never force-push a stale worktree over a rebased branch.
+  has not run. A layer delivered *after* the one below it merged targets `main`
+  itself (a merged branch is no base for a new pull request), and `mm deliver`
+  says that in its result.
+- **A cascade rewrites the upper branches — `mm` handles that for you now.** Both
+  `mm resume` and `mm deliver` compare the worktree with its remote branch first.
+  If the remote moved and the worktree holds nothing the remote lacks, the
+  worktree is moved onto the remote and the change is recorded. If both sides hold
+  commits, the command **refuses**, naming both commits — it will never force-push
+  a stale worktree over a rebased branch, and which commits survive is your call.
+  A cascade changes the head, so a layer approved before it needs re-reviewing at
+  the new commit; the delivery gate will say so.
 - **One stack per repository.** Cross-fork stacks are not supported, and the
   cross-repository rollout order above is unchanged: a stack in one repository is
   one step in that order.
@@ -552,16 +565,17 @@ readable at a glance by someone who just wants to know if it's done.
 | Worktree head start | `mm repo provision <name>` shows what a fresh worktree gets before its worker starts; `--command "uv sync --frozen"` runs that in each new worktree (its exit status is recorded, and a failure never fails the dispatch), `--reuse-venv backend/.venv` links the virtualenv the base clone already has into the same place, `--clear` turns both off. Opt-in per repo — a repo with nothing configured behaves exactly as before. Every worker already gets a writable `UV_CACHE_DIR` (shared, under `.mm/cache/uv`, so the second dispatch is warm) and a writable `MM_HOME`, so `mm progress` and `uv` never need a sandbox escalation |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size) — it walks the pool directories on disk as well as the leases, so a slot no active lease owns (a released lease, or one an earlier mm instance created) shows as `orphaned` instead of hiding; `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks **and** the orphaned slots, under one rule: clean, and every commit already on a remote; everything else is kept and listed with the reason) |
-| Delegate | `mm dispatch --repo ... --brief <file> --provider ... [--title] [--model] [--reasoning]` — `--title` is optional whenever `--brief` is given: the objective is taken from the brief's first Markdown heading (whitespace collapsed, capped at 120 characters), and an explicit `--title` overrides it. Without a brief, `--title` is still required. Also: a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Delegate | `mm dispatch --repo ... --brief <file> --provider ... [--title] [--model] [--reasoning] [--stack-on <task_id>]` — `--title` is optional whenever `--brief` is given: the objective is taken from the brief's first Markdown heading (whitespace collapsed, capped at 120 characters), and an explicit `--title` overrides it. Without a brief, `--title` is still required. `--stack-on` builds on that task: its lease branch becomes the starting point and the stack parent is recorded, so `mm stack` and `mm deliver` follow the chain. Also: a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task whose branch has an open pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. A pull request that merges or closes is named once and then drops off; `mm deliver <task> --merged <sha>` retires it for good. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing. It goes quiet on its own after two idle ticks (nothing in flight, nothing owed to you, no pending or failing checks, nothing new) and speaks again the moment that stops being true — leave it running rather than restarting it; `--exit-when-idle` makes it exit instead, for scripts |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
-| Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
+| Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately; moves the worktree onto its remote branch first if a cascade rewrote it, and refuses if both sides hold commits) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show <task_id>` (worker report, the capture/receipt paths it named with sizes and openable image lines, the standing approval note, then the diffstat), `mm review approve <task_id> [--note "what you checked"] [--findings ...]`, `mm review request-changes <task_id> --findings ...`, `mm review status <task_id>` (also prints the approval note) |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--remote ...] [--title "..."] [--body-file FILE]` — pushes to the repo's registered forge and opens the pull request there (`--remote` overrides); composes the pull request body from the archived brief, the worker's closing and test reports, the approval note, and the stack it sits on; `--body-file` is used verbatim and overrides all of it, `--title` overrides the objective the task was dispatched with, and `MM_PR_FOOTER` appends your session and attribution lines. Also: `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing, and takes the task's compose stack down) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot and takes the task's compose stack down), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
 | Per-task compose stacks | `mm task env set <id> compose_project=<name>` records the stack a task brought up, and is taken as given because you typed it. A worker naming `COMPOSE_PROJECT_NAME=...` in a `mm progress` note is picked up automatically **only when it is that task's own stack** (`task_<id>` or `<prefix>_task_<id>`) — teardown destroys volumes, and a note mentioning a shared stack must never arm one; anything else is dropped with a `compose_project_ignored` event naming it. `mm task env show <id> [--json]` lists what's recorded. `mm deliver --merged`, `mm task close`, and `mm worktree prune` then run `docker compose -p <name> down -v --remove-orphans` for it and print what went. No docker, or a stack already gone, is never an error. `mm health` lists stacks named `task_<n>`/`*_task_<n>` whose task is already over as prunable — that's the Docker network ceiling filling up |
+| Stacks | `mm stack <task_id|run_id>` — the stack bottom-up: layer, branch, pull request and its base, review state, and whether the base still matches the layer below (has the cascade run). `--json` for the raw shape |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
 | Cross-repo order | `mm plan <run_id>` |

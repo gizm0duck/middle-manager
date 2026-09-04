@@ -312,6 +312,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             reasoning=args.reasoning,
             run_id=args.run_id,
             base=args.base,
+            stack_on=args.stack_on,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -542,6 +543,22 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
     from middle_manager import progress
 
     print(f"progress: {progress.describe(progress.latest(args.task_id))}")
+    return 0
+
+
+def _cmd_stack(args: argparse.Namespace) -> int:
+    """Render a stack bottom-up: the order it has to be merged in."""
+    from middle_manager.stacks import StackError, render_stack, stack_layers
+
+    try:
+        layers = stack_layers(args.id)
+    except StackError as exc:
+        print(f"stack: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps([vars(layer) for layer in layers], indent=2))
+        return 0
+    print(render_stack(layers))
     return 0
 
 
@@ -1436,6 +1453,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-id", dest="run_id", type=int, default=None, help="attach to an existing run"
     )
     dispatch.add_argument(
+        "--stack-on",
+        dest="stack_on",
+        type=int,
+        default=None,
+        help=(
+            "build on this task: the worker starts from that task's lease branch and "
+            "the stack parent is recorded, so `mm stack` and `mm deliver` follow the "
+            "chain without being told a branch name"
+        ),
+    )
+    dispatch.add_argument(
         "--base",
         default=None,
         help=(
@@ -1529,6 +1557,18 @@ def build_parser() -> argparse.ArgumentParser:
     tkenvshow.add_argument("task_id", type=int)
     tkenvshow.add_argument("--json", action="store_true", help="machine-readable output")
     task.set_defaults(func=_cmd_task)
+
+    stack = sub.add_parser(
+        "stack",
+        help="render a stack bottom-up: layer, branch, PR and base, review, cascade state",
+    )
+    stack.add_argument(
+        "id",
+        type=int,
+        help="a task in the stack, or a run id to render every stacked task in the run",
+    )
+    stack.add_argument("--json", action="store_true", help="machine-readable output")
+    stack.set_defaults(func=_cmd_stack)
 
     lease = sub.add_parser("lease", help="worktree lease bookkeeping")
     lsub = lease.add_subparsers(dest="lease_cmd", required=True)
