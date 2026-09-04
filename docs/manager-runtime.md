@@ -372,10 +372,16 @@ branch after every merge, CI that only tells you about the bottom one, and revie
 that see one slice with no context.
 
 - **Bottom layer targets `main`; every later layer targets the branch below it.**
-  Dispatch the next task from the previous task's branch: `mm dispatch --base
-  <previous lease branch>`. That records the stack parent on the task, the worker
-  starts from that branch, and `mm deliver` opens the pull request against it
-  without being told again.
+  Dispatch the next task *on the previous task*: `mm dispatch --stack-on
+  <previous task_id>`. The starting branch is derived from that task's lease, the
+  stack parent is recorded, the worker starts from that branch, and `mm deliver`
+  opens the pull request against it without being told again. (`--base <branch>`
+  still works when you genuinely mean a branch rather than a task.)
+- **`mm stack <task_id>` is how you read a stack.** It renders bottom-up — the
+  order it has to merge in — with each layer's branch, pull request and its base,
+  review state, and whether that base still matches the layer below, which is the
+  question that decides whether the cascade has run. Any layer's id renders the
+  whole stack; a run id renders every task in the run.
 - **Never wait for a merge to start the next layer, and never start it from
   `main`.** A stack keeps moving while review and merging happen at the user's
   pace. The brief gives the worker the exact starting commit (`git fetch origin
@@ -386,12 +392,19 @@ that see one slice with no context.
   first. Two unrelated fixes in one repository are two bottom layers, not a stack.
 - **Merge bottom-up, one layer at a time, only when merging is authorised.** After
   a layer merges, confirm the next layer has been retargeted to `main` by the
-  cascade before merging it (`gh pr view <n> --json baseRefName`); trigger the
+  cascade before merging it — `mm stack <task_id>` says so per layer; trigger the
   cascade from the pull request, or locally with the `gh stack` extension, if it
-  has not run.
-- **A cascade rewrites the upper branches.** After any rebase of a layer, fetch and
-  reset that task's worktree to the rebased remote branch before resuming or
-  delivering it again; never force-push a stale worktree over a rebased branch.
+  has not run. A layer delivered *after* the one below it merged targets `main`
+  itself (a merged branch is no base for a new pull request), and `mm deliver`
+  says that in its result.
+- **A cascade rewrites the upper branches — `mm` handles that for you now.** Both
+  `mm resume` and `mm deliver` compare the worktree with its remote branch first.
+  If the remote moved and the worktree holds nothing the remote lacks, the
+  worktree is moved onto the remote and the change is recorded. If both sides hold
+  commits, the command **refuses**, naming both commits — it will never force-push
+  a stale worktree over a rebased branch, and which commits survive is your call.
+  A cascade changes the head, so a layer approved before it needs re-reviewing at
+  the new commit; the delivery gate will say so.
 - **One stack per repository.** Cross-fork stacks are not supported, and the
   cross-repository rollout order above is unchanged: a stack in one repository is
   one step in that order.
@@ -513,11 +526,12 @@ readable at a glance by someone who just wants to know if it's done.
 | Repositories | `mm repo add <url|path> [--forge-url <url>]`, `mm repo list`, `mm repo sync <name> [--clean-stray-mm]` — registration records the **forge**: a URL registration is its own forge, a path registration inherits the forge from that path's `origin`, and a path whose origin is local (or missing) is refused until `--forge-url` names one, because a repo with nowhere to open a pull request strands every delivery. `mm repo list` shows it, sync fetches from it, `mm deliver` pushes and opens the pull request there, and `mm doctor` flags any repo without one. Sync sync fast-forwards the base clone's default branch to the remote tip and records *that* commit, so a dispatch without an explicit starting branch cannot begin from stale code; it refuses (changing nothing) when the base clone has uncommitted or untracked files, naming them, and it reports a stray `.mm/` directory left inside the clone by an `mm` command run from that directory without the launcher (`--clean-stray-mm` removes it) |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
-| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Stacks | `mm stack <task_id|run_id>` — the stack bottom-up: layer, branch, pull request and its base, review state, and whether the base still matches the layer below (has the cascade run). `--json` for the raw shape |
+| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning] [--stack-on <task_id>]` — `--stack-on` builds on that task: its lease branch becomes the starting point and the stack parent is recorded, so `mm stack` and `mm deliver` follow the chain. a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
-| Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
+| Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately; moves the worktree onto its remote branch first if a cascade rewrote it, and refuses if both sides hold commits) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--remote ...]` — pushes to the repo's registered forge and opens the pull request there (`--remote` overrides); `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |

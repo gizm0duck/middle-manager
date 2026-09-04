@@ -92,6 +92,23 @@ def deliver(
         # the caller says otherwise; stacked PRs no longer depend on remembering.
         base = task["stacked_on"] or None
 
+    # A cascade may have rewritten this branch since the worker last touched it.
+    # Delivering from a stale worktree force-pushes the cascade away, so move onto
+    # the remote first — or refuse, when both sides hold commits.
+    from middle_manager import stacks
+
+    cascaded = None
+    try:
+        result = stacks.sync_worktree_with_remote(task_id)
+        cascaded = result if result.get("action") == "reset" else None
+    except stacks.StackError as exc:
+        raise DeliveryError(str(exc)) from exc
+
+    # A layer whose parent has already merged cannot target the parent's branch.
+    base_note = None
+    if base:
+        base, base_note = stacks.delivery_base(conn, task, base)
+
     # The gate: never ship work that was not reviewed at its current head.
     approved, reason = is_approved_at_head(task_id)
     if not approved:
@@ -147,10 +164,19 @@ def deliver(
             "pr_url": pr_url,
             "remote": remote,
             "forge": forge_slug,
+            "base": base,
+            "base_note": base_note,
+            "cascaded": cascaded,
         },
         run_id=task["run_id"],
         task_id=task_id,
     )
+    for extra in (
+        cascaded["summary"] if cascaded else None,
+        base_note,
+    ):
+        if extra:
+            note = f"{note}; {extra}"
     return DeliveryResult(task_id, branch, head, pushed, pr_url, note)
 
 

@@ -57,3 +57,21 @@ is attributable rather than anonymous.
 resumed process is started, so a task that was `failed`, `blocked`, or
 `needs_recovery` stops reading as stalled the moment work resumes rather than
 whenever the new worker happens to emit its first event.
+
+## Cascade: a worktree whose branch was rewritten upstream
+
+A stack's upper branches are *rebased* when the layer below merges, so a task's
+worktree can be sitting on commits that no longer exist on its own branch. Both
+`mm resume` and `mm deliver` check for that first:
+
+| What git says | What happens |
+| --- | --- |
+| The remote branch holds commits the worktree lacks, and the worktree holds nothing whose patch is not already upstream | The worktree is reset onto the remote branch and a `worktree_cascaded` event records both commits. |
+| Both sides hold commits nothing upstream matches | The command is **refused**, naming both commits. Nothing is force-pushed: which commits survive is a judgement call, not a default. |
+| Anything else | Nothing happens. |
+
+"Holds commits the remote lacks" is a question about *patches*, not SHAs
+(`git cherry`): a rebase gives every replayed commit a new SHA, so counting SHAs
+would read a freshly cascaded branch as full of unpushed work and refuse the whole
+stack. A cascade does move the head, so a review approved before it no longer
+binds — the delivery gate asks for a re-review at the new commit.

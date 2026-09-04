@@ -142,6 +142,7 @@ class SupervisorServer:
                         model=request.get("model"),
                         reasoning=request.get("reasoning"),
                         base=request.get("base"),
+                        stack_on=request.get("stack_on"),
                     ),
                 }
             if cmd == "task_status":
