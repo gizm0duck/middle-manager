@@ -55,6 +55,27 @@ def worktree_pools_dir() -> Path:
     return mm_home() / "worktree-pools"
 
 
+def treehouse_home() -> Path:
+    """Where the treehouse companion keeps its worktree pools.
+
+    Treehouse owns this directory, not us, so it is not under ``.mm``. The
+    overrides exist so the hermetic suite (and anyone running two instances) can
+    point the pool scan at a scratch directory instead of the real pool.
+    """
+    override = os.environ.get("MM_TREEHOUSE_HOME") or os.environ.get("TREEHOUSE_HOME")
+    return Path(override) if override else Path.home() / ".treehouse"
+
+
+def cache_dir() -> Path:
+    """Caches worker processes share. Under ``.mm``, so it is writable from a sandbox."""
+    return mm_home() / "cache"
+
+
+def uv_cache_dir() -> Path:
+    """Where ``uv`` downloads and unpacks. Exported to every worker as ``UV_CACHE_DIR``."""
+    return cache_dir() / "uv"
+
+
 def memory_dir() -> Path:
     return mm_home() / "memory"
 
@@ -70,6 +91,8 @@ def ensure_layout() -> Path:
         tools_dir(),
         tools_bin_dir(),
         worktree_pools_dir(),
+        cache_dir(),
+        uv_cache_dir(),
         memory_dir(),
     ):
         path.mkdir(parents=True, exist_ok=True)

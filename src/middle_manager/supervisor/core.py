@@ -249,6 +249,20 @@ class Supervisor:
             task_id=task_id,
         )
 
+        # Give the worktree whatever head start this repo has configured — a reused
+        # virtualenv from the base clone, a provision command — before the worker
+        # starts. Opt-in per repo; a repo with nothing configured does nothing here,
+        # and a hook that fails costs the head start, never the dispatch.
+        from middle_manager.worktree.provision import provision_worktree
+
+        provision_worktree(
+            repo_row,
+            lease.worktree_path,
+            task_id=task_id,
+            run_id=run_id,
+            conn=conn,
+        )
+
         # Point the worker at this repo's shared memory (learnings + progress log) so
         # it uses and updates it — which is also how the manager follows progress
         # without interrupting. Seeding is idempotent; files already exist from add.
