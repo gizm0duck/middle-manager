@@ -25,6 +25,15 @@ treehouse pool roots for each registered repo, and the plain pool under
 **orphaned**. Orphans are reclaimed under exactly the same safety rules — clean,
 and every commit already on a remote — because nothing about being unowned makes
 losing work cheaper.
+
+A pool root is not proof of ownership, and that distinction is load-bearing: the
+same treehouse home holds this instance's pools next to the user's own for the
+same repositories (``papaya-backend-monorepo-58a49b`` is ours,
+``papaya-backend-monorepo-e5cc8b`` is theirs), and both match the same name glob.
+So a slot is a reclamation candidate only when its checkout's base clone is one
+of this instance's, under ``.mm/repos/``. Everything else is listed as unmanaged
+and is never removed, however clean and however pushed — a personal worktree is
+not ours to reclaim, and being tidy is not consent.
 """
 
 from __future__ import annotations
@@ -37,7 +46,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from middle_manager.paths import treehouse_home, worktree_pools_dir
+from middle_manager.paths import repos_dir, treehouse_home, worktree_pools_dir
 from middle_manager.state import init_db, store
 from middle_manager.worktree.lease import Lease, LeaseError, LeaseManager
 
@@ -65,6 +74,9 @@ class WorktreeEntry:
     repo_path: str = ""
     orphaned: bool = False
     checkout_path: str = ""
+    #: Whether this instance created the slot — i.e. its checkout belongs to one of
+    #: our base clones. False means somebody else's worktree; never reclaimable.
+    managed: bool = True
 
     @property
     def slot(self) -> str:
@@ -112,6 +124,15 @@ def _inspect(entry: WorktreeEntry) -> WorktreeEntry:
         entry.exists = False
         entry.reclaimable = True
         entry.reason = "worktree directory is already gone; only the lease record remains"
+        return entry
+
+    if entry.orphaned and not entry.managed:
+        # Somebody else's worktree. A pool root is shared: the same treehouse home
+        # holds this instance's pools *and* the user's own for the same repository,
+        # told apart only by the hash in the directory name. Ownership is settled by
+        # the checkout's base clone, never by the directory it sits in. Not sized
+        # either — walking someone else's pool with `du` buys nothing.
+        entry.reason = "not managed by this instance, leaving it alone"
         return entry
 
     entry.size_bytes = directory_size(entry.path)
@@ -233,6 +254,21 @@ def _branch_of(checkout: str) -> str:
     return out if rc == 0 else ""
 
 
+def managed_base_clones(conn: sqlite3.Connection) -> dict[str, str]:
+    """Base clone path -> repo name, for the clones this instance actually owns.
+
+    Only clones under ``.mm/repos/`` count, which is where ``mm repo add`` puts
+    every one of them. This map is the whole ownership test for an orphan.
+    """
+    root = _resolved(repos_dir())
+    out: dict[str, str] = {}
+    for row in store.list_repos(conn):
+        path = _resolved(row["local_path"])
+        if path == root or path.startswith(root + os.sep):
+            out[path] = row["name"]
+    return out
+
+
 def orphan_slots(
     repo: str | None = None, *, conn: sqlite3.Connection | None = None
 ) -> list[WorktreeEntry]:
@@ -240,6 +276,14 @@ def orphan_slots(
 
     A directory is only reported when it is recognisably a checkout, so an
     unrelated file someone dropped in a pool root is never a prune candidate.
+
+    Sitting in a pool root does **not** make a slot ours. A treehouse home holds
+    this instance's pools next to the user's own for the same repositories —
+    ``papaya-backend-monorepo-58a49b`` beside ``papaya-backend-monorepo-e5cc8b`` —
+    and both match the same name glob. So ownership is decided by the checkout's
+    base clone: only a slot whose main repository is one of this instance's base
+    clones under ``.mm/repos/`` is ever a candidate. Anything else is marked
+    unmanaged and can never be reclaimed, however clean and however pushed.
     """
     conn = conn or init_db()
     owned = set()
@@ -247,7 +291,7 @@ def orphan_slots(
         path = row["worktree_path"] or ""
         owned.add(_resolved(path))
         owned.add(_resolved(Path(path).parent))
-    repos_by_path = {_resolved(r["local_path"]): r["name"] for r in store.list_repos(conn)}
+    repos_by_path = managed_base_clones(conn)
 
     entries: list[WorktreeEntry] = []
     for root in pool_roots(conn):
@@ -275,6 +319,7 @@ def orphan_slots(
                         branch=_branch_of(str(checkout)),
                         orphaned=True,
                         checkout_path=str(checkout),
+                        managed=owner is not None,
                     )
                 )
             )
@@ -287,7 +332,16 @@ def remove_orphan_slot(entry: WorktreeEntry) -> None:
     The base clone is asked to drop the worktree first so its administrative files
     go too; the slot directory itself is removed afterwards because a treehouse
     slot is a numbered wrapper around the checkout and would otherwise stay.
+
+    The ownership check is repeated here rather than trusted from the caller: this
+    is the one function that deletes a directory nobody recorded, and the cost of
+    being wrong is the user's own uncommitted-or-not work.
     """
+    if not entry.managed:
+        raise LeaseError(
+            f"refusing to remove {entry.path}: it is not a worktree of a base clone "
+            "this instance manages"
+        )
     main = _main_repo_of(entry.checkout)
     if main:
         rc, _out = _git(["worktree", "remove", "--force", entry.checkout], main)
