@@ -77,8 +77,19 @@ def test_event_replay_matches_spool(mm_home, source_repo) -> None:
     for line in spool_lines:
         json.loads(line)  # each line is a valid event record
     # The spool mirrors the streamed adapter events (kind "worker_<parsed>"), not
-    # the terminal "worker_done" actionable summary the runner appends afterwards.
-    streamed = [e for e in events if e["kind"].startswith("worker_") and e["kind"] != "worker_done"]
+    # the control-plane events that share the prefix: the terminal actionable
+    # summary the runner appends afterwards, or a progress report the worker filed
+    # through `mm progress`.
+    # A streamed event carries the provider's own record (it has a "type"); the
+    # control-plane ones do not, which is what tells a worker's `mm progress` note
+    # apart from an adapter "progress" event of the same kind.
+    streamed = [
+        e
+        for e in events
+        if e["kind"].startswith("worker_")
+        and e["kind"] not in {"worker_done", "worker_stopped"}
+        and "type" in json.loads(e["payload"])
+    ]
     assert len(spool_lines) == len(streamed)
 
 

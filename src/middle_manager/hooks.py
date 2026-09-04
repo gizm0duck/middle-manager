@@ -113,7 +113,8 @@ def stop_block_reason(conn, payload: dict[str, Any] | None = None) -> str | None
     reasons: list[str] = []
     open_tasks = conn.execute(
         "SELECT COUNT(*) FROM tasks WHERE status IN "
-        "('requested','in_progress','worker_done','blocked','needs_recovery','failed')"
+        "('requested','in_progress','worker_done','worker_stopped','blocked',"
+        "'needs_recovery','failed')"
     ).fetchone()[0]
     if open_tasks and not board.open_todos(conn):
         reasons.append(

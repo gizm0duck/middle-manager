@@ -137,6 +137,29 @@ def task_branch_state(conn, task) -> BranchState | None:
     return branch_state(worktree, branch, remote)
 
 
+def unpushed_commits(conn, task) -> int:
+    """How many commits exist only in this task's worktree.
+
+    The same question ``mm worktree prune`` asks before removing a slot, and the
+    one that says whether a worker actually pushed its work. It is answered by
+    patch, not by SHA (see :class:`BranchState`), so a branch that GitHub's
+    cascade rebased upstream reads as pushed — which it is — instead of as a pile
+    of unpushed work. A branch the remote has never seen falls back to "commits on
+    no remote at all", because there is no branch to compare against yet.
+    """
+    worktree = task["worktree_path"]
+    if not worktree:
+        return 0
+    try:
+        state = task_branch_state(conn, task)
+    except StackError:
+        return 0
+    if state is not None and state.on_remote:
+        return state.ahead
+    rc, out = _git(worktree, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    return int(out) if rc == 0 and out.isdigit() else 0
+
+
 def sync_worktree_with_remote(task_id: int) -> dict:
     """Bring a task's worktree onto its rebased remote branch, or refuse.
 

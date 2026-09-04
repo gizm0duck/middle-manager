@@ -232,6 +232,7 @@ def events_after(conn: sqlite3.Connection, run_id: int | None, after_seq: int) -
 # completed worker is actionable because the manager must review it next.
 ACTIONABLE_KINDS = (
     "worker_done",
+    "worker_stopped",
     "question",
     "blocked",
     "review_requested",

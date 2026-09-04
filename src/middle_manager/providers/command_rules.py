@@ -33,6 +33,10 @@ These are not style preferences — anything else is denied before it runs.
 - No redirection (`>`, `>>`, `<`, `2>&1`). To write a file, use the file-writing
   tool, not a shell redirect.
 - `cd` is its own call. Never prefix another command with it.
+- Run the authoritative verification suite **in the foreground**, with a timeout of
+  at least 20 minutes (1200000 ms) — never as a background task. A backgrounded
+  command is killed when your turn ends, so a suite you left running in the
+  background never finished and its result is worthless.
 - Push with exactly `git push origin HEAD:{branch}`.
 - **Do not try to open a pull request.** You have no `gh` and no forge
   credentials. Push your branch and stop; the manager opens the PR from it.

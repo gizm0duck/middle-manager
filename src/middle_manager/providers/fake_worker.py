@@ -10,7 +10,17 @@ without any model. Behavior is driven by instruction markers:
   test can steer, interrupt, or supersede a worker that is genuinely mid-turn.
 - ``NOCOMMIT`` -> write work AND an evidence directory, then finish without
   committing, so the supervisor's end-of-task auto-commit is what runs.
-- otherwise -> write a file, commit, and emit a completed result with the head SHA.
+- ``NODONE`` -> finish without filing a ``--phase done`` progress note.
+- ``NOPUSH`` -> finish without pushing the branch.
+- ``BACKGROUND`` -> make the session's last tool call a backgrounded command, the
+  shape that gets killed when the turn ends.
+- otherwise -> write a file, commit, push, file a done note, and emit a completed
+  result with the head SHA.
+
+A worker that ends its turn without a done note, without pushing, or waiting on a
+backgrounded command is not done — the supervisor says so (see
+:mod:`middle_manager.turn_end`). The default path here models a worker that
+*finished*; the markers above model each way of not finishing.
 """
 
 from __future__ import annotations
@@ -34,6 +44,41 @@ def _git(args: list[str], cwd: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
+
+
+def _finish_the_gate(spec: dict, session_id: str) -> None:
+    """What a worker that actually finished does: push the branch, file a done note.
+
+    Both are evidence the supervisor checks before calling a turn ``worker_done``,
+    so the compliant path has to do them; the ``NOPUSH`` / ``NODONE`` markers take
+    each away to model a turn that ended mid-gate.
+    """
+    instructions = spec.get("instructions", "")
+    branch, worktree = spec.get("branch"), spec["worktree_path"]
+    if branch and "NOPUSH" not in instructions:
+        _git(["push", "--quiet", "origin", f"HEAD:{branch}"], cwd=worktree)
+    if "NODONE" not in instructions:
+        from middle_manager import progress
+
+        progress.record(
+            int(spec["task_id"]), phase="done", note=f"finished {spec['title']}; branch pushed"
+        )
+    if "BACKGROUND" in instructions:
+        # The incident's shape: the last thing the session did was hand a long
+        # command to the background, and the turn ended waiting for it.
+        _emit(
+            {
+                "type": "assistant",
+                "session_id": session_id,
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": "make test", "run_in_background": True},
+                    }
+                ],
+            }
+        )
 
 
 def _hold_seconds(instructions: str) -> float:
@@ -102,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         with open(f"{worktree}/evidence/after.png", "w", encoding="utf-8") as fh:
             fh.write("pretend screenshot\n")
         _emit({"type": "progress", "session_id": session_id, "text": "left work uncommitted"})
+        _finish_the_gate(spec, session_id)
         _emit(
             {
                 "type": "result",
@@ -128,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     head = _git(["rev-parse", "HEAD"], cwd=worktree)
     _emit({"type": "progress", "session_id": session_id, "text": "committed change"})
+    _finish_the_gate(spec, session_id)
     time.sleep(0.05)
     _emit(
         {

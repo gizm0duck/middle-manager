@@ -218,6 +218,16 @@ def test_deliver_merged_records_delivery_without_pushing(server, source_repo):
     branch = store.get_task(init_db(), task_id)["branch"]
     sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 
+    def _remote_tip() -> str:
+        return subprocess.run(
+            ["git", "-C", source_repo, "rev-parse", branch],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    before = _remote_tip()  # the worker pushed its own branch, as a finished worker does
+
     assert main(["deliver", str(task_id), "--merged", sha]) == 0
 
     assert _status(task_id) == "delivered"
@@ -226,14 +236,8 @@ def test_deliver_merged_records_delivery_without_pushing(server, source_repo):
     assert delivered[-1]["merged_outside_mm"] is True
     assert delivered[-1]["pr_url"] is None
 
-    # Nothing left the machine: the origin never grew the task's branch.
-    remote_branches = subprocess.run(
-        ["git", "-C", source_repo, "branch", "--list", branch],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert remote_branches.strip() == ""
+    # Nothing left the machine: recording a merge moves no ref on the origin.
+    assert _remote_tip() == before
 
 
 def test_deliver_merged_needs_a_real_sha(server, source_repo):

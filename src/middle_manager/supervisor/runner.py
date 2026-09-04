@@ -222,7 +222,18 @@ class RunnerGuardian:
             self._proc = None
             return result
 
+        # A turn ending is not evidence that the gate was finished. Judge it on the
+        # evidence *before* the auto-commit below, so the supervisor's own safety
+        # commit is never what makes the worker look like it left work unpushed.
+        from middle_manager import turn_end
+
+        verdict = turn_end.StopVerdict()
+        if result.status == "completed":
+            verdict = turn_end.why_stopped(conn, spec.task_id)
+
         task_status = _TERMINAL_STATUS.get(result.status, "failed")
+        if verdict.stopped:
+            task_status = turn_end.WORKER_STOPPED
         store.set_task_status(conn, spec.task_id, task_status)
 
         # For a completed task, guarantee a reviewable commit and record head.
@@ -252,7 +263,25 @@ class RunnerGuardian:
 
         # Emit an actionable event for the manager/human loop. Every terminal event
         # carries the session it came from so a late arrival can be attributed.
-        if result.status == "completed":
+        if verdict.stopped:
+            store.append_event(
+                conn,
+                kind=turn_end.WORKER_STOPPED,
+                payload={
+                    "task_id": spec.task_id,
+                    "head_sha": result.head_sha,
+                    "session_id": session_id,
+                    "summary": verdict.summary,
+                    "reasons": verdict.reasons,
+                    "unpushed": verdict.unpushed,
+                    "phase": verdict.phase,
+                    "background_command": verdict.background_command,
+                    "resume_message": verdict.resume_message(),
+                },
+                run_id=spec.run_id,
+                task_id=spec.task_id,
+            )
+        elif result.status == "completed":
             store.append_event(
                 conn,
                 kind="worker_done",
