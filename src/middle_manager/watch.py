@@ -177,21 +177,36 @@ def _first_existing(*paths: str | None) -> str | None:
     return None
 
 
-def pr_states(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """One entry per delivered/finished task whose branch could be on the forge.
+def is_settled(entry: dict[str, Any]) -> bool:
+    """Has this pull request stopped being able to change? Merged and closed are terminal."""
+    return bool(entry.get("known")) and entry.get("state") in ("MERGED", "CLOSED")
 
-    At most one ``gh`` call pair per branch per tick: two tasks stacked on one
-    branch cost one lookup, and a tick never asks the forge the same question
-    twice.
+
+def pr_states(
+    conn: sqlite3.Connection, *, settled: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """One entry per delivered/finished task whose branch could still be on the forge.
+
+    Three things keep the forge traffic proportional to live work rather than to
+    the length of the history:
+
+    - a task whose merge is on the record (``mm deliver --merged``) is never
+      asked about again — a ``delivered`` task stays delivered forever, so
+      without this every task ever shipped would cost a query every tick;
+    - a pull request already observed merged or closed in this process is served
+      from ``settled`` — terminal states cannot change, so asking again is waste;
+    - within a tick, results are cached per branch, so two tasks stacked on one
+      branch cost one lookup pair.
     """
     marks = ",".join("?" for _ in PR_TRACKED)
     rows = conn.execute(
         "SELECT t.id AS task_id, t.status, t.branch, t.worktree_path, r.local_path "
         f"FROM tasks t LEFT JOIN repos r ON r.id = t.repo_id WHERE t.status IN ({marks}) "
-        "AND t.branch IS NOT NULL AND t.branch != '' ORDER BY t.id",
+        "AND t.branch IS NOT NULL AND t.branch != '' "
+        "AND (t.merged_sha IS NULL OR t.merged_sha = '') ORDER BY t.id",
         PR_TRACKED,
     ).fetchall()
-    cache: dict[str, dict[str, Any]] = {}
+    cache: dict[str, dict[str, Any]] = dict(settled or {})
     states: list[dict[str, Any]] = []
     for row in rows:
         branch = str(row["branch"])
@@ -206,6 +221,17 @@ def pr_states(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return states
 
 
+def settled_index(
+    previous: dict[str, dict[str, Any]] | None, states: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """The by-branch record of pull requests that have reached a terminal state."""
+    index = dict(previous or {})
+    for entry in states:
+        if is_settled(entry):
+            index[str(entry["branch"])] = entry
+    return index
+
+
 def _mergeability(entry: dict[str, Any]) -> str:
     if entry.get("mergeable") == "CONFLICTING" or entry.get("merge_state") == "DIRTY":
         return "conflicts"
@@ -217,17 +243,21 @@ def _mergeability(entry: dict[str, Any]) -> str:
 
 
 def describe_pr(entry: dict[str, Any]) -> str | None:
-    """The compact segment for one pull request, or ``None`` when there is nothing to say."""
+    """The compact segment for one pull request, or ``None`` when there is nothing to say.
+
+    Only *open* pull requests earn a standing segment. A merged or closed one is
+    news exactly once, on the tick it flips, and the change list carries that;
+    keeping it on the line forever would bury the live work behind the history.
+    """
     if not entry.get("known"):
         return f"t{entry['task_id']} ci: unknown"
     if entry.get("pr") is None:
         return None  # branch has no pull request yet; the task line already says so
+    if entry.get("state", "OPEN") != "OPEN":
+        return None
     head = f"PR #{entry['pr']}"
     if entry.get("base"):
         head += f" -> {entry['base']}"
-    state = entry.get("state", "OPEN")
-    if state != "OPEN":
-        return f"{head}: {state.lower()}"
     ci = entry.get("ci", "unknown")
     if ci == "fail" and entry.get("failing"):
         ci = f"fail ({', '.join(entry['failing'])})"
@@ -280,6 +310,7 @@ def tick(
     since_event_id: int = 0,
     now: datetime | None = None,
     previous_prs: dict[str, dict[str, Any]] | None = None,
+    settled_prs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One snapshot of team state, plus the events that arrived since ``since_event_id``."""
     conn = conn or init_db()
@@ -305,7 +336,7 @@ def tick(
         if kind.startswith(NOISE_PREFIXES):
             continue
         new_events[kind] = new_events.get(kind, 0) + 1
-    prs = pr_states(conn)
+    prs = pr_states(conn, settled=settled_prs)
     snapshot = {
         "at": now.isoformat(timespec="seconds"),
         "in_flight": in_flight,
@@ -395,6 +426,7 @@ def run(
     # The first tick reports the current state, not the whole event history.
     since = max_event_id(conn)
     previous: dict[str, dict[str, Any]] | None = None
+    settled: dict[str, dict[str, Any]] = {}
     idle_ticks = 0
 
     def emit(snapshot: dict[str, Any], text: str) -> None:
@@ -406,10 +438,12 @@ def run(
             conn,
             since_event_id=since,
             previous_prs=previous,
+            settled_prs=settled,
             now=clock() if clock else None,
         )
         since = snapshot["last_event_id"]
         previous = pr_index(snapshot["prs"])
+        settled = settled_index(settled, snapshot["prs"])
         if once:  # a single tick is always spoken, idle or not
             emit(snapshot, render(snapshot))
             return 0

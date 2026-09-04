@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from middle_manager.companions import pr_tool
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
@@ -138,6 +139,12 @@ def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> 
     if task is None:
         raise DeliveryError(f"task {task_id} not found")
     branch = task["branch"] or ""
+    # Record the landing on the task, not only in the event stream: a delivered
+    # task never leaves that status, so without a merge on the row the heartbeat
+    # would re-ask the forge about this branch on every tick, forever.
+    store.update_task_fields(
+        conn, task_id, merged_sha=merged_sha, merged_at=datetime.now(UTC).isoformat()
+    )
     store.set_task_status(conn, task_id, "delivered")
     store.append_event(
         conn,
