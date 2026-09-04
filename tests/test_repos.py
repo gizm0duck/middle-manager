@@ -175,6 +175,119 @@ def test_sync_of_an_unregistered_repo_says_so(mm_home) -> None:
     assert "not registered" in str(exc.value)
 
 
+# --------------------------------------------------------------------------- #
+# Registration carries the forge — the place a pull request can be opened
+# --------------------------------------------------------------------------- #
+
+GITHUB_URL = "https://github.com/Papaya-HQ/papaya-infra"
+
+
+def test_forge_urls_are_recognised_and_reduced_to_owner_and_name() -> None:
+    for url in (
+        GITHUB_URL,
+        GITHUB_URL + ".git",
+        "git@github.com:Papaya-HQ/papaya-infra.git",
+        "ssh://git@github.com/Papaya-HQ/papaya-infra",
+    ):
+        assert repos.is_forge_url(url), url
+        assert repos.forge_slug(url) == "Papaya-HQ/papaya-infra"
+    for not_a_forge in ("/Users/me/workspace/papaya-infra", "", None, "https://example.com/x/y"):
+        assert not repos.is_forge_url(not_a_forge)
+
+
+@pytest.mark.strict_forge
+def test_add_from_a_path_takes_the_forge_from_that_path_s_origin(tmp_path, mm_home) -> None:
+    source = _make_source_repo(tmp_path / "source")
+    subprocess.run(["git", "-C", source, "remote", "add", "origin", GITHUB_URL], check=True)
+
+    added = repos.add_repo(source)
+    assert added.forge_url == GITHUB_URL
+    assert repos.list_repos()[0]["forge_url"] == GITHUB_URL
+    # The base clone's own origin is the local path, so the forge is reachable
+    # through a second remote that worktrees inherit.
+    assert repos.remote_url(added.local_path) == source
+    assert repos.remote_url(added.local_path, repos.FORGE_REMOTE) == GITHUB_URL
+    assert repos.upstream_remote(repos.list_repos()[0]) == repos.FORGE_REMOTE
+
+
+@pytest.mark.strict_forge
+def test_add_from_a_path_with_a_local_origin_refuses_until_a_forge_is_named(
+    tmp_path, mm_home
+) -> None:
+    upstream = _make_source_repo(tmp_path / "upstream")
+    source = _make_source_repo(tmp_path / "source")
+    subprocess.run(["git", "-C", source, "remote", "add", "origin", upstream], check=True)
+
+    with pytest.raises(repos.RepoError) as exc:
+        repos.add_repo(source)
+    message = str(exc.value)
+    assert "--forge-url" in message
+    assert upstream in message  # the refusal names what it found instead of a forge
+    assert repos.list_repos() == []
+
+    added = repos.add_repo(source, forge_url=GITHUB_URL)
+    assert added.forge_url == GITHUB_URL
+
+
+@pytest.mark.strict_forge
+def test_add_from_a_path_with_no_origin_at_all_refuses(tmp_path, mm_home) -> None:
+    source = _make_source_repo(tmp_path / "source")
+    with pytest.raises(repos.RepoError) as exc:
+        repos.add_repo(source)
+    assert "no origin remote" in str(exc.value)
+
+
+@pytest.mark.strict_forge
+def test_add_from_a_url_records_that_url_as_the_forge(tmp_path, mm_home, monkeypatch) -> None:
+    """A repo registered by URL is its own forge; only the clone needs the network."""
+    source = _make_source_repo(tmp_path / "source")
+    real_git = repos._git
+
+    def fake_git(args, cwd=None):
+        if args[:2] == ["clone", "--quiet"]:
+            return real_git(["clone", "--quiet", source, args[-1]], cwd=cwd)
+        return real_git(args, cwd=cwd)
+
+    monkeypatch.setattr(repos, "_git", fake_git)
+    added = repos.add_repo(GITHUB_URL)
+    assert added.name == "papaya-infra"
+    assert added.forge_url == GITHUB_URL
+
+
+@pytest.mark.strict_forge
+def test_repo_list_and_doctor_surface_a_repo_with_no_forge(tmp_path, mm_home, capsys) -> None:
+    from middle_manager.cli import main
+    from middle_manager.setup.doctor import render_text
+
+    source = _make_source_repo(tmp_path / "source")
+    assert main(["repo", "add", source, "--forge-url", GITHUB_URL]) == 0
+    assert GITHUB_URL in capsys.readouterr().out
+
+    assert main(["repo", "list"]) == 0
+    assert GITHUB_URL in capsys.readouterr().out
+
+    # A registration made before forge URLs existed has none; doctor says so.
+    from middle_manager.state import init_db, store
+
+    store.update_repo_fields(init_db(), "source", forge_url=None)
+    assert main(["repo", "list"]) == 0
+    assert "NO FORGE" in capsys.readouterr().out
+    rendered = render_text({**_doctor_stub(), "repos": [{"name": "source", "forge_url": None}]})
+    assert "NO FORGE" in rendered
+    assert "--forge-url" in rendered
+
+
+def _doctor_stub() -> dict:
+    return {
+        "mm_home": "/tmp/.mm",
+        "config": {"path": "/tmp/.mm/config.toml", "present": False},
+        "state_db": {"present": False},
+        "environment": {"harnesses": [], "requirements": [], "companions": []},
+        "usable_harnesses": [],
+        "capability_drift": [],
+    }
+
+
 def test_repo_sync_cli_reports_the_fast_forward(tmp_path, mm_home, capsys) -> None:
     from middle_manager.cli import main
 
@@ -186,3 +299,51 @@ def test_repo_sync_cli_reports_the_fast_forward(tmp_path, mm_home, capsys) -> No
     out = capsys.readouterr().out
     assert "fast-forwarded main" in out
     assert tip[:8] in out
+
+
+# --------------------------------------------------------------------------- #
+# Delivery follows the forge, not the base clone's local origin
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.strict_forge
+def test_delivery_pushes_and_opens_the_pr_on_the_registered_forge(
+    tmp_path, mm_home, monkeypatch
+) -> None:
+    """The incident: a path-registered repo pushed fine and had no forge for the PR."""
+    from types import SimpleNamespace
+
+    from middle_manager import delivery
+    from middle_manager.state import init_db, store
+
+    source = _make_source_repo(tmp_path / "papaya-infra")
+    added = repos.add_repo(source, forge_url=GITHUB_URL)
+
+    conn = init_db()
+    run_id = store.create_run(conn, "deliver")
+    repo_row = store.get_repo(conn, added.name)
+    task_id = store.add_task(conn, run_id=run_id, title="ship it", repo_id=repo_row["id"])
+    store.update_task_fields(conn, task_id, worktree_path=added.local_path, branch="mm/task-1-abc")
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, cwd=None):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="https://github.com/pr/1\n", stderr="")
+
+    monkeypatch.setattr(delivery, "_run", fake_run)
+    monkeypatch.setattr(delivery, "is_approved_at_head", lambda tid: (True, ""))
+    monkeypatch.setattr(delivery, "head_sha", lambda wt: "f" * 40)
+    monkeypatch.setattr(delivery, "_pr_tool", lambda: "gh")
+
+    delivery.deliver(task_id)
+    push_argv = next(a for a in calls if a[:2] == ["git", "push"])
+    assert push_argv[2] == repos.FORGE_REMOTE
+    pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
+    assert pr_argv[pr_argv.index("--repo") + 1] == "Papaya-HQ/papaya-infra"
+
+    # An explicit remote still wins.
+    calls.clear()
+    delivery.deliver(task_id, remote="origin")
+    push_argv = next(a for a in calls if a[:2] == ["git", "push"])
+    assert push_argv[2] == "origin"

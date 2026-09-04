@@ -53,8 +53,13 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
-def _start_from_branch(worktree_path: str, branch: str) -> str:
-    """Move a fresh worktree onto ``origin/<branch>`` and return the resulting HEAD."""
+def _start_from_branch(worktree_path: str, branch: str, remote: str = "origin") -> str:
+    """Move a fresh worktree onto ``<remote>/<branch>`` and return the resulting HEAD.
+
+    ``remote`` is the repo's forge remote. For a repo registered from a local
+    path, ``origin`` is that local clone and the branch a stack is built on lives
+    on the forge instead.
+    """
     import subprocess
 
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -62,16 +67,16 @@ def _start_from_branch(worktree_path: str, branch: str) -> str:
             ["git", "-C", worktree_path, *args], capture_output=True, text=True, check=False
         )
 
-    fetched = git("fetch", "--quiet", "origin", branch)
+    fetched = git("fetch", "--quiet", remote, branch)
     if fetched.returncode != 0:
         raise SupervisorError(
-            f"cannot start from {branch!r}: git fetch origin {branch} failed: "
+            f"cannot start from {branch!r}: git fetch {remote} {branch} failed: "
             f"{fetched.stderr.strip()[:200]}"
         )
-    reset = git("reset", "--hard", "--quiet", f"origin/{branch}")
+    reset = git("reset", "--hard", "--quiet", "FETCH_HEAD")
     if reset.returncode != 0:
         raise SupervisorError(
-            f"cannot start from {branch!r}: git reset --hard origin/{branch} failed: "
+            f"cannot start from {branch!r}: git reset --hard {remote}/{branch} failed: "
             f"{reset.stderr.strip()[:200]}"
         )
     head = git("rev-parse", "HEAD")
@@ -180,7 +185,11 @@ class Supervisor:
             # from the repo's base. A worker cannot be redirected after it starts,
             # and a wrong starting commit cost a dispatch on 2026-08-30.
             try:
-                base_sha = _start_from_branch(lease.worktree_path, base)
+                from middle_manager import repos as _repos
+
+                base_sha = _start_from_branch(
+                    lease.worktree_path, base, _repos.upstream_remote(repo_row)
+                )
             except SupervisorError as exc:
                 store.set_task_status(conn, task_id, "failed")
                 store.append_event(

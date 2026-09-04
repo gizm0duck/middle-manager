@@ -193,11 +193,12 @@ def _cmd_repo(args: argparse.Namespace) -> int:
             print(settings.describe())
             return 0
         if args.repo_cmd == "add":
-            added = add_repo(args.url, name=args.name)
+            added = add_repo(args.url, name=args.name, forge_url=args.forge_url)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
             print(
                 f"registered {added.name} from {added.origin} "
-                f"(branch {added.default_branch}, base {short_sha})"
+                f"(branch {added.default_branch}, base {short_sha}, "
+                f"forge {added.forge_url})"
             )
             return 0
         if args.repo_cmd == "list":
@@ -207,7 +208,11 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                 return 0
             for r in repos:
                 sha = (r.get("base_sha") or "?")[:8]
-                print(f"{r['name']:<24} {r['default_branch'] or '?':<12} {sha}  {r['origin']}")
+                forge = r.get("forge_url") or "NO FORGE — deliver cannot open PRs"
+                print(
+                    f"{r['name']:<24} {r['default_branch'] or '?':<12} {sha}  "
+                    f"{r['origin']}  ->  {forge}"
+                )
             return 0
         if args.repo_cmd == "sync":
             res = sync_repo(args.name, clean_stray_mm=args.clean_stray_mm)
@@ -1347,6 +1352,15 @@ def build_parser() -> argparse.ArgumentParser:
     rsub = repo.add_subparsers(dest="repo_cmd", required=True)
     add = rsub.add_parser("add", help="register a repository")
     add.add_argument("url", help="repository URL or local path")
+    add.add_argument(
+        "--forge-url",
+        dest="forge_url",
+        default=None,
+        help=(
+            "where pull requests for this repo are opened; required when registering "
+            "a local path whose own origin is not a forge"
+        ),
+    )
     add.add_argument("--name", default=None, help="override the derived name")
     rsub.add_parser("list", help="list registered repositories")
     sync = rsub.add_parser(
@@ -1574,7 +1588,11 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("task_id", type=int)
     deliver.add_argument("--no-push", dest="no_push", action="store_true")
     deliver.add_argument("--no-pr", dest="no_pr", action="store_true")
-    deliver.add_argument("--remote", default="origin")
+    deliver.add_argument(
+        "--remote",
+        default=None,
+        help="push target; defaults to the repo's registered forge remote",
+    )
     deliver.add_argument("--base", default=None, help="PR base branch")
     deliver.add_argument(
         "--title",

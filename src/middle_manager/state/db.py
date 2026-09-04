@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS repos (
     local_path TEXT NOT NULL,
     default_branch TEXT,
     base_sha TEXT,
+    forge_url TEXT,
     -- Opt-in, per repo: a command to run in a fresh worktree before the worker
     -- starts, and a path to a virtualenv in the base clone worth reusing.
     provision_command TEXT,
@@ -254,6 +255,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     on a pre-existing DB are added here. Additions are idempotent (guarded by
     ``PRAGMA table_info``) so this is safe to run on fresh databases too.
     """
+    repo_cols = _column_names(conn, "repos")
+    if "forge_url" not in repo_cols:
+        # Where pull requests are opened. A repo registered from a local path has
+        # a local `origin`, which is no forge at all: delivery could push but had
+        # nowhere to open the PR (2026-09-04, papaya-infra).
+        conn.execute("ALTER TABLE repos ADD COLUMN forge_url TEXT")
     task_cols = _column_names(conn, "tasks")
     if "stacked_on" not in task_cols:
         # The branch a stacked task started from; delivery targets it by default.

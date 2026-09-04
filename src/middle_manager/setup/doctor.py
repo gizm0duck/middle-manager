@@ -66,6 +66,24 @@ def _schema_status() -> dict:
     return status
 
 
+def _repo_forges() -> list[dict]:
+    """Every registered repo and whether delivery has somewhere to open a PR.
+
+    A repo registered from a local path before forge URLs existed has none: the
+    worker pushes, and ``mm deliver`` has no forge to open the pull request
+    against — which is exactly the hand-push that cost a delivery on 2026-09-04.
+    """
+    try:
+        from middle_manager.repos import list_repos
+
+        return [
+            {"name": r["name"], "forge_url": r.get("forge_url"), "origin": r.get("origin")}
+            for r in list_repos()
+        ]
+    except Exception:  # noqa: BLE001 - diagnostics must not crash
+        return []
+
+
 def collect() -> dict:
     report = discover()
     home = mm_home()
@@ -86,6 +104,7 @@ def collect() -> dict:
         "environment": report,
         "usable_harnesses": usable_harnesses(report),
         "capability_drift": _capability_drift(report),
+        "repos": _repo_forges(),
     }
 
 
@@ -133,6 +152,18 @@ def render_text(data: dict) -> str:
                 )
             else:
                 lines.append(f"  {d['provider']:<8} ok — probed at {d['recorded']}")
+    repos = data.get("repos", [])
+    if repos:
+        lines.append("")
+        lines.append("Registered repositories:")
+        for r in repos:
+            if r.get("forge_url"):
+                lines.append(f"  {r['name']:<24} forge {r['forge_url']}")
+            else:
+                lines.append(
+                    f"  {r['name']:<24} NO FORGE — deliver cannot open pull requests; "
+                    "re-register it with `mm repo add <path> --forge-url <url>`"
+                )
     db = data["state_db"]
     if db.get("present") and db.get("version") is not None:
         mark = "ok" if db.get("version") == db.get("expected") else "MISMATCH"
