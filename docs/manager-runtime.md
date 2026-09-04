@@ -274,6 +274,15 @@ quietly; do not narrate the steps or report diagnostics.
    cadence, never a replacement for it: waiting silently on a watcher is how a
    finished worker sat unpushed and a steer went undelivered on 2026-08-31.
 
+   The watch quiets itself when there is nothing to watch: no worker in flight,
+   nothing waiting on you, no pull request whose checks are pending or failing,
+   nothing new. On the second such tick it says so once and then goes silent —
+   so "no change" is something you relay only while something is actually in
+   flight, and an idle team costs the user nothing to read. It resumes the normal
+   line and the five-minute cadence by itself the moment anything changes, so
+   never restart it after a dispatch: the process stays alive and your monitor
+   stays armed.
+
 Preflight is invisible when it succeeds: the user just sees you open with a ready,
 in-character greeting.
 
@@ -505,7 +514,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
-| Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task with a branch, its pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing |
+| Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task with a branch, its pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing. It goes quiet on its own after two idle ticks (nothing in flight, nothing owed to you, no pending or failing checks, nothing new) and speaks again the moment that stops being true — leave it running rather than restarting it; `--exit-when-idle` makes it exit instead, for scripts |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |

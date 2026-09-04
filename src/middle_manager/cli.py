@@ -685,7 +685,12 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     from middle_manager import watch
 
     try:
-        return watch.run(interval=args.interval, once=args.once, as_json=args.json)
+        return watch.run(
+            interval=args.interval,
+            once=args.once,
+            as_json=args.json,
+            exit_when_idle=args.exit_when_idle,
+        )
     except KeyboardInterrupt:
         return 0
 
@@ -1448,6 +1453,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch_cmd.add_argument("--once", action="store_true", help="print one tick and exit")
     watch_cmd.add_argument("--json", action="store_true", help="machine-readable ticks")
+    watch_cmd.add_argument(
+        "--exit-when-idle",
+        dest="exit_when_idle",
+        action="store_true",
+        help=(
+            "for scripts: exit on the second idle tick instead of going quiet and "
+            "waiting for the team to have news again"
+        ),
+    )
     watch_cmd.set_defaults(func=_cmd_watch)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")

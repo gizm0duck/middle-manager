@@ -15,6 +15,12 @@ nothing to say — and the user had to ask whether anyone was watching. The pull
 request segment exists for the other half of that wait: once work is delivered,
 what the manager is actually waiting on is CI, and hand-arming one watcher per
 pull request is the same silent failure in a different costume.
+
+The heartbeat is loud while there is something to watch and silent when there is
+not. After two consecutive idle ticks it says so once and then prints nothing
+until the team has news again — because on 2026-09-04 a finished run left the
+watch announcing "no workers in flight" every five minutes for over an hour, and
+every one of those ticks woke the manager to relay nothing.
 """
 
 from __future__ import annotations
@@ -300,7 +306,7 @@ def tick(
             continue
         new_events[kind] = new_events.get(kind, 0) + 1
     prs = pr_states(conn)
-    return {
+    snapshot = {
         "at": now.isoformat(timespec="seconds"),
         "in_flight": in_flight,
         "needs_me": needs_me,
@@ -310,11 +316,37 @@ def tick(
         "prs": prs,
         "pr_changes": pr_changes(previous_prs, pr_index(prs)),
     }
+    snapshot["idle"] = is_idle(snapshot)
+    return snapshot
+
+
+def is_idle(snapshot: dict[str, Any]) -> bool:
+    """Is there nothing for the manager to watch right now?
+
+    Idle is the conjunction of every reason a tick could matter: no worker in
+    flight, nothing waiting on the manager, no pull request whose checks are
+    still running or already failing, and nothing new — no event, no pull request
+    that flipped — since the last tick. An open ledger is *not* a reason to keep
+    ticking: a todo waits on the manager's next move, not on the team.
+
+    A pull request whose state is ``unknown`` (no ``gh``, or a query that failed)
+    does not hold the watch open; a machine that cannot see the forge would
+    otherwise never fall quiet.
+    """
+    if snapshot["in_flight"] or snapshot["needs_me"]:
+        return False
+    if snapshot["new_events"] or snapshot["pr_changes"]:
+        return False
+    return not any(entry.get("ci") in ("pending", "fail") for entry in snapshot["prs"])
+
+
+def _when(snapshot: dict[str, Any]) -> str:
+    return snapshot["at"][11:16] + " UTC"
 
 
 def render(snapshot: dict[str, Any]) -> str:
     """The one line a harness monitor relays: what is running, what is owed, what is new."""
-    when = snapshot["at"][11:16] + " UTC"
+    when = _when(snapshot)
     if snapshot["in_flight"]:
         parts = []
         for e in snapshot["in_flight"]:
@@ -342,21 +374,52 @@ def run(
     *,
     once: bool = False,
     as_json: bool = False,
+    exit_when_idle: bool = False,
     out: TextIO | None = None,
     sleep=time.sleep,
+    clock=None,
 ) -> int:
-    """Print a tick now and then every ``interval`` seconds until interrupted."""
+    """Print a tick now and then every ``interval`` seconds until interrupted.
+
+    The watch keeps ticking, but it stops talking. After two consecutive idle
+    ticks it says so once and then prints nothing at all until something changes
+    — a dispatch, a resume, an event, a check flipping, a worker going quiet —
+    at which point the normal line and the five-minute cadence resume on their
+    own. The process stays alive through all of it, deliberately: the manager
+    runs this under a persistent monitor, and a silent process keeps that monitor
+    armed with nothing to re-arm. ``--exit-when-idle`` is the opt-out for scripts
+    that want a process that ends.
+    """
     out = out or sys.stdout  # resolved per call so harness capture sees the ticks
     conn = init_db()
     # The first tick reports the current state, not the whole event history.
     since = max_event_id(conn)
     previous: dict[str, dict[str, Any]] | None = None
+    idle_ticks = 0
+
+    def emit(snapshot: dict[str, Any], text: str) -> None:
+        print(json.dumps(snapshot, default=str) if as_json else text, file=out)
+        out.flush()
+
     while True:
-        snapshot = tick(conn, since_event_id=since, previous_prs=previous)
+        snapshot = tick(
+            conn,
+            since_event_id=since,
+            previous_prs=previous,
+            now=clock() if clock else None,
+        )
         since = snapshot["last_event_id"]
         previous = pr_index(snapshot["prs"])
-        print(json.dumps(snapshot, default=str) if as_json else render(snapshot), file=out)
-        out.flush()
-        if once:
+        if once:  # a single tick is always spoken, idle or not
+            emit(snapshot, render(snapshot))
             return 0
+        idle_ticks = idle_ticks + 1 if snapshot["idle"] else 0
+        if idle_ticks >= 2 and exit_when_idle:
+            emit(snapshot, f"TEAM {_when(snapshot)} — idle; watch exiting (--exit-when-idle)")
+            return 0
+        if idle_ticks < 2:
+            emit(snapshot, render(snapshot))
+        elif idle_ticks == 2:
+            emit(snapshot, f"TEAM {_when(snapshot)} — idle; watch quiet until something changes")
+        # Past that, an idle tick says nothing at all: silence is the report.
         sleep(interval)
