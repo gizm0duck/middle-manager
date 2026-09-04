@@ -55,6 +55,17 @@ def worktree_pools_dir() -> Path:
     return mm_home() / "worktree-pools"
 
 
+def treehouse_home() -> Path:
+    """Where the treehouse companion keeps its worktree pools.
+
+    Treehouse owns this directory, not us, so it is not under ``.mm``. The
+    overrides exist so the hermetic suite (and anyone running two instances) can
+    point the pool scan at a scratch directory instead of the real pool.
+    """
+    override = os.environ.get("MM_TREEHOUSE_HOME") or os.environ.get("TREEHOUSE_HOME")
+    return Path(override) if override else Path.home() / ".treehouse"
+
+
 def memory_dir() -> Path:
     return mm_home() / "memory"
 
