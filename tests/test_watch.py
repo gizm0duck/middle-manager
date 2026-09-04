@@ -1,9 +1,11 @@
-"""The heartbeat: one relayable line of team state per tick, never silent."""
+"""The heartbeat: one relayable line of team state per tick, silent only when idle."""
 
 from __future__ import annotations
 
 import io
 import json
+from datetime import UTC, datetime, timedelta
+from itertools import count
 
 import pytest
 
@@ -104,6 +106,14 @@ def test_run_once_prints_exactly_one_line_and_returns(home) -> None:
 
 
 def test_run_loops_on_the_interval_until_stopped(home) -> None:
+    conn = home
+    # Something is waiting on the manager, so every tick has news to report; the
+    # idle case is its own test, below.
+    store.set_task_status(
+        conn,
+        store.add_task(conn, run_id=store.create_run(conn, "ship it"), title="review me"),
+        "worker_done",
+    )
     out = io.StringIO()
     calls: list[float] = []
 
@@ -321,3 +331,115 @@ def test_run_compares_each_tick_with_the_one_before_it(home, tmp_path, monkeypat
     lines = out.getvalue().strip().splitlines()
     assert "ci pending" in lines[0] and "changed:" not in lines[0]
     assert "changed: PR #779 ci pending -> pass" in lines[1]
+
+
+IDLE = {"in_flight": [], "needs_me": [], "new_events": {}, "pr_changes": [], "prs": []}
+
+
+def test_idle_means_every_reason_to_tick_is_absent() -> None:
+    assert watch.is_idle(IDLE) is True
+    assert watch.is_idle({**IDLE, "in_flight": [{"task_id": 1}]}) is False
+    assert watch.is_idle({**IDLE, "needs_me": [{"id": 1, "status": "worker_done"}]}) is False
+    assert watch.is_idle({**IDLE, "new_events": {"error": 1}}) is False
+    assert watch.is_idle({**IDLE, "pr_changes": ["PR #1 ci pending -> fail"]}) is False
+    assert watch.is_idle({**IDLE, "prs": [{"ci": "pending"}]}) is False
+    assert watch.is_idle({**IDLE, "prs": [{"ci": "fail"}]}) is False
+    # Green work, work the forge can't be asked about, and a full ledger are all
+    # things the manager acts on in its own time — none of them is the team.
+    assert watch.is_idle({**IDLE, "prs": [{"ci": "pass"}]}) is True
+    assert watch.is_idle({**IDLE, "prs": [{"ci": "unknown"}]}) is True
+    assert watch.is_idle({**IDLE, "open_todos": 4}) is True
+
+
+def clock_from(start, step_minutes: int = 1):
+    """A fake clock that advances one interval per tick."""
+    ticks = count()
+
+    def now():
+        return start + timedelta(minutes=step_minutes * next(ticks))
+
+    return now
+
+
+def test_the_watch_says_it_is_going_quiet_once_then_says_nothing(home) -> None:
+    conn = home
+    out = io.StringIO()
+    naps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        naps.append(seconds)
+        if len(naps) == 3:  # after the third idle tick, work arrives
+            store.add_task(conn, run_id=store.create_run(conn, "new work"), title="build it")
+        if len(naps) == 5:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        watch.run(
+            interval=300,
+            out=out,
+            sleep=fake_sleep,
+            clock=clock_from(datetime(2026, 9, 4, 9, 0, tzinfo=UTC)),
+        )
+
+    lines = out.getvalue().strip().splitlines()
+    assert len(lines) == 4  # five ticks, one of them silent
+    assert lines[0].startswith("TEAM 09:00 UTC — no workers in flight")
+    assert lines[1] == "TEAM 09:01 UTC — idle; watch quiet until something changes"
+    # The third idle tick (09:02) printed nothing at all; the dispatch brings the
+    # normal line and the normal cadence straight back.
+    assert lines[2].startswith("TEAM 09:03 UTC — in flight 1:")
+    assert lines[3].startswith("TEAM 09:04 UTC — in flight 1:")
+    assert naps == [300, 300, 300, 300, 300]  # the process never stopped ticking
+
+
+def test_a_pull_request_still_running_its_checks_keeps_the_watch_talking(
+    home, tmp_path, monkeypatch
+) -> None:
+    conn = home
+    delivered_task(conn, tmp_path, "harness/waiting")
+    fake_forge(monkeypatch, pr=OPEN_PR, checks=[{"name": "Unit tests", "bucket": "pending"}])
+    out = io.StringIO()
+    naps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        naps.append(seconds)
+        if len(naps) == 3:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        watch.run(interval=300, out=out, sleep=fake_sleep)
+    lines = out.getvalue().strip().splitlines()
+    assert len(lines) == 3
+    assert all("ci pending" in line for line in lines)
+
+
+def test_exit_when_idle_ends_the_process_for_scripts(home) -> None:
+    out = io.StringIO()
+    naps: list[float] = []
+
+    rc = watch.run(
+        interval=300,
+        exit_when_idle=True,
+        out=out,
+        sleep=naps.append,
+        clock=clock_from(datetime(2026, 9, 4, 9, 0, tzinfo=UTC)),
+    )
+    assert rc == 0
+    lines = out.getvalue().strip().splitlines()
+    assert lines[0].startswith("TEAM 09:00 UTC — no workers in flight")
+    assert lines[1] == "TEAM 09:01 UTC — idle; watch exiting (--exit-when-idle)"
+    assert naps == [300]  # it slept once, then stopped rather than going quiet
+
+
+def test_one_tick_is_always_spoken_even_when_idle(home) -> None:
+    out = io.StringIO()
+    assert watch.run(interval=1, once=True, out=out, sleep=lambda s: None) == 0
+    assert out.getvalue().count("\n") == 1
+    assert "idle; watch quiet" not in out.getvalue()
+
+
+def test_cli_watch_exits_when_idle(home, capsys) -> None:
+    assert cli.main(["watch", "--interval", "0", "--exit-when-idle"]) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 2
+    assert lines[1].endswith("idle; watch exiting (--exit-when-idle)")
