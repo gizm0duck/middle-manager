@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS repos (
     local_path TEXT NOT NULL,
     default_branch TEXT,
     base_sha TEXT,
+    -- Opt-in, per repo: a command to run in a fresh worktree before the worker
+    -- starts, and a path to a virtualenv in the base clone worth reusing.
+    provision_command TEXT,
+    provision_venv TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -257,6 +261,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # exits: its late exit code belongs to a session nobody is waiting on.
         if col not in runner_cols:
             conn.execute(f"ALTER TABLE runners ADD COLUMN {col} TEXT")
+    repo_cols = _column_names(conn, "repos")
+    for col in ("provision_command", "provision_venv"):
+        # Opt-in worktree provisioning; a repo with neither set behaves as before.
+        if col not in repo_cols:
+            conn.execute(f"ALTER TABLE repos ADD COLUMN {col} TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:

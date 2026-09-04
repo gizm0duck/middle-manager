@@ -99,6 +99,78 @@ def list_repos() -> list[dict]:
     return [dict(r) for r in store.list_repos(conn)]
 
 
+@dataclass
+class ProvisionSettings:
+    """What a repo wants done to a fresh worktree before its worker starts."""
+
+    repo: str
+    command: str | None
+    reuse_venv: str | None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.command or self.reuse_venv)
+
+    def describe(self) -> str:
+        if not self.configured:
+            return f"{self.repo}: no worktree provisioning configured"
+        parts = []
+        if self.reuse_venv:
+            parts.append(f"reuses {self.reuse_venv} from the base clone")
+        if self.command:
+            parts.append(f"runs `{self.command}` in each new worktree")
+        return f"{self.repo}: " + ", and ".join(parts)
+
+
+def _require_repo(name: str):
+    conn = init_db()
+    row = store.get_repo(conn, name)
+    if row is None:
+        raise RepoError(f"repo {name!r} is not registered")
+    return conn, row
+
+
+def get_provision(name: str) -> ProvisionSettings:
+    _conn, row = _require_repo(name)
+    keys = row.keys()
+    return ProvisionSettings(
+        repo=name,
+        command=row["provision_command"] if "provision_command" in keys else None,
+        reuse_venv=row["provision_venv"] if "provision_venv" in keys else None,
+    )
+
+
+def set_provision(
+    name: str,
+    *,
+    command: str | None = None,
+    reuse_venv: str | None = None,
+    clear: bool = False,
+) -> ProvisionSettings:
+    """Configure (or clear) a repo's worktree provisioning.
+
+    ``None`` leaves a field as it was; an empty string clears that one field, and
+    ``clear`` clears both — so turning provisioning off never needs a DB edit.
+    """
+    conn, _row = _require_repo(name)
+    fields: dict[str, object] = {}
+    if clear:
+        fields = {"provision_command": None, "provision_venv": None}
+    else:
+        if command is not None:
+            fields["provision_command"] = command.strip() or None
+        if reuse_venv is not None:
+            cleaned = reuse_venv.strip().strip("/")
+            if cleaned.startswith("..") or os.path.isabs(reuse_venv.strip()):
+                raise RepoError(
+                    f"--reuse-venv wants a path inside the repo, like backend/.venv; "
+                    f"got {reuse_venv!r}"
+                )
+            fields["provision_venv"] = cleaned or None
+    store.update_repo_fields(conn, name, **fields)
+    return get_provision(name)
+
+
 def sync_repo(name: str) -> str:
     conn = init_db()
     row = store.get_repo(conn, name)
