@@ -10,11 +10,41 @@ the manager schedules, nags, and reports off it, and the heartbeat treats
 | --- | --- |
 | `requested` | The task row exists; no worker has started. |
 | `in_progress` | A worker session is live, or is being started right now. |
-| `worker_done` | The worker finished a turn and there is a reviewable head. |
+| `worker_done` | The worker finished a turn and the evidence says it finished the gate: a `done` progress note, nothing unpushed, and no backgrounded command left hanging. |
+| `worker_stopped` | The turn ended mid-gate. Not terminal, not a failure — the work is there and unfinished, and `mm resume` picks it up. |
 | `blocked` | The worker asked a question and stopped. |
 | `failed` | The worker's *current* session ended without a result. |
 | `needs_recovery` | The runner process vanished without recording a result. |
 | `delivered` | Pushed (and normally a PR opened) after an approved review. |
+
+## A turn ending is not the same as finishing
+
+A Claude worker started the full backend suite, the tool's foreground cap pushed
+it into the background, and the worker ended its turn to wait for it. The
+backgrounded suite was killed with the session, the branch was never pushed, no
+`done` note was ever filed — and the harness recorded `worker_done` (task 103,
+2026-09-04; task 104 repeated it with browser smoke retries).
+
+So a completed turn is now judged on evidence. Any of these means the task lands
+in `worker_stopped` instead:
+
+| Signal | What it means |
+| --- | --- |
+| The newest progress note is not `--phase done` | The worker never said it got to the end. |
+| The branch holds commits no remote has | The work was never pushed, so nobody but that worktree has it. |
+| The session's last tool call was a backgrounded command | Whatever it was waiting on died with the session. |
+
+"Commits no remote has" is asked by patch, not by SHA, so a branch that a stack
+cascade rebased upstream reads as pushed rather than as a pile of unpushed work.
+The check runs *before* the supervisor's end-of-task auto-commit, so the
+supervisor's own safety commit is never what makes a worker look like it withheld
+work.
+
+`mm run` surfaces the reason next to the event, `mm task <id>` shows it, and
+`mm resume <id>` **with no `--message`** sends the worker back in with what was cut
+short — the unfinished gate, the unpushed commits, and the instruction to run the
+suite in the foreground, file the done note, and push. Claude workers are told the
+same thing up front in the injected command rules.
 
 ## Steering a live worker
 

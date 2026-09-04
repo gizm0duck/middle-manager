@@ -49,6 +49,7 @@ class FakeProvider(ProviderAdapter):
             "title": spec.title,
             "instructions": spec.instructions,
             "worktree_path": spec.worktree_path,
+            "branch": spec.branch,
             "resume_session_id": spec.resume_session_id,
             "steer_message": spec.steer_message,
         }

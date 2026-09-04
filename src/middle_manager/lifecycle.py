@@ -23,6 +23,7 @@ TASK_STATUSES = (
     "requested",
     "in_progress",
     "worker_done",
+    "worker_stopped",
     "blocked",
     "failed",
     "needs_recovery",

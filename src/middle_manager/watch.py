@@ -28,7 +28,7 @@ from middle_manager.state import init_db
 DEFAULT_INTERVAL_SECONDS = 300.0
 
 # Statuses that mean "the manager owes this task an action" right now.
-NEEDS_ME = ("worker_done", "blocked", "needs_recovery")
+NEEDS_ME = ("worker_done", "worker_stopped", "blocked", "needs_recovery")
 
 # Event kinds that are provider chatter, not news the manager relays.
 NOISE_PREFIXES = ("worker_item.", "worker_thread.", "worker_turn.", "hook_")

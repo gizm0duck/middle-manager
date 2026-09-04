@@ -21,7 +21,7 @@ from middle_manager import memory
 from middle_manager.state import init_db, store
 
 IN_FLIGHT = ("requested", "in_progress")
-NEEDS_ME = ("worker_done", "blocked", "needs_recovery", "failed")
+NEEDS_ME = ("worker_done", "worker_stopped", "blocked", "needs_recovery", "failed")
 
 BLOCKERS = ("user", "review", "task", "access")
 

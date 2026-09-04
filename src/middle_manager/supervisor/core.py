@@ -332,6 +332,15 @@ class Supervisor:
             (task_id,),
         ).fetchone()
         session_id = sess["provider_session_id"] if sess else None
+        # A task whose turn ended mid-gate is resumed with what was cut short, not
+        # with silence: a bare resume used to hand the worker no reason at all, and
+        # a worker that does not know what it left unfinished repeats the ending.
+        if message is None:
+            from middle_manager import turn_end
+
+            recorded = turn_end.latest_stop_verdict(conn, task_id)
+            if recorded is not None and task["status"] == turn_end.WORKER_STOPPED:
+                message = recorded.resume_message()
         # A cascade may have rewritten this task's branch while it was stopped.
         # Resuming a worker into a worktree that is behind its own remote ends in
         # a force-push over the cascade, so the worktree is moved onto the remote
@@ -358,6 +367,7 @@ class Supervisor:
             model=task["model"],
             reasoning=task["reasoning"],
             run_id=task["run_id"],
+            branch=task["branch"],
             resume_session_id=session_id,
             steer_message=message,
         )
@@ -520,6 +530,7 @@ class Supervisor:
 
     NO_LIVE_TURN_STATUSES = (
         "worker_done",
+        "worker_stopped",
         "delivered",
         "closed",
         "cancelled",

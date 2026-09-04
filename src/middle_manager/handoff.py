@@ -31,13 +31,14 @@ from middle_manager import board, health, memory, progress
 from middle_manager.state import init_db, store
 
 IN_FLIGHT = ("requested", "in_progress")
-NEEDS_ME = ("worker_done", "blocked", "needs_recovery", "failed")
+NEEDS_ME = ("worker_done", "worker_stopped", "blocked", "needs_recovery", "failed")
 DONE = ("delivered",)
 
 _STATUS_HINT = {
     "requested": "queued, not started",
     "in_progress": "worker running",
     "worker_done": "finished — review the diff, then deliver",
+    "worker_stopped": "turn ended mid-gate — `mm resume` it; the reason is on the task",
     "blocked": "waiting on an answer",
     "needs_recovery": "runner dropped — `mm reconcile`, then `mm resume`",
     "failed": "failed — inspect events; rework or re-dispatch",

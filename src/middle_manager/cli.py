@@ -373,6 +373,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if actionable:
         marks = ", ".join(f"{e['kind']}(seq {e['seq']})" for e in actionable)
         print(f"actionable: {marks}")
+        # An event that names a reason is worth more than its kind: a worker whose
+        # turn ended mid-gate has to say so here, or it reads as finished work.
+        for event in actionable:
+            payload = event.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    payload = {}
+            summary = (payload or {}).get("summary") if isinstance(payload, dict) else None
+            if event["kind"] == "worker_stopped" and summary:
+                print(f"  task {(payload or {}).get('task_id')}: {summary}")
     else:
         print("actionable: none")
     usage = snap.get("usage") or {}
@@ -429,8 +441,14 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
     if task.get("branch"):
         line += f"  branch {task['branch']}"
     print(line)
-    from middle_manager import progress
+    from middle_manager import progress, turn_end
+    from middle_manager.state import init_db
 
+    if task.get("status") == turn_end.WORKER_STOPPED:
+        verdict = turn_end.latest_stop_verdict(init_db(), args.task_id)
+        if verdict is not None:
+            print(f"stopped: {verdict.summary}")
+            print("resume with `mm resume` (no --message needed) to send it back with that reason")
     print(f"progress: {progress.describe(progress.latest(args.task_id))}")
     return 0
 

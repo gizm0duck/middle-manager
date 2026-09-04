@@ -54,6 +54,14 @@ def test_the_block_states_every_rule():
     assert "the manager opens the PR from it" in text
 
 
+def test_the_block_tells_the_worker_to_run_the_suite_in_the_foreground():
+    """A backgrounded suite dies with the session — task 103 lost a whole turn to it."""
+    text = command_rules("claude", "mm/task-7-abc")
+    assert "in the foreground" in text
+    assert "20 minutes" in text
+    assert "never as a background task" in text
+
+
 def test_the_block_falls_back_to_a_readable_branch_placeholder():
     assert "HEAD:<your task branch>" in command_rules("claude")
 
