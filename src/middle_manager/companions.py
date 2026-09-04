@@ -31,3 +31,18 @@ def companion_bin(name: str) -> str | None:
 
 def has_companion(name: str) -> bool:
     return companion_bin(name) is not None
+
+
+def pr_tool() -> str | None:
+    """The GitHub CLI to shell out to for pull-request work, or ``None``.
+
+    ``gh-axi`` is the provisioned wrapper and is preferred when present; plain
+    ``gh`` is the fallback. Callers that only read (the heartbeat's PR/CI lookup)
+    and callers that write (delivery's PR creation) resolve the same binary, so a
+    machine that can open a PR can also report on it.
+    """
+    for tool in ("gh-axi", "gh"):
+        resolved = companion_bin(tool)
+        if resolved:
+            return resolved
+    return None

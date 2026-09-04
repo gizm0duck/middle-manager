@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     worktree_path TEXT,
     lease_id TEXT,
     stacked_on TEXT,
+    merged_sha TEXT,
+    merged_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -239,6 +241,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "stacked_on" not in task_cols:
         # The branch a stacked task started from; delivery targets it by default.
         conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on TEXT")
+    for col in ("merged_sha", "merged_at"):
+        # Where the work landed. Set once, terminal: the heartbeat stops asking
+        # the forge about a branch whose merge is already on the record.
+        if col not in task_cols:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
     runner_cols = _column_names(conn, "runners")
     for col in ("superseded_at", "supersede_reason"):
         # A runner superseded by a resume must not stamp the task when it finally

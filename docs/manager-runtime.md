@@ -262,10 +262,19 @@ quietly; do not narrate the steps or report diagnostics.
 
 6. **Arm the heartbeat.** Start `./bin/mm watch` as a background monitor in your
    harness (it prints one line of team state now and every five minutes: who is
-   in flight and alive, which tasks are waiting on you, what arrived since the
-   last tick, how big the ledger is). Every tick wakes you; while anything is in
-   flight or a merge is gated on CI, relay what it says to the user in plain
-   terms — including "no change". Completion watchers are a supplement to this
+   in flight and alive, which tasks are waiting on you, the *open* pull requests
+   your delivered work is sitting in with their CI verdict and mergeability, what
+   arrived since the last tick, how big the ledger is). It also names what
+   flipped since the last tick — a check going from pending to passing, a branch
+   falling behind its base, a pull request landing — so you relay the change, not
+   a re-reading. A merged or closed pull request is named once, on the tick it
+   flips, and then drops off the line; when you merge one yourself, record it
+   with `mm deliver <task> --merged <sha>` so the heartbeat stops asking the
+   forge about a branch that is already home. Every
+   tick wakes you; while anything is in flight or a merge is gated on CI, relay
+   what it says to the user in plain terms — including "no change". That means
+   you never hand-arm a watcher per pull request, and never sit on a `gh pr
+   checks` loop of your own. Completion watchers are a supplement to this
    cadence, never a replacement for it: waiting silently on a watcher is how a
    finished worker sat unpushed and a steer went undelivered on 2026-08-31.
 
@@ -520,6 +529,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --brief <file> --provider ... [--title] [--model] [--reasoning]` — `--title` is optional whenever `--brief` is given: the objective is taken from the brief's first Markdown heading (whitespace collapsed, capped at 120 characters), and an explicit `--title` overrides it. Without a brief, `--title` is still required. Also: a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task whose branch has an open pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. A pull request that merges or closes is named once and then drops off; `mm deliver <task> --merged <sha>` retires it for good. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |

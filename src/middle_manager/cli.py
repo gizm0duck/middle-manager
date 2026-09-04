@@ -1518,7 +1518,8 @@ def build_parser() -> argparse.ArgumentParser:
         "watch",
         help=(
             "team heartbeat: print one line of state (in-flight workers, tasks waiting "
-            "on you, new events) now and every --interval seconds; relay each tick"
+            "on you, the pull requests delivered work sits in with their CI verdict, "
+            "new events) now and every --interval seconds; relay each tick"
         ),
     )
     watch_cmd.add_argument(
