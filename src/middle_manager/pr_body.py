@@ -1,0 +1,271 @@
+"""The pull request body a delivery writes, composed from what the run already holds.
+
+Every delivery on 2026-09-04 opened its pull request with the body "Automated
+delivery of task N (sha)." and the manager then rewrote it by hand from three things
+the control plane was already holding: the brief the worker was dispatched with, the
+worker's own closing and test reports, and the review that approved the commit. That
+rewrite is where a reviewer's context came from, and it happened outside the tool, so
+it was done differently every time and skipped whenever the day was busy.
+
+This module composes that body instead:
+
+- **Why** — the first section of the archived brief, after its opening heading.
+- **What** — the worker's closing report, plus anything it filed under "Outside
+  scope, required to build" or "Flagged, not done" in an earlier report.
+- **Verification** — the worker's last test report and the reviewer's approval note.
+- **Stack** — the branch this work was dispatched from, when it sits on another
+  layer, or a plain statement that it targets the default branch.
+
+Everything is quoted from what people actually wrote; nothing is invented. Sections
+with no source say so in a sentence rather than going missing, so a body is always
+valid — and every reference is described in words, never left as a bare identifier a
+reader outside the run would have to look up.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+from pathlib import Path
+
+#: Set by the harness to add its own session/attribution lines to every body.
+FOOTER_ENV = "MM_PR_FOOTER"
+
+#: Length ceilings, so one enormous report cannot become an unreadable body.
+WHY_CAP = 1500
+WHAT_CAP = 4000
+VERIFICATION_CAP = 2000
+
+#: Headings a worker is asked to file, quoted verbatim when they appear.
+CARRIED_HEADINGS = ("Outside scope, required to build", "Flagged, not done")
+
+_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s*(.+?)\s*$")
+_BOLD_LINE = re.compile(r"^\s*\*\*(.+?)\*\*\s*:?\s*$")
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.replace("*", "").replace("_", "").split()).strip(" .:").lower()
+
+
+def _heading_of(line: str) -> tuple[int | None, str | None]:
+    """(depth, label) for a line that reads as a heading, else (None, None).
+
+    A bold line on its own and a plain label line both count: workers write these
+    sections all three ways, and a body that only understood ``##`` would drop two
+    of them.
+    """
+    match = _HEADING.match(line)
+    if match is not None:
+        return len(match.group(1)), match.group(2).rstrip(" :")
+    bold = _BOLD_LINE.match(line)
+    if bold is not None:
+        return 6, bold.group(1).rstrip(" :")
+    return None, None
+
+
+def _cap(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + " … (trimmed)"
+
+
+def first_section(text: str) -> str:
+    """The brief's first section after its opening heading.
+
+    A brief opens with the outcome and then explains why the work is worth doing;
+    that explanation is exactly what a reviewer who has not seen the brief needs.
+    Prose directly under the opening heading counts as that section; so does the
+    first sub-section, whose own heading is kept as a bold lead line so its wording
+    is not lost.
+    """
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines) and _heading_of(lines[index])[0] is None:
+        index += 1
+    index += 1  # step past the opening heading (or past the end, harmlessly)
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines):
+        return ""
+
+    body: list[str] = []
+    depth, label = _heading_of(lines[index])
+    if label is not None:
+        body.append(f"**{label}**")
+        index += 1
+    for line in lines[index:]:
+        line_depth, line_label = _heading_of(line)
+        if line_label is not None and (depth is None or line_depth <= depth):
+            break
+        body.append(line)
+    return "\n".join(body).strip()
+
+
+def named_section(text: str, title: str) -> str:
+    """The verbatim body under the heading ``title``, or "" when it is not there."""
+    want = _normalize(title)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        depth, label = _heading_of(line)
+        if label is None and _normalize(line) == want and line.strip():
+            depth, label = 6, line.strip()
+        if label is None or _normalize(label) != want:
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            next_depth, next_label = _heading_of(following)
+            if next_label is not None and next_depth is not None and next_depth <= (depth or 6):
+                break
+            body.append(following)
+        return "\n".join(body).strip()
+    return ""
+
+
+def _repo_name(conn: sqlite3.Connection, repo_id: int | None) -> str | None:
+    if repo_id is None:
+        return None
+    row = conn.execute("SELECT name FROM repos WHERE id = ?", (repo_id,)).fetchone()
+    return row["name"] if row is not None else None
+
+
+def archived_brief(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
+    """The brief this task was dispatched with, as archived at dispatch time."""
+    from middle_manager.preflight import archived_brief_path
+
+    repo = _repo_name(conn, task["repo_id"])
+    if repo is None:
+        return ""
+    path: Path = archived_brief_path(repo, int(task["id"]))
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _latest_note(notes: list[dict], phase: str) -> str:
+    for entry in notes:  # newest first
+        if entry.get("phase") == phase:
+            return (entry.get("note") or "").strip()
+    return ""
+
+
+def _why(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
+    brief = archived_brief(conn, task)
+    if brief.strip():
+        section = first_section(brief) or brief
+        return _cap(section, WHY_CAP)
+    return (
+        "No brief was archived for this work, so there is nothing to quote here. "
+        f'The objective it was dispatched with, in full: "{task["title"]}".'
+    )
+
+
+def _what(notes: list[dict]) -> str:
+    done = _latest_note(notes, "done")
+    parts = [done] if done else []
+    for heading in CARRIED_HEADINGS:
+        if _normalize(heading) in _normalize(done):
+            continue  # the closing report already carries it, verbatim
+        for entry in notes:
+            carried = named_section(entry.get("note") or "", heading)
+            if carried:
+                parts.append(f"**{heading}**\n\n{carried}")
+                break
+    if not parts:
+        return (
+            "The worker filed no closing report, so there is nothing to quote here; "
+            "the change itself is the diff on this branch."
+        )
+    return _cap("\n\n".join(parts), WHAT_CAP)
+
+
+def _verification(notes: list[dict], approval: str, head: str) -> str:
+    parts: list[str] = []
+    test_note = _latest_note(notes, "test")
+    if test_note:
+        parts.append(f"The worker's last verification report:\n\n{test_note}")
+    if approval:
+        parts.append(f"The reviewer approved this exact commit and wrote:\n\n{approval}")
+    if not parts:
+        parts.append(
+            "Neither a verification report nor a note from the reviewer was filed. "
+            "Delivery still required an approval bound to the exact commit below, "
+            "which is the only way work leaves the machine."
+        )
+    else:
+        parts.append(
+            f"Delivery was gated on an approval bound to commit {head[:8]}, the commit "
+            "this pull request carries."
+        )
+    return _cap("\n\n".join(parts), VERIFICATION_CAP)
+
+
+def _stack(task: sqlite3.Row) -> str:
+    stacked_on = ""
+    if "stacked_on" in task.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
+        stacked_on = (task["stacked_on"] or "").strip()
+    if stacked_on:
+        return (
+            f"This work was started from the branch `{stacked_on}` and opens against it, "
+            "so it sits on top of the change on that branch rather than on the default "
+            "branch. Merge that one first, then this."
+        )
+    return (
+        "Bottom of its stack: this work started from the repository's default branch "
+        "and targets it directly. Nothing has to land before it."
+    )
+
+
+def _footer(task: sqlite3.Row, head: str) -> str:
+    lines = [
+        f"Delivered by Middle Manager from the branch `{task['branch']}` at the reviewed "
+        f'commit `{head[:8]}`, for the work it tracked as "{task["title"]}".'
+    ]
+    extra = os.environ.get(FOOTER_ENV, "").strip()
+    if extra:
+        lines.append(extra)
+    return "\n\n".join(lines)
+
+
+def compose(task_id: int, *, head_sha: str = "", conn: sqlite3.Connection | None = None) -> str:
+    """The full pull request body for a delivered task."""
+    from middle_manager import progress
+    from middle_manager.review import approval_note
+    from middle_manager.state import init_db, store
+
+    conn = conn or init_db()
+    task = store.get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"task {task_id} not found")
+    notes = progress.history(task_id, conn=conn)
+    head = head_sha or ""
+
+    return (
+        "\n\n".join(
+            [
+                "## Why",
+                _why(conn, task),
+                "## What",
+                _what(notes),
+                "## Verification",
+                _verification(notes, approval_note(task_id), head),
+                "## Stack",
+                _stack(task),
+                "---",
+                _footer(task, head),
+            ]
+        ).rstrip()
+        + "\n"
+    )
+
+
+__all__ = [
+    "CARRIED_HEADINGS",
+    "FOOTER_ENV",
+    "archived_brief",
+    "compose",
+    "first_section",
+    "named_section",
+]

@@ -119,10 +119,14 @@ def reclaim_hint() -> str:
     )
 
 
+def archived_brief_path(repo: str, task_id: int) -> Path:
+    """Where a task's brief is kept, whether or not it has been written yet."""
+    return mm_home() / "briefs" / repo / f"task-{task_id}.md"
+
+
 def archive_brief(repo: str, task_id: int, text: str) -> Path:
     """Keep the exact brief a task received under the instance's briefs directory."""
-    target_dir = mm_home() / "briefs" / repo
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"task-{task_id}.md"
+    target = archived_brief_path(repo, task_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target

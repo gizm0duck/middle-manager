@@ -282,7 +282,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
-    if args.brief:
+    if instructions.strip():
+        # Archived whether the instructions came from a file or the command line:
+        # this is the copy `mm deliver` quotes when it writes the pull request body,
+        # and the only durable record of the packet a worker actually received.
         archived = preflight.archive_brief(args.repo, int(resp["task_id"]), instructions)
         print(f"brief archived at {archived}")
     return 0
@@ -592,6 +595,8 @@ def _cmd_deliver(args: argparse.Namespace) -> int:
             open_pr=not args.no_pr,
             remote=args.remote,
             base=args.base,
+            title=args.title,
+            body_file=args.body_file,
         )
     except DeliveryError as exc:
         print(f"delivery refused: {exc}", file=sys.stderr)
@@ -1392,6 +1397,21 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--no-pr", dest="no_pr", action="store_true")
     deliver.add_argument("--remote", default="origin")
     deliver.add_argument("--base", default=None, help="PR base branch")
+    deliver.add_argument(
+        "--title",
+        default=None,
+        help="pull request title; defaults to the objective the task was dispatched with",
+    )
+    deliver.add_argument(
+        "--body-file",
+        dest="body_file",
+        default=None,
+        metavar="FILE",
+        help=(
+            "use this file as the pull request body verbatim, instead of the body "
+            "composed from the brief, the worker's reports, and the approval note"
+        ),
+    )
     deliver.add_argument(
         "--merged",
         default=None,
