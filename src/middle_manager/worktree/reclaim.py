@@ -412,10 +412,13 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
     Returns what went, what stayed and why, and the bytes involved. ``dry_run``
     changes nothing on disk or in the database.
     """
+    from middle_manager import compose
+
     conn = init_db()
     entries = list_worktrees(repo)
     removed: list[dict] = []
     skipped: list[dict] = []
+    stacks: list[dict] = []
     for entry in entries:
         record = {
             "lease": entry.lease_id,
@@ -476,12 +479,19 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
             run_id=task["run_id"] if task else None,
             task_id=entry.task_id,
         )
+        # The slot is gone, so the per-task database that ran alongside it has
+        # nothing left to serve. Reclaiming disk and leaving the stack up was how
+        # fifteen of them accumulated until Docker ran out of networks.
+        torn_down = compose.teardown_for_task(entry.task_id, trigger="worktree prune", conn=conn)
+        if torn_down:
+            stacks.append(torn_down)
 
     return {
         "dry_run": dry_run,
         "repo": repo,
         "removed": removed,
         "skipped": skipped,
+        "compose": stacks,
         "reclaimed_bytes": sum(r["size_bytes"] for r in removed),
         "held_bytes": sum(r["size_bytes"] for r in skipped),
     }

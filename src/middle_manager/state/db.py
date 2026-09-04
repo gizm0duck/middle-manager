@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -53,6 +53,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     merged_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+-- Small facts a worker or the manager attaches to a task that the schema does not
+-- model: the name of the compose stack the task brought up, and whatever comes
+-- next. Read at teardown, so a task's side effects can be found after it ends.
+CREATE TABLE IF NOT EXISTS task_env (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS task_deps (
