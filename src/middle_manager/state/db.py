@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     worktree_path TEXT,
     lease_id TEXT,
     stacked_on TEXT,
+    merged_sha TEXT,
+    merged_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -131,6 +133,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     head_sha TEXT NOT NULL,
     verdict TEXT NOT NULL,
     findings TEXT,
+    note TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -251,12 +254,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "stacked_on" not in task_cols:
         # The branch a stacked task started from; delivery targets it by default.
         conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on TEXT")
+    for col in ("merged_sha", "merged_at"):
+        # Where the work landed. Set once, terminal: the heartbeat stops asking
+        # the forge about a branch whose merge is already on the record.
+        if col not in task_cols:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
     runner_cols = _column_names(conn, "runners")
     for col in ("superseded_at", "supersede_reason"):
         # A runner superseded by a resume must not stamp the task when it finally
         # exits: its late exit code belongs to a session nobody is waiting on.
         if col not in runner_cols:
             conn.execute(f"ALTER TABLE runners ADD COLUMN {col} TEXT")
+    review_cols = _column_names(conn, "reviews")
+    if "note" not in review_cols:
+        # The reviewer's own words, bound to the SHA they read; delivery quotes them.
+        conn.execute("ALTER TABLE reviews ADD COLUMN note TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:
