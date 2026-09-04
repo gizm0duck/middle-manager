@@ -168,9 +168,30 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 
 def _cmd_repo(args: argparse.Namespace) -> int:
-    from middle_manager.repos import RepoError, add_repo, list_repos, sync_repo
+    from middle_manager.repos import (
+        RepoError,
+        add_repo,
+        get_provision,
+        list_repos,
+        set_provision,
+        sync_repo,
+    )
 
     try:
+        if args.repo_cmd == "provision":
+            asked = args.clear or args.command is not None or args.reuse_venv is not None
+            settings = (
+                set_provision(
+                    args.name,
+                    command=args.command,
+                    reuse_venv=args.reuse_venv,
+                    clear=args.clear,
+                )
+                if asked
+                else get_provision(args.name)
+            )
+            print(settings.describe())
+            return 0
         if args.repo_cmd == "add":
             added = add_repo(args.url, name=args.name)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
@@ -1318,6 +1339,28 @@ def build_parser() -> argparse.ArgumentParser:
     rsub.add_parser("list", help="list registered repositories")
     sync = rsub.add_parser("sync", help="fetch and update a repository base")
     sync.add_argument("name", help="registered repository name")
+    prov = rsub.add_parser(
+        "provision",
+        help=(
+            "what a fresh worktree for this repo gets before its worker starts "
+            "(no flags: show what is configured)"
+        ),
+    )
+    prov.add_argument("name", help="registered repository name")
+    prov.add_argument(
+        "--command",
+        default=None,
+        help='shell command to run in each new worktree, e.g. "uv sync --frozen"; '
+        "empty string clears it",
+    )
+    prov.add_argument(
+        "--reuse-venv",
+        dest="reuse_venv",
+        default=None,
+        help="repo-relative path to a virtualenv in the base clone to link into each "
+        "worktree, e.g. backend/.venv; empty string clears it",
+    )
+    prov.add_argument("--clear", action="store_true", help="turn provisioning off for this repo")
     repo.set_defaults(func=_cmd_repo)
 
     supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
