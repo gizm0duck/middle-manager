@@ -118,23 +118,33 @@ def branch_state(worktree: str, branch: str, remote: str = "origin") -> BranchSt
     )
 
 
-def task_branch_state(conn, task) -> BranchState | None:
-    """``branch_state`` for a task, resolved through its repo's forge remote."""
+def push_remote(conn, task) -> str:
+    """The remote a task's branch belongs on: its repo's forge, else ``origin``.
+
+    A worktree inherits the base clone's ``origin``, which for a repo registered
+    from a local path reaches nobody. Every question about where this branch
+    stands — and every push of it — goes through the same answer.
+    """
     from middle_manager import repos
 
+    repo_id = task["repo_id"] if "repo_id" in task.keys() else None  # noqa: SIM118 - sqlite3.Row
+    if not repo_id:
+        return "origin"
+    row = conn.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
+    if row is None:
+        return "origin"
+    try:
+        return repos.upstream_remote(row)
+    except repos.RepoError:
+        return "origin"
+
+
+def task_branch_state(conn, task) -> BranchState | None:
+    """``branch_state`` for a task, resolved through its repo's forge remote."""
     worktree, branch = task["worktree_path"], task["branch"]
     if not worktree or not branch:
         return None
-    remote = "origin"
-    repo_id = task["repo_id"] if "repo_id" in task.keys() else None  # noqa: SIM118 - sqlite3.Row
-    if repo_id:
-        row = conn.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
-        if row is not None:
-            try:
-                remote = repos.upstream_remote(row)
-            except repos.RepoError:
-                remote = "origin"
-    return branch_state(worktree, branch, remote)
+    return branch_state(worktree, branch, push_remote(conn, task))
 
 
 def unpushed_commits(conn, task) -> int:

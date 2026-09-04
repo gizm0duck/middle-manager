@@ -46,6 +46,29 @@ short — the unfinished gate, the unpushed commits, and the instruction to run 
 suite in the foreground, file the done note, and push. Claude workers are told the
 same thing up front in the injected command rules.
 
+### The push the harness finishes for the worker
+
+Unpushed commits are the one signal that does not need a resume. On 2026-09-04
+three of four workers filed a done note and still could not get their commits onto
+the remote — a push hook failing on advisories already on the default branch, a
+push held by the permission layer, a turn that ended first — and the manager
+pushed each lease branch by hand. A lease branch is named after its task and
+nothing else writes to it, so that push is always safe and the harness makes it.
+
+When a completed turn's *newest* note is `done` and the branch still has commits,
+the supervisor pushes the lease worktree's head to that branch itself (no force,
+after the auto-commit so the safety commit goes up too), records it as a
+`pushed_by_manager` event naming the branch and the SHA, judges the turn again on
+what is true afterwards, and only then lands on `worker_done`. A turn that stopped
+*before* `done` is missing more than a push, so nothing is pushed and it stays
+`worker_stopped` exactly as before.
+
+If the remote refuses the push, the task stays `worker_stopped` and the reason
+carries the last 20 lines of the push's stderr, so `mm task <id>` shows the hook's
+own words rather than a guess. `mm task push <id>` is the same push run by hand —
+for that task once the hook is fixed, or for any task whose lease worktree is
+still on disk. It prints the SHA it pushed, or the refusal it got.
+
 ## Steering a live worker
 
 `mm steer <task> --message ...` picks its mode from the provider's proven

@@ -231,11 +231,6 @@ class RunnerGuardian:
         if result.status == "completed":
             verdict = turn_end.why_stopped(conn, spec.task_id)
 
-        task_status = _TERMINAL_STATUS.get(result.status, "failed")
-        if verdict.stopped:
-            task_status = turn_end.WORKER_STOPPED
-        store.set_task_status(conn, spec.task_id, task_status)
-
         # For a completed task, guarantee a reviewable commit and record head.
         finalized = None
         if result.status == "completed" and not result.head_sha:
@@ -260,6 +255,17 @@ class RunnerGuardian:
                 run_id=spec.run_id,
                 task_id=spec.task_id,
             )
+
+        # A worker that filed its done note and left commits behind is missing one
+        # thing only its own lease branch can be given, so the harness pushes it —
+        # after the auto-commit, so the safety commit goes up with the rest — and
+        # judges the turn again on what is true afterwards.
+        verdict, _pushed = turn_end.rescue_unpushed(conn, spec.task_id, verdict)
+
+        task_status = _TERMINAL_STATUS.get(result.status, "failed")
+        if verdict.stopped:
+            task_status = turn_end.WORKER_STOPPED
+        store.set_task_status(conn, spec.task_id, task_status)
 
         # Emit an actionable event for the manager/human loop. Every terminal event
         # carries the session it came from so a late arrival can be attributed.
