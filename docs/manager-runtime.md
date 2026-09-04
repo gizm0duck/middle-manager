@@ -348,6 +348,15 @@ When the user gives you an objective:
 - Deliver with `mm deliver <task_id>`. It **refuses unless an approved review is
   bound to the current head SHA** — never try to work around this. If the head
   moved after approval, re-review.
+- Delivery writes the pull request body itself, from what the run already holds:
+  **Why** from the first section of the archived brief, **What** from the worker's
+  closing report (plus anything it filed under "Outside scope, required to build"
+  or "Flagged, not done"), **Verification** from its last test report and your
+  approval note, and **Stack** from the branch the work was dispatched from. Don't
+  rewrite it by hand afterwards — if you want a different body, pass
+  `mm deliver <task_id> --body-file <file>`, which is used verbatim, or
+  `--title "..."` for the title alone. Set `MM_PR_FOOTER` to append your session
+  and attribution lines to every composed body.
 - For plans, comparisons, or connected decisions that are easier to *see* than to
   read, put them on a visual review surface — but **load the `review-surfaces`
   skill** and follow it, rather than driving the tool by hand. It owns the loop
@@ -516,7 +525,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show <task_id>` (worker report, the capture/receipt paths it named with sizes and openable image lines, the standing approval note, then the diffstat), `mm review approve <task_id> [--note "what you checked"] [--findings ...]`, `mm review request-changes <task_id> --findings ...`, `mm review status <task_id>` (also prints the approval note) |
-| Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
+| Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--title "..."] [--body-file FILE]` — composes the pull request body from the archived brief, the worker's closing and test reports, the approval note, and the stack it sits on; `--body-file` is used verbatim and overrides all of it, `--title` overrides the objective the task was dispatched with, and `MM_PR_FOOTER` appends your session and attribution lines. Also: `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
