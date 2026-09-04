@@ -140,6 +140,17 @@ class Supervisor:
                 )
             base = parent["branch"]
 
+        # Whether another task in this repository is already adding a database
+        # migration. Read before this task's row exists, so nothing has to filter
+        # it back out, and never allowed to fail a dispatch: it is a suggestion.
+        migration_advisory = None
+        try:
+            from middle_manager import migrations as _migrations
+
+            migration_advisory = _migrations.dispatch_advisory(conn, repo_row, stack_on=stack_on)
+        except Exception:  # noqa: BLE001 - an advisory never costs the dispatch
+            migration_advisory = None
+
         # Validate the task packet contract before doing any work.
         packet = {
             "title": title,
@@ -308,6 +319,7 @@ class Supervisor:
             "lease_id": lease.id,
             "branch": lease.branch,
             "worktree_path": lease.worktree_path,
+            "migration_advisory": migration_advisory,
         }
 
     def _resolve_and_enforce(

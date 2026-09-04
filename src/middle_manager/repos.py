@@ -308,6 +308,39 @@ def get_provision(name: str) -> ProvisionSettings:
     )
 
 
+@dataclass
+class RepoSettings:
+    """The per-repo knobs `mm repo set` owns, and where each value came from."""
+
+    repo: str
+    migrations_glob: str
+    migrations_glob_is_default: bool
+
+    def describe(self) -> str:
+        origin = "the default" if self.migrations_glob_is_default else "set for this repo"
+        return f"{self.repo}: migrations live at {self.migrations_glob} ({origin})"
+
+
+def get_settings(name: str) -> RepoSettings:
+    from middle_manager.migrations import DEFAULT_MIGRATIONS_GLOB, glob_for_repo
+
+    _conn, row = _require_repo(name)
+    glob = glob_for_repo(row)
+    return RepoSettings(
+        repo=name,
+        migrations_glob=glob,
+        migrations_glob_is_default=glob == DEFAULT_MIGRATIONS_GLOB,
+    )
+
+
+def set_settings(name: str, *, migrations_glob: str | None = None) -> RepoSettings:
+    """Configure a repo's settings. An empty string puts a field back on the default."""
+    conn, _row = _require_repo(name)
+    if migrations_glob is not None:
+        store.update_repo_fields(conn, name, migrations_glob=migrations_glob.strip() or None)
+    return get_settings(name)
+
+
 def set_provision(
     name: str,
     *,

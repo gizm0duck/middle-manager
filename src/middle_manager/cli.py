@@ -172,12 +172,22 @@ def _cmd_repo(args: argparse.Namespace) -> int:
         RepoError,
         add_repo,
         get_provision,
+        get_settings,
         list_repos,
         set_provision,
+        set_settings,
         sync_repo,
     )
 
     try:
+        if args.repo_cmd == "set":
+            settings = (
+                set_settings(args.name, migrations_glob=args.migrations_glob)
+                if args.migrations_glob is not None
+                else get_settings(args.name)
+            )
+            print(settings.describe())
+            return 0
         if args.repo_cmd == "provision":
             asked = args.clear or args.command is not None or args.reuse_venv is not None
             settings = (
@@ -357,6 +367,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if resp.get("migration_advisory"):
+        print(resp["migration_advisory"])
     if instructions.strip():
         # Archived whether the instructions came from a file or the command line:
         # this is the copy `mm deliver` quotes when it writes the pull request body,
@@ -749,6 +761,16 @@ def _cmd_review(args: argparse.Namespace) -> int:
             if note:
                 print(f"note on the standing approval: {note}")
                 print()
+            # Two unmerged tasks adding a migration off one revision is a red
+            # migration graph after the second merge, and it is invisible in a
+            # diff read on its own.
+            if task is not None:
+                from middle_manager import migrations
+
+                flag = migrations.review_flag(init_db(), task)
+                if flag:
+                    print(flag)
+                    print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -1488,6 +1510,21 @@ def build_parser() -> argparse.ArgumentParser:
         "worktree, e.g. backend/.venv; empty string clears it",
     )
     prov.add_argument("--clear", action="store_true", help="turn provisioning off for this repo")
+    rset = rsub.add_parser(
+        "set",
+        help="per-repo settings (no flags: show what is configured)",
+    )
+    rset.add_argument("name", help="registered repository name")
+    rset.add_argument(
+        "--migrations-glob",
+        dest="migrations_glob",
+        default=None,
+        help=(
+            "where this repo keeps database migrations, so dispatch and review can warn "
+            "when two unmerged tasks add one off the same head; default "
+            "**/alembic/versions/*.py, empty string restores it"
+        ),
+    )
     repo.set_defaults(func=_cmd_repo)
 
     supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
