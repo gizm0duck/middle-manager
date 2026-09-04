@@ -11,6 +11,7 @@ instance state so the exact packet a worker received is always recoverable.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -18,6 +19,11 @@ from middle_manager.paths import mm_home
 
 MIN_FREE_GB_ENV = "MM_MIN_FREE_GB"
 DEFAULT_MIN_FREE_GB = 5.0
+
+#: A brief's first Markdown heading, however many "#" marks it carries.
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*(.+?)\s*$")
+#: A task title is a one-line label, not a paragraph; longer headings are cut here.
+TITLE_CAP = 120
 
 
 class PreflightError(RuntimeError):
@@ -39,6 +45,25 @@ def read_brief(path: str | Path) -> str:
             "instructions (this is how an empty-brief worker was sent out on 2026-08-30)."
         )
     return text
+
+
+def title_from_brief(text: str) -> str | None:
+    """The brief's first Markdown heading, shaped into a task title.
+
+    A brief already opens with the outcome it wants, written carefully; a title
+    typed at the prompt is the same sentence typed again, worse. Leading ``#``
+    marks and surrounding whitespace go, internal whitespace collapses to single
+    spaces, and the result is capped so a title stays a label. Returns ``None``
+    when the brief has no heading at all, which the caller reports plainly.
+    """
+    for line in text.splitlines():
+        match = _HEADING.match(line)
+        if match is None:
+            continue
+        heading = " ".join(match.group(1).split())
+        if heading:
+            return heading[:TITLE_CAP]
+    return None
 
 
 def min_free_gb() -> float:
