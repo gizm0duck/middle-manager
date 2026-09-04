@@ -210,8 +210,20 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                 print(f"{r['name']:<24} {r['default_branch'] or '?':<12} {sha}  {r['origin']}")
             return 0
         if args.repo_cmd == "sync":
-            sha = sync_repo(args.name)
-            print(f"synced {args.name} to {sha[:8]}")
+            res = sync_repo(args.name, clean_stray_mm=args.clean_stray_mm)
+            if res.fast_forwarded:
+                previous = (res.previous_sha or "?")[:8]
+                print(
+                    f"synced {args.name}: fast-forwarded {res.default_branch} "
+                    f"{previous} -> {res.base_sha[:8]}"
+                )
+            else:
+                print(
+                    f"synced {args.name}: {res.default_branch} already at "
+                    f"{res.base_sha[:8]} (nothing to fast-forward)"
+                )
+            for note in res.notes:
+                print(f"  {note}")
             return 0
     except RepoError as exc:
         print(f"repo error: {exc}", file=sys.stderr)
@@ -1337,8 +1349,17 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("url", help="repository URL or local path")
     add.add_argument("--name", default=None, help="override the derived name")
     rsub.add_parser("list", help="list registered repositories")
-    sync = rsub.add_parser("sync", help="fetch and update a repository base")
+    sync = rsub.add_parser(
+        "sync",
+        help="fetch, fast-forward the base clone's default branch, and record that commit",
+    )
     sync.add_argument("name", help="registered repository name")
+    sync.add_argument(
+        "--clean-stray-mm",
+        dest="clean_stray_mm",
+        action="store_true",
+        help="remove a stray .mm/ directory that an mm command created inside the base clone",
+    )
     prov = rsub.add_parser(
         "provision",
         help=(
