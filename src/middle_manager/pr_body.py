@@ -29,7 +29,11 @@ import re
 import sqlite3
 from pathlib import Path
 
-#: Set by the harness to add its own session/attribution lines to every body.
+#: Optional: the manager session's own link, appended to the attribution so a
+#: reader can trace the pull request back to the conversation that drove it.
+SESSION_URL_ENV = "MM_SESSION_URL"
+#: Optional: extra lines appended after the attribution (kept for callers that
+#: already set it). The attribution itself never depends on it.
 FOOTER_ENV = "MM_PR_FOOTER"
 
 #: Length ceilings, so one enormous report cannot become an unreadable body.
@@ -218,11 +222,33 @@ def _stack(task: sqlite3.Row) -> str:
     )
 
 
+def _worker_label(task: sqlite3.Row) -> str:
+    keys = task.keys()
+    provider = task["provider"] if "provider" in keys else None  # noqa: SIM118 - sqlite3.Row
+    model = task["model"] if "model" in keys else None  # noqa: SIM118 - sqlite3.Row
+    if provider and model:
+        return f"a dispatched {provider} worker ({model})"
+    if provider:
+        return f"a dispatched {provider} worker"
+    return "a dispatched worker"
+
+
 def _footer(task: sqlite3.Row, head: str) -> str:
-    lines = [
-        f"Delivered by Middle Manager from the branch `{task['branch']}` at the reviewed "
-        f'commit `{head[:8]}`, for the work it tracked as "{task["title"]}".'
-    ]
+    """Who did this, in one sentence: Middle Manager drove it, a worker built it.
+
+    The credit belongs to the manager process that briefed the work, reviewed
+    the exact commit, and delivered it — not to a generic harness line. Shane,
+    2026-09-04: the footer should say it was Middle Manager driving the work.
+    """
+    attribution = (
+        f"Driven by Middle Manager: briefed, reviewed at commit `{head[:8]}`, and "
+        f"delivered from the branch `{task['branch']}` by the manager session; "
+        f'implemented by {_worker_label(task)}. Tracked as "{task["title"]}".'
+    )
+    session = os.environ.get(SESSION_URL_ENV, "").strip()
+    if session:
+        attribution += f" Session: {session}"
+    lines = [attribution]
     extra = os.environ.get(FOOTER_ENV, "").strip()
     if extra:
         lines.append(extra)
@@ -264,6 +290,7 @@ def compose(task_id: int, *, head_sha: str = "", conn: sqlite3.Connection | None
 __all__ = [
     "CARRIED_HEADINGS",
     "FOOTER_ENV",
+    "SESSION_URL_ENV",
     "archived_brief",
     "compose",
     "first_section",
