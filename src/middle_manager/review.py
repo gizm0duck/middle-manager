@@ -55,8 +55,21 @@ def build_bundle(task_id: int) -> ReviewBundle:
 
 
 def record_review(
-    task_id: int, verdict: str, findings: str = "", *, head: str | None = None
+    task_id: int,
+    verdict: str,
+    findings: str = "",
+    *,
+    head: str | None = None,
+    note: str = "",
 ) -> dict:
+    """Record a verdict against the exact commit it examined.
+
+    ``note`` is the reviewer's own words about *this* approval — what they checked,
+    which captures they opened, what they accepted a caveat on. It rides the review
+    row, so it is bound to the same SHA as the verdict and cannot be mistaken for a
+    note about some later commit; ``mm review status``/``show`` print it back, and
+    delivery quotes it in the pull request's verification section.
+    """
     if verdict not in ("approved", "changes_requested"):
         raise ReviewError("verdict must be 'approved' or 'changes_requested'")
     conn = init_db()
@@ -64,22 +77,23 @@ def record_review(
     if task is None:
         raise ReviewError(f"task {task_id} not found")
     head = head or head_sha(task["worktree_path"])
+    note = (note or "").strip()
     conn.execute(
         """
-        INSERT INTO reviews (task_id, base_sha, head_sha, verdict, findings, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO reviews (task_id, base_sha, head_sha, verdict, findings, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (task_id, task["base_sha"], head, verdict, findings, datetime.now(UTC).isoformat()),
+        (task_id, task["base_sha"], head, verdict, findings, note, datetime.now(UTC).isoformat()),
     )
     conn.commit()
     store.append_event(
         conn,
         kind="review_requested" if verdict == "changes_requested" else "reviewed",
-        payload={"task_id": task_id, "verdict": verdict, "head_sha": head},
+        payload={"task_id": task_id, "verdict": verdict, "head_sha": head, "note": note},
         run_id=task["run_id"],
         task_id=task_id,
     )
-    return {"task_id": task_id, "verdict": verdict, "head_sha": head}
+    return {"task_id": task_id, "verdict": verdict, "head_sha": head, "note": note}
 
 
 def latest_review(task_id: int):
@@ -87,6 +101,21 @@ def latest_review(task_id: int):
     return conn.execute(
         "SELECT * FROM reviews WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
     ).fetchone()
+
+
+def approval_note(task_id: int) -> str:
+    """The note on the latest approval, or "" when there is none.
+
+    Only an approval's note is returned: a note left with a changes-requested verdict
+    describes work that has since moved on, and quoting it as verification would be
+    a lie.
+    """
+    review = latest_review(task_id)
+    if review is None or review["verdict"] != "approved":
+        return ""
+    if "note" not in review.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
+        return ""
+    return (review["note"] or "").strip()
 
 
 def is_approved_at_head(task_id: int) -> tuple[bool, str]:

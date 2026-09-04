@@ -314,10 +314,12 @@ When the user gives you an objective:
    is the *only* place a repo can live. Never look elsewhere on the machine or
    guess a path. If the named repo isn't registered, ask the user for its URL (or
    an explicit path they give you) and `mm repo add` it before proceeding.
-3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --title
-   ... --provider <claude|codex> [--model ...] [--reasoning ...]`. Prefer the
-   smallest eligible worker; the ceiling is enforced in code, so you cannot
-   exceed it by accident.
+3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --brief
+   <file> --provider <claude|codex> [--model ...] [--reasoning ...]`. A brief
+   names its own task: with `--brief`, the objective comes from the brief's first
+   Markdown heading, so `--title` is only for overriding it (and is still required
+   when you dispatch without a brief). Prefer the smallest eligible worker; the
+   ceiling is enforced in code, so you cannot exceed it by accident.
 4. Track progress with a **non-blocking snapshot** — `mm run <run_id>` (task states,
    actionable events, usage) and `mm task <task_id>` (latest progress report) — and keep
    your **intent in the ledger**: `mm todo add "…"` the moment you know a next step,
@@ -350,11 +352,29 @@ When the user gives you an objective:
 ## Reviewing and delivering
 
 - Review the exact diff before delivery: `mm review show <task_id>`, then
-  `mm review approve <task_id>` or `mm review request-changes <task_id>
-  --findings ...`.
+  `mm review approve <task_id> --note "..."` or `mm review request-changes
+  <task_id> --findings ...`.
+- `mm review show` lists the receipts the worker named in its reports — every
+  capture directory with its files and sizes, every image on a line of its own so
+  you can open it, and any path that has gone marked "(not found)" rather than
+  failing the command. **Open the images before approving anything visual.**
+- The `--note` on an approval is your own account of what you checked and
+  accepted. It is stored against the exact commit you approved, printed back by
+  `mm review status` and `mm review show`, and quoted in the pull request body
+  `mm deliver` composes — so the reviewer's reasoning ships with the work instead
+  of dying in the terminal.
 - Deliver with `mm deliver <task_id>`. It **refuses unless an approved review is
   bound to the current head SHA** — never try to work around this. If the head
   moved after approval, re-review.
+- Delivery writes the pull request body itself, from what the run already holds:
+  **Why** from the first section of the archived brief, **What** from the worker's
+  closing report (plus anything it filed under "Outside scope, required to build"
+  or "Flagged, not done"), **Verification** from its last test report and your
+  approval note, and **Stack** from the branch the work was dispatched from. Don't
+  rewrite it by hand afterwards — if you want a different body, pass
+  `mm deliver <task_id> --body-file <file>`, which is used verbatim, or
+  `--title "..."` for the title alone. Set `MM_PR_FOOTER` to append your session
+  and attribution lines to every composed body.
 - For plans, comparisons, or connected decisions that are easier to *see* than to
   read, put them on a visual review surface — but **load the `review-surfaces`
   skill** and follow it, rather than driving the tool by hand. It owns the loop
@@ -517,14 +537,14 @@ readable at a glance by someone who just wants to know if it's done.
 | Repositories | `mm repo add <url|path>`, `mm repo list`, `mm repo sync <name>` |
 | Supervisor | `mm supervisor serve|status|stop` |
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
-| Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning]` — a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Delegate | `mm dispatch --repo ... --brief <file> --provider ... [--title] [--model] [--reasoning]` — `--title` is optional whenever `--brief` is given: the objective is taken from the brief's first Markdown heading (whitespace collapsed, capped at 120 characters), and an explicit `--title` overrides it. Without a brief, `--title` is still required. Also: a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task whose branch has an open pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. A pull request that merges or closes is named once and then drops off; `mm deliver <task> --merged <sha>` retires it for good. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing. It goes quiet on its own after two idle ticks (nothing in flight, nothing owed to you, no pending or failing checks, nothing new) and speaks again the moment that stops being true — leave it running rather than restarting it; `--exit-when-idle` makes it exit instead, for scripts |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
-| Review | `mm review show|approve|request-changes|status <task_id>` |
-| Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
+| Review | `mm review show <task_id>` (worker report, the capture/receipt paths it named with sizes and openable image lines, the standing approval note, then the diffstat), `mm review approve <task_id> [--note "what you checked"] [--findings ...]`, `mm review request-changes <task_id> --findings ...`, `mm review status <task_id>` (also prints the approval note) |
+| Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--title "..."] [--body-file FILE]` — composes the pull request body from the archived brief, the worker's closing and test reports, the approval note, and the stack it sits on; `--body-file` is used verbatim and overrides all of it, `--title` overrides the objective the task was dispatched with, and `MM_PR_FOOTER` appends your session and attribution lines. Also: `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |

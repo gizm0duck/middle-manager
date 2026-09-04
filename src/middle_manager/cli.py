@@ -237,6 +237,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if args.brief and args.instructions:
         print("dispatch: pass --brief <file> or --instructions, not both", file=sys.stderr)
         return 1
+    if not args.title and not args.brief:
+        print(
+            "dispatch: name the objective with --title, or pass --brief <file> and let the "
+            "brief's first Markdown heading name it",
+            file=sys.stderr,
+        )
+        return 1
     try:
         instructions = preflight.read_brief(args.brief) if args.brief else (args.instructions or "")
         preflight.check_disk()
@@ -244,11 +251,23 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
 
+    title = args.title
+    if not title:
+        title = preflight.title_from_brief(instructions)
+        if not title:
+            print(
+                f"dispatch: {args.brief} has no Markdown heading to take the objective from — "
+                "open the brief with a '# ...' heading, or pass --title",
+                file=sys.stderr,
+            )
+            return 1
+        print(f'objective taken from the brief\'s first heading: "{title}"')
+
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
-            title=args.title,
+            title=title,
             instructions=instructions,
             provider=args.provider,
             model=args.model,
@@ -263,7 +282,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
-    if args.brief:
+    if instructions.strip():
+        # Archived whether the instructions came from a file or the command line:
+        # this is the copy `mm deliver` quotes when it writes the pull request body,
+        # and the only durable record of the packet a worker actually received.
         archived = preflight.archive_brief(args.repo, int(resp["task_id"]), instructions)
         print(f"brief archived at {archived}")
     return 0
@@ -489,11 +511,18 @@ def _cmd_answer(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from middle_manager.review import ReviewError, build_bundle, is_approved_at_head, record_review
+    from middle_manager.review import (
+        ReviewError,
+        approval_note,
+        build_bundle,
+        is_approved_at_head,
+        record_review,
+    )
 
     try:
         if args.review_cmd == "show":
-            from middle_manager import progress
+            from middle_manager import captures, progress
+            from middle_manager.state import init_db, store
 
             bundle = build_bundle(args.task_id)
             # The worker's own report comes first, in full: judging a diff without
@@ -508,6 +537,20 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 )
                 print(latest["note"] or "(no note)")
                 print()
+            # The receipts the worker named, listed so nobody approves a visual
+            # change on the strength of a sentence about screenshots.
+            task = store.get_task(init_db(), args.task_id)
+            listing = captures.render(
+                captures.capture_paths(r["note"] for r in reports),
+                root=task["worktree_path"] if task is not None else None,
+            )
+            if listing:
+                print(listing)
+                print()
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on the standing approval: {note}")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -515,8 +558,10 @@ def _cmd_review(args: argparse.Namespace) -> int:
             print(bundle.diffstat or "(no changes)")
             return 0
         if args.review_cmd == "approve":
-            res = record_review(args.task_id, "approved", args.findings or "")
+            res = record_review(args.task_id, "approved", args.findings or "", note=args.note or "")
             print(f"approved task {args.task_id} at {res['head_sha'][:8]}")
+            if res["note"]:
+                print(f"note recorded with the approval: {res['note']}")
             return 0
         if args.review_cmd == "request-changes":
             res = record_review(args.task_id, "changes_requested", args.findings or "")
@@ -525,6 +570,9 @@ def _cmd_review(args: argparse.Namespace) -> int:
         if args.review_cmd == "status":
             approved, reason = is_approved_at_head(args.task_id)
             print(f"task {args.task_id}: {'APPROVED' if approved else 'NOT approved'} — {reason}")
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on that approval: {note}")
             return 0 if approved else 1
     except ReviewError as exc:
         print(f"review error: {exc}", file=sys.stderr)
@@ -547,6 +595,8 @@ def _cmd_deliver(args: argparse.Namespace) -> int:
             open_pr=not args.no_pr,
             remote=args.remote,
             base=args.base,
+            title=args.title,
+            body_file=args.body_file,
         )
     except DeliveryError as exc:
         print(f"delivery refused: {exc}", file=sys.stderr)
@@ -1198,7 +1248,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     dispatch = sub.add_parser("dispatch", help="dispatch a task to a registered repo")
     dispatch.add_argument("--repo", required=True, help="registered repository name")
-    dispatch.add_argument("--title", required=True, help="task title/objective")
+    dispatch.add_argument(
+        "--title",
+        default=None,
+        help=(
+            "the objective, in one line; optional when --brief is given, which takes it "
+            "from the brief's first Markdown heading. An explicit --title always wins"
+        ),
+    )
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
         "--brief",
@@ -1327,6 +1384,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("task_id", type=int)
         if name in ("approve", "request-changes"):
             p.add_argument("--findings", default=None, help="review notes")
+        if name == "approve":
+            p.add_argument(
+                "--note",
+                default=None,
+                help=(
+                    "what you checked and accepted, in your own words; stored against the "
+                    "commit you approved, printed by `mm review status|show`, and quoted "
+                    "in the pull request `mm deliver` opens"
+                ),
+            )
     review.set_defaults(func=_cmd_review)
 
     deliver = sub.add_parser("deliver", help="push and open a PR (requires approval at head)")
@@ -1335,6 +1402,21 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--no-pr", dest="no_pr", action="store_true")
     deliver.add_argument("--remote", default="origin")
     deliver.add_argument("--base", default=None, help="PR base branch")
+    deliver.add_argument(
+        "--title",
+        default=None,
+        help="pull request title; defaults to the objective the task was dispatched with",
+    )
+    deliver.add_argument(
+        "--body-file",
+        dest="body_file",
+        default=None,
+        metavar="FILE",
+        help=(
+            "use this file as the pull request body verbatim, instead of the body "
+            "composed from the brief, the worker's reports, and the approval note"
+        ),
+    )
     deliver.add_argument(
         "--merged",
         default=None,
