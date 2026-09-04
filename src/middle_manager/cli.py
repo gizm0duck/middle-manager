@@ -514,6 +514,8 @@ def _cmd_task(args: argparse.Namespace) -> int:
             if line:
                 print(line)
             return 0
+        if args.task_cmd == "push":
+            return _cmd_task_push(args)
         if args.task_cmd == "set-status":
             res = set_task_status(args.task_id, args.status, args.note)
             note = f" — {args.note}" if args.note else ""
@@ -523,6 +525,25 @@ def _cmd_task(args: argparse.Namespace) -> int:
         print(f"task {args.task_cmd}: {exc}", file=sys.stderr)
         return 1
     return _cmd_task_show(args)
+
+
+def _cmd_task_push(args: argparse.Namespace) -> int:
+    """Push a task's lease branch by hand: the manual form of the harness's rescue.
+
+    The supervisor does this itself when a worker files a done note it could not
+    push. This is the same push for every other case — a task whose rescue was
+    refused and whose hook has since been fixed, or a worktree the manager wants
+    on the remote before reviewing it.
+    """
+    from middle_manager import turn_end
+    from middle_manager.state import init_db
+
+    result = turn_end.push_lease_branch(init_db(), args.task_id)
+    if not result.pushed:
+        print(f"task {args.task_id}: {result.note}", file=sys.stderr)
+        return 1
+    print(f"task {args.task_id}: {result.note}")
+    return 0
 
 
 def _cmd_task_env(args: argparse.Namespace) -> int:
@@ -1587,6 +1608,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tkclose.add_argument("task_id", type=int)
     tkclose.add_argument("--reason", required=True, help="why this task is over")
+    tkpush = tksub.add_parser(
+        "push",
+        help="push a task's lease worktree onto its own branch (what the harness does itself)",
+    )
+    tkpush.add_argument("task_id", type=int)
     tkset = tksub.add_parser("set-status", help="repair a task's status, with a note")
     tkset.add_argument("task_id", type=int)
     tkset.add_argument("status", choices=list(TASK_STATUSES))

@@ -6,6 +6,11 @@ wait for it, and the harness read that as `worker_done`. The suite died with the
 session, the branch was never pushed, and no done note was ever filed. Task 104
 had the same shape with browser smoke retries. The manager only noticed because
 `mm review show` had a "test" note as the newest report and nothing was pushed.
+
+The push half of that is no longer the manager's job to finish by hand. A worker
+that files its done note and still cannot get its commits onto the remote has its
+own lease branch pushed for it (issue #50); only a refusal from the remote itself
+leaves the task stopped, and then in the remote's words.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -61,6 +67,31 @@ def _dispatch(client, source_repo, instructions: str) -> dict:
     return client.dispatch_task(repo=added.name, title="run the gate", instructions=instructions)
 
 
+def _git(path, *args) -> str:
+    return subprocess.run(
+        ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _branch_sha(remote_path, branch: str | None) -> str | None:
+    """What the remote holds for a branch, or None when it has never seen it."""
+    proc = subprocess.run(
+        ["git", "-C", str(remote_path), "rev-parse", "--verify", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _reject_pushes(source_repo, message: str) -> Path:
+    """Give the remote a pre-receive hook that refuses, the way a real one does."""
+    hook = Path(source_repo) / ".git" / "hooks" / "pre-receive"
+    hook.write_text(f"#!/bin/sh\necho '{message}' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    return hook
+
+
 # --------------------------------------------------------------------------- #
 # The compliant worker still finishes
 # --------------------------------------------------------------------------- #
@@ -102,17 +133,6 @@ def test_a_note_that_never_reached_done_stops_the_task(server, source_repo) -> N
     assert "'test', not a done note" in verdict.reasons[0]
 
 
-def test_unpushed_commits_stop_the_task_even_with_a_done_note(server, source_repo) -> None:
-    srv, client = server
-    resp = _dispatch(client, source_repo, "NOPUSH")
-    _wait_status(client, resp["task_id"], {turn_end.WORKER_STOPPED})
-
-    stopped = _events(resp["task_id"], turn_end.WORKER_STOPPED)[-1]
-    assert stopped["phase"] == "done", "the worker did file its report; it just never pushed"
-    assert stopped["unpushed"] >= 1
-    assert "never pushed" in stopped["summary"]
-
-
 def test_a_backgrounded_last_command_stops_the_task(server, source_repo) -> None:
     srv, client = server
     resp = _dispatch(client, source_repo, "BACKGROUND")
@@ -135,11 +155,6 @@ def test_a_cascaded_branch_is_not_mistaken_for_unpushed_work(server, source_repo
     _wait_status(client, resp["task_id"], {"worker_done"})
     task = client.task_status(resp["task_id"])["task"]
 
-    def _git(path, *args):
-        return subprocess.run(
-            ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
-        ).stdout.strip()
-
     # GitHub's cascade: main moves, the branch is rebased onto it upstream.
     with open(f"{source_repo}/moved.txt", "w", encoding="utf-8") as fh:
         fh.write("the layer below merged\n")
@@ -154,6 +169,79 @@ def test_a_cascaded_branch_is_not_mistaken_for_unpushed_work(server, source_repo
     row = store.get_task(conn, resp["task_id"])
     assert stacks.unpushed_commits(conn, row) == 0
     assert turn_end.why_stopped(conn, resp["task_id"]).stopped is False
+
+
+# --------------------------------------------------------------------------- #
+# The one thing the harness finishes for the worker: the push
+# --------------------------------------------------------------------------- #
+
+
+def test_a_done_note_with_unpushed_commits_gets_its_branch_pushed_for_it(
+    server, source_repo
+) -> None:
+    """The worker finished and only the push was missing, so the harness pushed it."""
+    srv, client = server
+    resp = _dispatch(client, source_repo, "NOPUSH")
+    task_id = resp["task_id"]
+    _wait_status(client, task_id, {"worker_done"})
+
+    task = client.task_status(task_id)["task"]
+    pushed = _events(task_id, turn_end.PUSHED_BY_MANAGER)
+    assert len(pushed) == 1, "the branch is pushed once, by the harness, and named as such"
+    assert pushed[0]["branch"] == task["branch"]
+    assert _branch_sha(source_repo, task["branch"]) == pushed[0]["head_sha"]
+    assert not _events(task_id, turn_end.WORKER_STOPPED), (
+        "nothing was left for the manager to finish by hand"
+    )
+
+
+def test_a_worker_that_never_filed_a_done_note_is_not_pushed_for(server, source_repo) -> None:
+    """A turn that stopped mid-gate is missing more than a push; pushing it would lie."""
+    srv, client = server
+    resp = _dispatch(client, source_repo, "NODONE NOPUSH")
+    task_id = resp["task_id"]
+    _wait_status(client, task_id, {turn_end.WORKER_STOPPED})
+
+    task = client.task_status(task_id)["task"]
+    assert not _events(task_id, turn_end.PUSHED_BY_MANAGER)
+    assert _branch_sha(source_repo, task["branch"]) is None
+
+
+def test_a_remote_that_refuses_the_push_keeps_the_task_stopped_in_its_own_words(
+    server, source_repo
+) -> None:
+    srv, client = server
+    _reject_pushes(source_repo, "the advisory scan is already failing on the default branch")
+    resp = _dispatch(client, source_repo, "NOPUSH")
+    task_id = resp["task_id"]
+    _wait_status(client, task_id, {turn_end.WORKER_STOPPED})
+
+    stopped = _events(task_id, turn_end.WORKER_STOPPED)[-1]
+    assert "the advisory scan is already failing on the default branch" in stopped["summary"], (
+        "the hook's own message is what tells the manager what to fix"
+    )
+    assert stopped["phase"] == "done" and stopped["unpushed"] >= 1
+    assert not _events(task_id, turn_end.PUSHED_BY_MANAGER)
+
+
+def test_pushing_a_stopped_task_by_hand_finishes_the_job(server, source_repo) -> None:
+    """`mm task push` is the same push, for when the hook that refused has been fixed."""
+    from middle_manager.cli import main
+
+    srv, client = server
+    hook = _reject_pushes(source_repo, "the advisory scan is already failing")
+    resp = _dispatch(client, source_repo, "NOPUSH")
+    task_id = resp["task_id"]
+    _wait_status(client, task_id, {turn_end.WORKER_STOPPED})
+    assert main(["task", "push", str(task_id)]) == 1, "while the hook refuses, so does mm"
+
+    hook.unlink()
+    assert main(["task", "push", str(task_id)]) == 0
+    task = client.task_status(task_id)["task"]
+    assert _branch_sha(source_repo, task["branch"]) == _git(
+        task["worktree_path"], "rev-parse", "HEAD"
+    )
+    assert _events(task_id, turn_end.PUSHED_BY_MANAGER)[-1]["branch"] == task["branch"]
 
 
 # --------------------------------------------------------------------------- #
@@ -183,7 +271,7 @@ def test_run_and_task_snapshots_name_the_reason(server, source_repo, capsys) -> 
 
 def test_a_bare_resume_tells_the_worker_what_was_cut_short(server, source_repo) -> None:
     srv, client = server
-    resp = _dispatch(client, source_repo, "NOPUSH")
+    resp = _dispatch(client, source_repo, "NODONE NOPUSH")
     task_id = resp["task_id"]
     _wait_status(client, task_id, {turn_end.WORKER_STOPPED})
 
