@@ -47,6 +47,25 @@ def _wait_terminal(client, task_id, timeout=15.0):
     raise AssertionError("task never finished")
 
 
+_MIGRATION = '''"""a revision"""
+
+revision = "{revision}"
+down_revision = "base"
+
+
+def upgrade() -> None:
+    pass
+'''
+
+
+def _commit_file(worktree: str, path: str, body: str) -> None:
+    target = Path(worktree) / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body)
+    _git(worktree, "add", path)
+    _git(worktree, "commit", "-qm", f"add {path}")
+
+
 def test_schema_gains_stacked_on_on_fresh_and_existing_databases(mm_home) -> None:
     conn = init_db()
     assert "stacked_on" in _column_names(conn, "tasks")
@@ -97,6 +116,46 @@ def test_dispatch_with_an_unknown_base_fails_plainly_and_frees_the_slot(server, 
     conn = init_db()
     failed = conn.execute("SELECT status FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
     assert failed["status"] == "failed"
+
+
+def test_dispatch_warns_when_work_in_flight_already_adds_a_migration(server, source_repo) -> None:
+    """Two migrations off one head leave two Alembic heads; say so before the second starts."""
+    srv, client = server
+    added = repos.add_repo(source_repo)
+    first = client.dispatch_task(repo=added.name, title="add the events table")
+    assert first["ok"], first
+    assert first["migration_advisory"] is None  # nothing else is in flight yet
+    _wait_terminal(client, first["task_id"])
+    ahead = client.task_status(first["task_id"])["task"]
+    _commit_file(
+        ahead["worktree_path"],
+        "backend/alembic/versions/aaa.py",
+        _MIGRATION.format(revision="aaa"),
+    )
+
+    second = client.dispatch_task(repo=added.name, title="add the sessions table")
+    assert second["ok"], second
+    advisory = second["migration_advisory"]
+    assert advisory, "the second dispatch should have been told about the first"
+    assert f'task {first["task_id"]} "add the events table"' in advisory
+    assert ahead["branch"] in advisory
+    assert "backend/alembic/versions/aaa.py" in advisory
+    assert f"--stack-on {first['task_id']}" in advisory
+    # An advisory, not a refusal: the second task was dispatched all the same.
+    assert client.task_status(second["task_id"])["task"]["id"] == second["task_id"]
+
+
+def test_dispatch_stays_quiet_when_the_work_in_flight_adds_no_migration(server, source_repo):
+    srv, client = server
+    added = repos.add_repo(source_repo)
+    first = client.dispatch_task(repo=added.name, title="rename the events model")
+    _wait_terminal(client, first["task_id"])
+    ahead = client.task_status(first["task_id"])["task"]
+    _commit_file(ahead["worktree_path"], "backend/models/events.py", "EVENTS = 1\n")
+
+    second = client.dispatch_task(repo=added.name, title="add the sessions table")
+    assert second["ok"], second
+    assert second["migration_advisory"] is None
 
 
 def test_deliver_defaults_the_pr_base_to_the_recorded_stack(mm_home, monkeypatch) -> None:

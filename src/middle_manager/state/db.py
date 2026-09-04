@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS repos (
     -- starts, and a path to a virtualenv in the base clone worth reusing.
     provision_command TEXT,
     provision_venv TEXT,
+    -- Where this repo keeps its database migrations, so dispatch and review can
+    -- see two tasks adding one off the same head. Unset means the default glob.
+    migrations_glob TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -286,6 +289,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Opt-in worktree provisioning; a repo with neither set behaves as before.
         if col not in repo_cols:
             conn.execute(f"ALTER TABLE repos ADD COLUMN {col} TEXT")
+    if "migrations_glob" not in repo_cols:
+        # Where this repo's migrations live. Unset reads as the default glob, so
+        # every already-registered repo gets the collision advisory for free.
+        conn.execute("ALTER TABLE repos ADD COLUMN migrations_glob TEXT")
     review_cols = _column_names(conn, "reviews")
     if "note" not in review_cols:
         # The reviewer's own words, bound to the SHA they read; delivery quotes them.
