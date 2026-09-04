@@ -286,14 +286,18 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
             if e.exists and not e.dirty and e.unpushed_commits > 0:
                 state = f"+{e.unpushed_commits} local"
             task = str(e.task_id) if e.task_id else "-"
-            status = "orphaned" if e.orphaned else (e.task_status or "?")
+            if e.orphaned:
+                status = "orphaned" if e.managed else "unmanaged"
+            else:
+                status = e.task_status or "?"
             print(
                 f"{e.slot:<14}{task:<7}{status:<14}{state:<10}"
                 f"{human_bytes(e.size_bytes):>10}  {e.branch}"
             )
         total = sum(e.size_bytes for e in entries)
         free = sum(e.size_bytes for e in entries if e.reclaimable)
-        orphans = [e for e in entries if e.orphaned]
+        foreign = [e for e in entries if e.orphaned and not e.managed]
+        orphans = [e for e in entries if e.orphaned and e.managed]
         line = f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable"
         if orphans:
             line += (
@@ -301,6 +305,11 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
                 f"({human_bytes(sum(e.size_bytes for e in orphans))}, no active lease owns them)"
             )
         print(line)
+        if foreign:
+            print(
+                f"{len(foreign)} slot(s) in those pools belong to a checkout this instance "
+                "does not manage — listed as unmanaged, never counted, never pruned"
+            )
         return 0
 
     res = prune(args.repo, dry_run=args.dry_run)

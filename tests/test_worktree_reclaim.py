@@ -9,6 +9,7 @@ exists in a leased checkout.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,14 +20,16 @@ from middle_manager import preflight, repos
 from middle_manager.cli import main
 from middle_manager.paths import worktree_pools_dir
 from middle_manager.state import init_db, store
-from middle_manager.worktree.lease import LeaseManager
+from middle_manager.worktree.lease import LeaseError, LeaseManager
 from middle_manager.worktree.reclaim import (
     human_bytes,
     list_worktrees,
+    managed_base_clones,
     orphan_slots,
     pool_roots,
     prune,
     reclaimable_bytes,
+    remove_orphan_slot,
 )
 
 
@@ -426,6 +429,113 @@ def test_a_pool_directory_that_is_not_a_checkout_is_left_alone(repo):
     res = prune()
     assert res["removed"] == [] and res["skipped"] == []
     assert (pool / "not-a-worktree").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Sitting in a pool root is not proof of ownership
+#
+# One treehouse home holds this instance's pools next to the user's own for the
+# same repositories — papaya-backend-monorepo-58a49b is ours, -e5cc8b is theirs —
+# and both match the same name glob. A clean, fully pushed personal worktree is
+# the most reclaimable-looking thing on the disk and the least ours to take.
+# --------------------------------------------------------------------------- #
+
+
+def _their_pool_slot(source_repo, tmp_path, home, repo_name):
+    """A pool root matching our name glob, holding a slot from someone else's clone."""
+    theirs = tmp_path / "their-clone"
+    subprocess.run(["git", "clone", "-q", source_repo, str(theirs)], check=True)
+    root = home / f"{repo_name}-e5cc8b"  # same glob as ours, different hash
+    root.mkdir(parents=True)
+    slot = root / "1"
+    _git(theirs, "worktree", "add", "-q", "-b", "their/work", str(slot / "repo"), "HEAD")
+    return slot
+
+
+def test_a_slot_from_a_clone_we_do_not_manage_is_never_reclaimable(
+    repo, source_repo, tmp_path, monkeypatch
+):
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    _orphan_slot(repo, "1", root=home / f"{repo.name}-58a49b", nested=True)
+    theirs = _their_pool_slot(source_repo, tmp_path, home, repo.name)
+
+    found = {e.path: e for e in orphan_slots()}
+    mine = found[str(home / f"{repo.name}-58a49b" / "1")]
+    yours = found[str(theirs)]
+
+    assert mine.managed is True and mine.reclaimable is True
+    # Clean, and every commit is on a remote — reclaimable by every rule but ownership.
+    assert yours.managed is False
+    assert yours.reclaimable is False
+    assert "not managed by this instance" in yours.reason
+
+
+def test_prune_removes_our_slot_and_does_not_touch_theirs(repo, source_repo, tmp_path, monkeypatch):
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    ours, _ = _orphan_slot(repo, "1", root=home / f"{repo.name}-58a49b", nested=True)
+    theirs = _their_pool_slot(source_repo, tmp_path, home, repo.name)
+
+    res = prune()
+
+    assert [r["path"] for r in res["removed"]] == [str(ours)]
+    assert not ours.exists()
+    assert (theirs / "repo" / "README.md").exists(), "that is the user's own worktree"
+    assert any("not managed by this instance" in r["reason"] for r in res["skipped"])
+
+
+def test_removing_an_unmanaged_slot_is_refused_even_if_something_asks_directly(
+    repo, source_repo, tmp_path, monkeypatch
+):
+    """The delete itself re-checks ownership; being reached at all is a bug, not a licence."""
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    theirs = _their_pool_slot(source_repo, tmp_path, home, repo.name)
+    entry = next(e for e in orphan_slots() if e.path == str(theirs))
+
+    with pytest.raises(LeaseError):
+        remove_orphan_slot(entry)
+    assert (theirs / "repo").exists()
+
+
+def test_a_slot_whose_base_clone_is_gone_is_unmanaged(repo, tmp_path, monkeypatch):
+    """No answer to "whose is it" is never treated as "ours"."""
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    slot, checkout = _orphan_slot(repo, "1", root=home / f"{repo.name}-58a49b", nested=True)
+    shutil.rmtree(_base_clone(repo))
+
+    entry = next(e for e in orphan_slots() if e.path == str(slot))
+
+    assert entry.managed is False
+    assert entry.reclaimable is False
+    assert checkout.exists()
+
+
+def test_a_repo_registered_outside_the_mm_home_owns_nothing(repo, tmp_path):
+    """Ownership means a base clone under `.mm/repos/`, not any path in the table."""
+    conn = init_db()
+    conn.execute(
+        "UPDATE repos SET local_path = ? WHERE name = ?", (str(tmp_path / "elsewhere"), repo.name)
+    )
+    conn.commit()
+    assert managed_base_clones(conn) == {}
+
+
+def test_cli_list_labels_unmanaged_slots_separately(
+    repo, source_repo, tmp_path, monkeypatch, capsys
+):
+    home = tmp_path / "th"
+    monkeypatch.setenv("MM_TREEHOUSE_HOME", str(home))
+    _their_pool_slot(source_repo, tmp_path, home, repo.name)
+
+    assert main(["worktree", "list"]) == 0
+    out = capsys.readouterr().out
+
+    assert "unmanaged" in out
+    assert "never pruned" in out
+    assert "0 B prunable" in out
 
 
 def test_cli_list_labels_orphans(repo, capsys):
