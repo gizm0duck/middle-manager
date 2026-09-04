@@ -70,17 +70,31 @@ _TERMINAL_STATUS = {"completed": "worker_done", "blocked": "blocked", "failed": 
 
 
 def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment for a worker process: it can call ``mm`` from its worktree.
+    """Environment for a worker process: it can call ``mm``, and it can install things.
 
     ``mm`` resolves ``.mm`` from the cwd unless ``MM_HOME`` is set, and a worker's cwd
     is its leased worktree — so pin ``MM_HOME`` to this instance and put the repo's
     ``bin/`` first on PATH. That is what makes ``mm progress`` work for workers.
+
+    Both directories are created here rather than assumed. Three workers in the
+    2026-08-31 window lost roughly ten minutes each before touching the task:
+    ``uv``'s default cache was not writable from a Codex sandbox, and writing
+    progress needed a sandbox escalation. A cache under ``.mm`` is inside the
+    sandbox's writable root, and it is shared rather than per-task on purpose —
+    the cost being paid was re-downloading the same wheels for every dispatch, so
+    a cold cache per task would give back nothing.
     """
     from middle_manager.manager.launch import repo_root
-    from middle_manager.paths import mm_home
+    from middle_manager.paths import mm_home, uv_cache_dir
 
     env = dict(base if base is not None else os.environ)
-    env["MM_HOME"] = str(mm_home())
+    home = mm_home()
+    cache = uv_cache_dir()
+    for directory in (home, cache):
+        with contextlib.suppress(OSError):
+            directory.mkdir(parents=True, exist_ok=True)
+    env["MM_HOME"] = str(home)
+    env["UV_CACHE_DIR"] = str(cache)
     bin_dir = os.path.join(repo_root(), "bin")
     env["PATH"] = os.pathsep.join([bin_dir, env.get("PATH", "")])
     return env

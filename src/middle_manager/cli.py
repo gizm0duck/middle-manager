@@ -168,9 +168,30 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 
 def _cmd_repo(args: argparse.Namespace) -> int:
-    from middle_manager.repos import RepoError, add_repo, list_repos, sync_repo
+    from middle_manager.repos import (
+        RepoError,
+        add_repo,
+        get_provision,
+        list_repos,
+        set_provision,
+        sync_repo,
+    )
 
     try:
+        if args.repo_cmd == "provision":
+            asked = args.clear or args.command is not None or args.reuse_venv is not None
+            settings = (
+                set_provision(
+                    args.name,
+                    command=args.command,
+                    reuse_venv=args.reuse_venv,
+                    clear=args.clear,
+                )
+                if asked
+                else get_provision(args.name)
+            )
+            print(settings.describe())
+            return 0
         if args.repo_cmd == "add":
             added = add_repo(args.url, name=args.name, forge_url=args.forge_url)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
@@ -254,6 +275,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if args.brief and args.instructions:
         print("dispatch: pass --brief <file> or --instructions, not both", file=sys.stderr)
         return 1
+    if not args.title and not args.brief:
+        print(
+            "dispatch: name the objective with --title, or pass --brief <file> and let the "
+            "brief's first Markdown heading name it",
+            file=sys.stderr,
+        )
+        return 1
     try:
         instructions = preflight.read_brief(args.brief) if args.brief else (args.instructions or "")
         preflight.check_disk()
@@ -261,11 +289,23 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
 
+    title = args.title
+    if not title:
+        title = preflight.title_from_brief(instructions)
+        if not title:
+            print(
+                f"dispatch: {args.brief} has no Markdown heading to take the objective from — "
+                "open the brief with a '# ...' heading, or pass --title",
+                file=sys.stderr,
+            )
+            return 1
+        print(f'objective taken from the brief\'s first heading: "{title}"')
+
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
-            title=args.title,
+            title=title,
             instructions=instructions,
             provider=args.provider,
             model=args.model,
@@ -281,7 +321,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
-    if args.brief:
+    if instructions.strip():
+        # Archived whether the instructions came from a file or the command line:
+        # this is the copy `mm deliver` quotes when it writes the pull request body,
+        # and the only durable record of the packet a worker actually received.
         archived = preflight.archive_brief(args.repo, int(resp["task_id"]), instructions)
         print(f"brief archived at {archived}")
     return 0
@@ -296,7 +339,7 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
             print(json.dumps([vars(e) for e in entries], indent=2))
             return 0
         if not entries:
-            print("no leased worktrees")
+            print("no leased or orphaned worktrees")
             return 0
         print(f"{'SLOT':<14}{'TASK':<7}{'STATUS':<14}{'STATE':<10}{'SIZE':>10}  BRANCH")
         for e in entries:
@@ -304,13 +347,30 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
             if e.exists and not e.dirty and e.unpushed_commits > 0:
                 state = f"+{e.unpushed_commits} local"
             task = str(e.task_id) if e.task_id else "-"
+            if e.orphaned:
+                status = "orphaned" if e.managed else "unmanaged"
+            else:
+                status = e.task_status or "?"
             print(
-                f"{e.slot:<14}{task:<7}{(e.task_status or '?'):<14}{state:<10}"
+                f"{e.slot:<14}{task:<7}{status:<14}{state:<10}"
                 f"{human_bytes(e.size_bytes):>10}  {e.branch}"
             )
         total = sum(e.size_bytes for e in entries)
         free = sum(e.size_bytes for e in entries if e.reclaimable)
-        print(f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable")
+        foreign = [e for e in entries if e.orphaned and not e.managed]
+        orphans = [e for e in entries if e.orphaned and e.managed]
+        line = f"{len(entries)} slot(s), {human_bytes(total)} on disk, {human_bytes(free)} prunable"
+        if orphans:
+            line += (
+                f" — {len(orphans)} of them orphaned "
+                f"({human_bytes(sum(e.size_bytes for e in orphans))}, no active lease owns them)"
+            )
+        print(line)
+        if foreign:
+            print(
+                f"{len(foreign)} slot(s) in those pools belong to a checkout this instance "
+                "does not manage — listed as unmanaged, never counted, never pruned"
+            )
         return 0
 
     res = prune(args.repo, dry_run=args.dry_run)
@@ -319,6 +379,12 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
         print(f"  {verb} {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
     for r in res["skipped"]:
         print(f"  kept {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
+    from middle_manager import compose
+
+    for stack in res.get("compose") or []:
+        line = compose.describe(stack)
+        if line:
+            print(f"  {line}")
     print(
         f"{verb} {len(res['removed'])} worktree(s), "
         f"{human_bytes(res['reclaimed_bytes'])} reclaimed; "
@@ -395,9 +461,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_task(args: argparse.Namespace) -> int:
     """Snapshot a task, or run one of the lifecycle bookkeeping commands."""
+    from middle_manager import compose
     from middle_manager.lifecycle import LifecycleError, close_task, set_task_status
 
     try:
+        if args.task_cmd == "env":
+            return _cmd_task_env(args)
         if args.task_cmd == "close":
             res = close_task(args.task_id, args.reason)
             lease = res.get("lease") or {}
@@ -405,6 +474,9 @@ def _cmd_task(args: argparse.Namespace) -> int:
                 f"task {args.task_id}: {res['previous_status']} -> closed "
                 f"({res['reason']}); {lease.get('note', 'no lease on record')}"
             )
+            line = compose.describe(res.get("compose"))
+            if line:
+                print(line)
             return 0
         if args.task_cmd == "set-status":
             res = set_task_status(args.task_id, args.status, args.note)
@@ -415,6 +487,45 @@ def _cmd_task(args: argparse.Namespace) -> int:
         print(f"task {args.task_cmd}: {exc}", file=sys.stderr)
         return 1
     return _cmd_task_show(args)
+
+
+def _cmd_task_env(args: argparse.Namespace) -> int:
+    """Small facts attached to a task — today, the compose stack it owns."""
+    from middle_manager import compose
+    from middle_manager.state import init_db, store
+
+    conn = init_db()
+    if store.get_task(conn, args.task_id) is None:
+        print(f"task {args.task_id} not found", file=sys.stderr)
+        return 1
+    if args.task_env_cmd == "set":
+        for assignment in args.assignments:
+            key, sep, value = assignment.partition("=")
+            if not sep or not key.strip():
+                print(f"expected key=value, got {assignment!r}", file=sys.stderr)
+                return 1
+            key, value = key.strip(), value.strip()
+            if key == compose.COMPOSE_PROJECT_KEY:
+                try:
+                    compose.record_project(args.task_id, value, conn=conn)
+                except compose.ComposeError as exc:
+                    print(f"task env set: {exc}", file=sys.stderr)
+                    return 1
+            else:
+                store.set_task_env(conn, args.task_id, key, value)
+            print(f"task {args.task_id}: {key} = {value}")
+        return 0
+
+    rows = store.task_env(conn, args.task_id)
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return 0
+    if not rows:
+        print(f"task {args.task_id}: nothing recorded")
+        return 0
+    for row in rows:
+        print(f"{row['key']} = {row['value']}  ({row['source']}, {row['updated_at']})")
+    return 0
 
 
 def _cmd_task_show(args: argparse.Namespace) -> int:
@@ -541,11 +652,18 @@ def _cmd_answer(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from middle_manager.review import ReviewError, build_bundle, is_approved_at_head, record_review
+    from middle_manager.review import (
+        ReviewError,
+        approval_note,
+        build_bundle,
+        is_approved_at_head,
+        record_review,
+    )
 
     try:
         if args.review_cmd == "show":
-            from middle_manager import progress
+            from middle_manager import captures, progress
+            from middle_manager.state import init_db, store
 
             bundle = build_bundle(args.task_id)
             # The worker's own report comes first, in full: judging a diff without
@@ -560,6 +678,20 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 )
                 print(latest["note"] or "(no note)")
                 print()
+            # The receipts the worker named, listed so nobody approves a visual
+            # change on the strength of a sentence about screenshots.
+            task = store.get_task(init_db(), args.task_id)
+            listing = captures.render(
+                captures.capture_paths(r["note"] for r in reports),
+                root=task["worktree_path"] if task is not None else None,
+            )
+            if listing:
+                print(listing)
+                print()
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on the standing approval: {note}")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -567,8 +699,10 @@ def _cmd_review(args: argparse.Namespace) -> int:
             print(bundle.diffstat or "(no changes)")
             return 0
         if args.review_cmd == "approve":
-            res = record_review(args.task_id, "approved", args.findings or "")
+            res = record_review(args.task_id, "approved", args.findings or "", note=args.note or "")
             print(f"approved task {args.task_id} at {res['head_sha'][:8]}")
+            if res["note"]:
+                print(f"note recorded with the approval: {res['note']}")
             return 0
         if args.review_cmd == "request-changes":
             res = record_review(args.task_id, "changes_requested", args.findings or "")
@@ -577,6 +711,9 @@ def _cmd_review(args: argparse.Namespace) -> int:
         if args.review_cmd == "status":
             approved, reason = is_approved_at_head(args.task_id)
             print(f"task {args.task_id}: {'APPROVED' if approved else 'NOT approved'} — {reason}")
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on that approval: {note}")
             return 0 if approved else 1
     except ReviewError as exc:
         print(f"review error: {exc}", file=sys.stderr)
@@ -586,12 +723,16 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_deliver(args: argparse.Namespace) -> int:
+    from middle_manager import compose
     from middle_manager.delivery import DeliveryError, deliver, record_merged
 
     try:
         if args.merged:
             res = record_merged(args.task_id, args.merged)
             print(f"task {res.task_id}: {res.note}")
+            line = compose.describe(res.compose)
+            if line:
+                print(line)
             return 0
         res = deliver(
             args.task_id,
@@ -599,6 +740,8 @@ def _cmd_deliver(args: argparse.Namespace) -> int:
             open_pr=not args.no_pr,
             remote=args.remote,
             base=args.base,
+            title=args.title,
+            body_file=args.body_file,
         )
     except DeliveryError as exc:
         print(f"delivery refused: {exc}", file=sys.stderr)
@@ -717,12 +860,21 @@ def _cmd_health(args: argparse.Namespace) -> int:
         if args.quiet_minutes is not None
         else health.quiet_threshold()
     )
+    from middle_manager import compose
+
     entries = health.check(quiet_after=quiet_after)
     tools = health.claude_tool_profile()
+    stacks = compose.prunable_stacks()
     if args.json:
-        print(json.dumps({"workers": entries, "claude_tools": tools}, indent=2))
+        print(
+            json.dumps(
+                {"workers": entries, "claude_tools": tools, "prunable_compose_stacks": stacks},
+                indent=2,
+            )
+        )
         return 0
     print(health.describe_claude_tools(tools))
+    print(compose.describe_prunable(stacks))
     if not entries:
         print("no workers in flight")
         return 0 if tools["ok"] else 1
@@ -737,7 +889,12 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     from middle_manager import watch
 
     try:
-        return watch.run(interval=args.interval, once=args.once, as_json=args.json)
+        return watch.run(
+            interval=args.interval,
+            once=args.once,
+            as_json=args.json,
+            exit_when_idle=args.exit_when_idle,
+        )
     except KeyboardInterrupt:
         return 0
 
@@ -1252,6 +1409,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="remove a stray .mm/ directory that an mm command created inside the base clone",
     )
+    prov = rsub.add_parser(
+        "provision",
+        help=(
+            "what a fresh worktree for this repo gets before its worker starts "
+            "(no flags: show what is configured)"
+        ),
+    )
+    prov.add_argument("name", help="registered repository name")
+    prov.add_argument(
+        "--command",
+        default=None,
+        help='shell command to run in each new worktree, e.g. "uv sync --frozen"; '
+        "empty string clears it",
+    )
+    prov.add_argument(
+        "--reuse-venv",
+        dest="reuse_venv",
+        default=None,
+        help="repo-relative path to a virtualenv in the base clone to link into each "
+        "worktree, e.g. backend/.venv; empty string clears it",
+    )
+    prov.add_argument("--clear", action="store_true", help="turn provisioning off for this repo")
     repo.set_defaults(func=_cmd_repo)
 
     supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
@@ -1263,7 +1442,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     dispatch = sub.add_parser("dispatch", help="dispatch a task to a registered repo")
     dispatch.add_argument("--repo", required=True, help="registered repository name")
-    dispatch.add_argument("--title", required=True, help="task title/objective")
+    dispatch.add_argument(
+        "--title",
+        default=None,
+        help=(
+            "the objective, in one line; optional when --brief is given, which takes it "
+            "from the brief's first Markdown heading. An explicit --title always wins"
+        ),
+    )
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
         "--brief",
@@ -1305,13 +1491,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.set_defaults(func=_cmd_dispatch)
 
-    worktree = sub.add_parser("worktree", help="inspect and reclaim leased worktrees")
+    worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
     wtsub = worktree.add_subparsers(dest="worktree_cmd", required=True)
-    wtlist = wtsub.add_parser("list", help="slot, task, status, branch, dirty/clean, size")
+    wtlist = wtsub.add_parser(
+        "list",
+        help=(
+            "slot, task, status, branch, dirty/clean, size — leased slots plus the "
+            "pool directories on disk no active lease owns (shown as orphaned)"
+        ),
+    )
     wtlist.add_argument("--repo", default=None, help="only this registered repo")
     wtlist.add_argument("--json", action="store_true", help="machine-readable output")
     wtprune = wtsub.add_parser(
-        "prune", help="remove the worktrees of finished tasks that hold nothing unique"
+        "prune",
+        help=(
+            "remove the worktrees of finished tasks, and the orphaned slots, that "
+            "hold nothing unique"
+        ),
     )
     wtprune.add_argument("--repo", default=None, help="only this registered repo")
     wtprune.add_argument(
@@ -1359,6 +1555,25 @@ def build_parser() -> argparse.ArgumentParser:
     tkset.add_argument("task_id", type=int)
     tkset.add_argument("status", choices=list(TASK_STATUSES))
     tkset.add_argument("--note", default=None, help="why the status was corrected")
+    tkenv = tksub.add_parser(
+        "env",
+        help=(
+            "small facts attached to a task — set `compose_project=<name>` and the "
+            "task's compose stack is torn down when the task ends"
+        ),
+    )
+    tkenvsub = tkenv.add_subparsers(dest="task_env_cmd", required=True)
+    tkenvset = tkenvsub.add_parser("set", help="record key=value on a task")
+    tkenvset.add_argument("task_id", type=int)
+    tkenvset.add_argument(
+        "assignments",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help="e.g. compose_project=task_12",
+    )
+    tkenvshow = tkenvsub.add_parser("show", help="everything recorded on a task")
+    tkenvshow.add_argument("task_id", type=int)
+    tkenvshow.add_argument("--json", action="store_true", help="machine-readable output")
     task.set_defaults(func=_cmd_task)
 
     stack = sub.add_parser(
@@ -1415,6 +1630,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("task_id", type=int)
         if name in ("approve", "request-changes"):
             p.add_argument("--findings", default=None, help="review notes")
+        if name == "approve":
+            p.add_argument(
+                "--note",
+                default=None,
+                help=(
+                    "what you checked and accepted, in your own words; stored against the "
+                    "commit you approved, printed by `mm review status|show`, and quoted "
+                    "in the pull request `mm deliver` opens"
+                ),
+            )
     review.set_defaults(func=_cmd_review)
 
     deliver = sub.add_parser("deliver", help="push and open a PR (requires approval at head)")
@@ -1427,6 +1652,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="push target; defaults to the repo's registered forge remote",
     )
     deliver.add_argument("--base", default=None, help="PR base branch")
+    deliver.add_argument(
+        "--title",
+        default=None,
+        help="pull request title; defaults to the objective the task was dispatched with",
+    )
+    deliver.add_argument(
+        "--body-file",
+        dest="body_file",
+        default=None,
+        metavar="FILE",
+        help=(
+            "use this file as the pull request body verbatim, instead of the body "
+            "composed from the brief, the worker's reports, and the approval note"
+        ),
+    )
     deliver.add_argument(
         "--merged",
         default=None,
@@ -1533,7 +1773,8 @@ def build_parser() -> argparse.ArgumentParser:
         "watch",
         help=(
             "team heartbeat: print one line of state (in-flight workers, tasks waiting "
-            "on you, new events) now and every --interval seconds; relay each tick"
+            "on you, the pull requests delivered work sits in with their CI verdict, "
+            "new events) now and every --interval seconds; relay each tick"
         ),
     )
     watch_cmd.add_argument(
@@ -1544,6 +1785,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch_cmd.add_argument("--once", action="store_true", help="print one tick and exit")
     watch_cmd.add_argument("--json", action="store_true", help="machine-readable ticks")
+    watch_cmd.add_argument(
+        "--exit-when-idle",
+        dest="exit_when_idle",
+        action="store_true",
+        help=(
+            "for scripts: exit on the second idle tick instead of going quiet and "
+            "waiting for the team to have news again"
+        ),
+    )
     watch_cmd.set_defaults(func=_cmd_watch)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")

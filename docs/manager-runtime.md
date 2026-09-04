@@ -276,12 +276,30 @@ quietly; do not narrate the steps or report diagnostics.
 
 6. **Arm the heartbeat.** Start `./bin/mm watch` as a background monitor in your
    harness (it prints one line of team state now and every five minutes: who is
-   in flight and alive, which tasks are waiting on you, what arrived since the
-   last tick, how big the ledger is). Every tick wakes you; while anything is in
-   flight or a merge is gated on CI, relay what it says to the user in plain
-   terms — including "no change". Completion watchers are a supplement to this
+   in flight and alive, which tasks are waiting on you, the *open* pull requests
+   your delivered work is sitting in with their CI verdict and mergeability, what
+   arrived since the last tick, how big the ledger is). It also names what
+   flipped since the last tick — a check going from pending to passing, a branch
+   falling behind its base, a pull request landing — so you relay the change, not
+   a re-reading. A merged or closed pull request is named once, on the tick it
+   flips, and then drops off the line; when you merge one yourself, record it
+   with `mm deliver <task> --merged <sha>` so the heartbeat stops asking the
+   forge about a branch that is already home. Every tick wakes you; while
+   anything is in flight or a merge is gated on CI, relay
+   what it says to the user in plain terms — including "no change". That means
+   you never hand-arm a watcher per pull request, and never sit on a `gh pr
+   checks` loop of your own. Completion watchers are a supplement to this
    cadence, never a replacement for it: waiting silently on a watcher is how a
    finished worker sat unpushed and a steer went undelivered on 2026-08-31.
+
+   The watch quiets itself when there is nothing to watch: no worker in flight,
+   nothing waiting on you, no pull request whose checks are pending or failing,
+   nothing new. On the second such tick it says so once and then goes silent —
+   so "no change" is something you relay only while something is actually in
+   flight, and an idle team costs the user nothing to read. It resumes the normal
+   line and the five-minute cadence by itself the moment anything changes, so
+   never restart it after a dispatch: the process stays alive and your monitor
+   stays armed.
 
 Preflight is invisible when it succeeds: the user just sees you open with a ready,
 in-character greeting.
@@ -310,10 +328,12 @@ When the user gives you an objective:
    is the *only* place a repo can live. Never look elsewhere on the machine or
    guess a path. If the named repo isn't registered, ask the user for its URL (or
    an explicit path they give you) and `mm repo add` it before proceeding.
-3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --title
-   ... --provider <claude|codex> [--model ...] [--reasoning ...]`. Prefer the
-   smallest eligible worker; the ceiling is enforced in code, so you cannot
-   exceed it by accident.
+3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --brief
+   <file> --provider <claude|codex> [--model ...] [--reasoning ...]`. A brief
+   names its own task: with `--brief`, the objective comes from the brief's first
+   Markdown heading, so `--title` is only for overriding it (and is still required
+   when you dispatch without a brief). Prefer the smallest eligible worker; the
+   ceiling is enforced in code, so you cannot exceed it by accident.
 4. Track progress with a **non-blocking snapshot** — `mm run <run_id>` (task states,
    actionable events, usage) and `mm task <task_id>` (latest progress report) — and keep
    your **intent in the ledger**: `mm todo add "…"` the moment you know a next step,
@@ -346,11 +366,29 @@ When the user gives you an objective:
 ## Reviewing and delivering
 
 - Review the exact diff before delivery: `mm review show <task_id>`, then
-  `mm review approve <task_id>` or `mm review request-changes <task_id>
-  --findings ...`.
+  `mm review approve <task_id> --note "..."` or `mm review request-changes
+  <task_id> --findings ...`.
+- `mm review show` lists the receipts the worker named in its reports — every
+  capture directory with its files and sizes, every image on a line of its own so
+  you can open it, and any path that has gone marked "(not found)" rather than
+  failing the command. **Open the images before approving anything visual.**
+- The `--note` on an approval is your own account of what you checked and
+  accepted. It is stored against the exact commit you approved, printed back by
+  `mm review status` and `mm review show`, and quoted in the pull request body
+  `mm deliver` composes — so the reviewer's reasoning ships with the work instead
+  of dying in the terminal.
 - Deliver with `mm deliver <task_id>`. It **refuses unless an approved review is
   bound to the current head SHA** — never try to work around this. If the head
   moved after approval, re-review.
+- Delivery writes the pull request body itself, from what the run already holds:
+  **Why** from the first section of the archived brief, **What** from the worker's
+  closing report (plus anything it filed under "Outside scope, required to build"
+  or "Flagged, not done"), **Verification** from its last test report and your
+  approval note, and **Stack** from the branch the work was dispatched from. Don't
+  rewrite it by hand afterwards — if you want a different body, pass
+  `mm deliver <task_id> --body-file <file>`, which is used verbatim, or
+  `--title "..."` for the title alone. Set `MM_PR_FOOTER` to append your session
+  and attribution lines to every composed body.
 - For plans, comparisons, or connected decisions that are easier to *see* than to
   read, put them on a visual review surface — but **load the `review-surfaces`
   skill** and follow it, rather than driving the tool by hand. It owns the loop
@@ -524,17 +562,20 @@ readable at a glance by someone who just wants to know if it's done.
 | Claude worker tools | `mm config claude --allowed-tools '...'` / `--reset`; `mm health` prints the effective profile. `MM_CLAUDE_ALLOWED_TOOLS` overrides the config for one session; an empty profile makes `mm dispatch --provider claude` refuse rather than launch a worker with no shell |
 | Companion tools | `mm tools install [--force]`, `mm tools status` |
 | Repositories | `mm repo add <url|path> [--forge-url <url>]`, `mm repo list`, `mm repo sync <name> [--clean-stray-mm]` — registration records the **forge**: a URL registration is its own forge, a path registration inherits the forge from that path's `origin`, and a path whose origin is local (or missing) is refused until `--forge-url` names one, because a repo with nowhere to open a pull request strands every delivery. `mm repo list` shows it, sync fetches from it, `mm deliver` pushes and opens the pull request there, and `mm doctor` flags any repo without one. Sync sync fast-forwards the base clone's default branch to the remote tip and records *that* commit, so a dispatch without an explicit starting branch cannot begin from stale code; it refuses (changing nothing) when the base clone has uncommitted or untracked files, naming them, and it reports a stray `.mm/` directory left inside the clone by an `mm` command run from that directory without the launcher (`--clean-stray-mm` removes it) |
+| Worktree head start | `mm repo provision <name>` shows what a fresh worktree gets before its worker starts; `--command "uv sync --frozen"` runs that in each new worktree (its exit status is recorded, and a failure never fails the dispatch), `--reuse-venv backend/.venv` links the virtualenv the base clone already has into the same place, `--clear` turns both off. Opt-in per repo — a repo with nothing configured behaves exactly as before. Every worker already gets a writable `UV_CACHE_DIR` (shared, under `.mm/cache/uv`, so the second dispatch is warm) and a writable `MM_HOME`, so `mm progress` and `uv` never need a sandbox escalation |
 | Supervisor | `mm supervisor serve|status|stop` |
-| Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size), `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks that are clean and hold no commit a remote lacks; everything else is kept and listed with the reason) |
-| Stacks | `mm stack <task_id|run_id>` — the stack bottom-up: layer, branch, pull request and its base, review state, and whether the base still matches the layer below (has the cascade run). `--json` for the raw shape |
+| Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size) — it walks the pool directories on disk as well as the leases, so a slot no active lease owns (a released lease, or one an earlier mm instance created) shows as `orphaned` instead of hiding; `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks **and** the orphaned slots, under one rule: clean, and every commit already on a remote; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning] [--stack-on <task_id>]` — `--stack-on` builds on that task: its lease branch becomes the starting point and the stack parent is recorded, so `mm stack` and `mm deliver` follow the chain. a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, run the authoritative suite in the foreground with a timeout of at least 20 minutes and never backgrounded, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
+| Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task whose branch has an open pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. A pull request that merges or closes is named once and then drops off; `mm deliver <task> --merged <sha>` retires it for good. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing. It goes quiet on its own after two idle ticks (nothing in flight, nothing owed to you, no pending or failing checks, nothing new) and speaks again the moment that stops being true — leave it running rather than restarting it; `--exit-when-idle` makes it exit instead, for scripts |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately. A task whose turn ended mid-gate shows as `worker_stopped` with the reason named (no done note, unpushed commits, or a backgrounded command killed with the session) — that is work to resume, not work to review |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately; moves the worktree onto its remote branch first if a cascade rewrote it, and refuses if both sides hold commits). On a `worker_stopped` task, a bare `mm resume` — no `--message` — sends the worker back in with what was cut short; see [`task-lifecycle.md`](task-lifecycle.md) |
-| Review | `mm review show|approve|request-changes|status <task_id>` |
-| Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--remote ...]` — pushes to the repo's registered forge and opens the pull request there (`--remote` overrides); `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
-| Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
+| Review | `mm review show <task_id>` (worker report, the capture/receipt paths it named with sizes and openable image lines, the standing approval note, then the diffstat), `mm review approve <task_id> [--note "what you checked"] [--findings ...]`, `mm review request-changes <task_id> --findings ...`, `mm review status <task_id>` (also prints the approval note) |
+| Deliver | `mm deliver <task_id> [--no-pr] [--base ...] [--remote ...] [--title "..."] [--body-file FILE]` — pushes to the repo's registered forge and opens the pull request there (`--remote` overrides); composes the pull request body from the archived brief, the worker's closing and test reports, the approval note, and the stack it sits on; `--body-file` is used verbatim and overrides all of it, `--title` overrides the objective the task was dispatched with, and `MM_PR_FOOTER` appends your session and attribution lines. Also: `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing, and takes the task's compose stack down) |
+| Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot and takes the task's compose stack down), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
+| Per-task compose stacks | `mm task env set <id> compose_project=<name>` records the stack a task brought up, and is taken as given because you typed it. A worker naming `COMPOSE_PROJECT_NAME=...` in a `mm progress` note is picked up automatically **only when it is that task's own stack** (`task_<id>` or `<prefix>_task_<id>`) — teardown destroys volumes, and a note mentioning a shared stack must never arm one; anything else is dropped with a `compose_project_ignored` event naming it. `mm task env show <id> [--json]` lists what's recorded. `mm deliver --merged`, `mm task close`, and `mm worktree prune` then run `docker compose -p <name> down -v --remove-orphans` for it and print what went. No docker, or a stack already gone, is never an error. `mm health` lists stacks named `task_<n>`/`*_task_<n>` whose task is already over as prunable — that's the Docker network ceiling filling up |
+| Stacks | `mm stack <task_id|run_id>` — the stack bottom-up: layer, branch, pull request and its base, review state, and whether the base still matches the layer below (has the cascade run). `--json` for the raw shape |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
 | Cross-repo order | `mm plan <run_id>` |
