@@ -83,7 +83,11 @@ def _run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str]:
     slow ``gh`` is not an error here: it returns a non-zero code and the caller
     reports the pull request state as unknown rather than failing the tick.
     """
-    tool = companions.pr_tool()
+    # Plain ``gh`` only: ``gh-axi`` is a different command surface (``--fields``
+    # instead of ``--json``, no ``checks --json``), and on 2026-09-04 the first
+    # live tick showed every historical branch as ``ci: unknown`` because the
+    # resolver had preferred the wrapper.
+    tool = companions.companion_bin("gh")
     if tool is None:
         return (127, "")
     try:
@@ -250,7 +254,9 @@ def describe_pr(entry: dict[str, Any]) -> str | None:
     keeping it on the line forever would bury the live work behind the history.
     """
     if not entry.get("known"):
-        return f"t{entry['task_id']} ci: unknown"
+        # Nothing to relay: an unreadable forge is not news, and one line per
+        # historical branch buried the live pull requests on the first live tick.
+        return None
     if entry.get("pr") is None:
         return None  # branch has no pull request yet; the task line already says so
     if entry.get("state", "OPEN") != "OPEN":

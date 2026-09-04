@@ -201,7 +201,8 @@ def test_without_gh_the_tick_says_unknown_rather_than_failing(home, tmp_path) ->
         "branch": "harness/no-gh",
         "status": "delivered",
     }
-    assert f"prs: t{task_id} ci: unknown" in watch.render(snap)
+    assert "ci: unknown" not in watch.render(snap)
+    assert "prs:" not in watch.render(snap)
 
 
 def test_a_branch_with_no_pull_request_yet_adds_no_noise(home, tmp_path, monkeypatch) -> None:
