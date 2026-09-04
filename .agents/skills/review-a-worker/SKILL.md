@@ -46,8 +46,17 @@ and re-runs all gates each round.
   test modules were added; generated artifacts regenerated, frozen fixtures intact.
 - **Semantics**: the truth table (concurrency, retry, undo) satisfied cell by cell;
   isolation and permission tests present where the brief listed them.
-- **Evidence**: every verification command the brief required, with results, at
-  the exact head; screenshots committed where UI changed.
+- **Evidence**: every verification command the brief required, each with its own
+  result line, at the exact head; screenshots committed where UI changed, with the
+  capture directory named. A done note that says "all gates pass" without per-command
+  numbers is not evidence — ask for the numbers, or run the commands yourself at head,
+  before approving (2026-08-31, task 36).
+- **Open the captures.** For anything with a visual surface, view at least one
+  after-capture — the state the change most affects — before `mm review approve`. A
+  report saying "screenshots captured" is not evidence; the pixels are. An action-sheet
+  row removal was approved off the diff and the gate report while the worker's own
+  unopened capture showed the sheet presenting with more than half dead space, because
+  the detent fraction still counted the hidden rows (2026-09-01, task 41).
 
 ## 3. Verify before you request a change
 
@@ -73,6 +82,14 @@ pull request against the task's recorded stack parent (dispatched with `--base`)
 or against `main` for a bottom layer; pass `--base` only to override. Then tell the
 user in plain terms what landed, what was flagged and not done, and what needs them,
 naming the stack and the layer rather than each PR as separate work.
+
+After any conflict resolution that overwrote a file with the base's copy and spliced
+the branch's change back in, diff `merge-base..branch` for that file — not just the last
+commit — and confirm every hunk is present or deliberately superseded, then run the
+file's own focused runtime check where one exists. Splicing back only the conflicted
+function once dropped the branch's supporting imports and wiring elsewhere in the same
+file, putting a runtime ReferenceError on main that a syntax check could not catch
+(2026-09-01, PR #543).
 
 When merging is authorised, merge a stack **bottom-up, one layer at a time**: after
 each merge confirm the next layer was retargeted to `main` by GitHub's cascading

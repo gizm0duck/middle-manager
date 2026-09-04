@@ -141,6 +141,36 @@ def update_task_fields(conn: sqlite3.Connection, task_id: int, **fields: object)
     conn.commit()
 
 
+def set_task_env(
+    conn: sqlite3.Connection, task_id: int, key: str, value: str, *, source: str = "manual"
+) -> None:
+    """Attach a small fact to a task, replacing any earlier value for the same key."""
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO task_env (task_id, key, value, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id, key) DO UPDATE SET
+            value = excluded.value, source = excluded.source, updated_at = excluded.updated_at
+        """,
+        (task_id, key, value, source, now, now),
+    )
+    conn.commit()
+
+
+def get_task_env(conn: sqlite3.Connection, task_id: int, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM task_env WHERE task_id = ? AND key = ?", (task_id, key)
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def task_env(conn: sqlite3.Connection, task_id: int) -> list[sqlite3.Row]:
+    return list(
+        conn.execute("SELECT * FROM task_env WHERE task_id = ? ORDER BY key", (task_id,)).fetchall()
+    )
+
+
 def add_dependency(conn: sqlite3.Connection, task_id: int, depends_on: int) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES (?, ?)",

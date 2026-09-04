@@ -43,6 +43,11 @@ def record(
         raise ProgressError(f"task {task_id} not found")
     if phase == "plan" and not note.strip():
         raise ProgressError("a plan report needs a note describing the approach")
+    # A worker that says COMPOSE_PROJECT_NAME=... has just told us which stack to
+    # tear down when the task ends; record it rather than make anyone re-state it.
+    from middle_manager import compose
+
+    compose.note_project(task_id, note, conn=conn)
     return store.append_event(
         conn,
         kind="worker_progress",
