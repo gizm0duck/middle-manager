@@ -4,9 +4,11 @@ description: >-
   The checklist a task brief must satisfy before `mm dispatch` — the things a
   worker cannot recover once it has started: the exact starting commit, the design
   reference for UI work, one authoritative verification suite, the test-hygiene
-  checks that only fail on CI, and the tables that turn prose semantics into
+  checks that only fail on CI, the evidence contract, gate policy and scope-change
+  protocol every brief carries, and the tables that turn prose semantics into
   something a worker can be right about. Use every time you write or revise a brief;
-  it exists because each item on it cost a worker cycle on 2026-08-30/31.
+  it exists because each item on it cost a worker cycle between 2026-08-30 and
+  2026-09-03.
 user-invocable: false
 ---
 
@@ -40,6 +42,14 @@ paid for once already.
 
 ## 2. UI work: name the design reference
 
+- **Point the worker at the ux-craft skill by absolute path.** Workers are not
+  skill-aware — naming a skill is invisible to them, the file read is the mechanism.
+  Every brief that touches UX, design, or interactions carries the instruction to read
+  and apply it before writing any UI: `<repo>/.agents/skills/ux-craft/SKILL.md` when the
+  target repo carries its own copy, otherwise the manager's harness copy
+  (`~/.claude/skills/ux-craft/SKILL.md`) — resolved to a real, existing absolute path
+  before it goes in the brief. Two iOS chat briefs went out without it and one had to be
+  steered mid-flight (2026-08-31).
 - **Ask "which mockup are we designing from?" before dispatching.** Pin the file
   (copy it under `.mm/briefs/<repo>/` if it lives outside the repo) and its written
   spec; say which wins on structure, which on data (the frozen contract), which on
@@ -54,6 +64,11 @@ paid for once already.
   unit suite must pass under `TZ=UTC` and under the machine zone before done.
 - **Evidence**: committed screenshots for every reference state, sized to compare
   with the mockup's, under the repo's generated-evidence directory.
+- **Capture paths are an acceptance item, not a reporting nicety.** "The final report
+  MUST name the capture directory; a delivery without it is incomplete" belongs in the
+  acceptance/gates block, never in the report block — workers treat gates as binding and
+  reporting as prose. Two workers in one day claimed captures without publishing paths:
+  a resume round-trip each (2026-09-01, tasks 49 and 52).
 
 ## 3. Verification: one authoritative suite, then subsets
 
@@ -79,7 +94,35 @@ paid for once already.
 - **Merge main before pushing a PR that sat**: the forge runs no pull-request checks
   on a conflicting PR, so it shows "no checks" rather than failing.
 
-## 4. Semantics the worker must be right about
+## 4. The blocks every brief carries
+
+Three named sections, the same names every time, so a worker can find the rule instead
+of re-reading the brief for it.
+
+- **Evidence contract.** Which artefacts count as proof, the absolute directory they
+  must land in (the worker creates it), and how each is named or sized — one line per
+  artefact. "Capture screenshots" with no destination produced two receipt-less
+  deliveries in one window (2026-09-01).
+- **Standing gate policy.** Which single gate is authoritative; what a flaky gate means
+  (re-run once, then report the flake with both outputs — never loosen it, never skip
+  it, never call it unrelated without checking the base branch's own runs); and when a
+  failing gate stops being the worker's problem — after two identical failures with a
+  fix in between it is the user's budget-versus-infrastructure decision, so the worker
+  files it under "Flagged, not done" instead of trying a third fix. Three workers stalled
+  on a gate nobody owned and two gate cycles were lost for want of this block
+  (window ending 2026-09-01).
+- **Scope-change protocol.** What the worker does when the brief turns out to be wrong:
+  stop at the checkpoint, state the conflict and the smallest correct alternative under
+  "Flagged, not done", and wait. Never widen scope silently, never invent a substitute
+  requirement. A worker resolving a wrong brief on its own cost one stale-intent incident
+  and one two-round change request.
+
+Then **one closeout checklist at the end of the brief** — every acceptance item, gate and
+receipt in a single list — instead of the same constraints repeated inside each section.
+Three separate workers asked for exactly this (2026-08-31); duplicated constraints drift
+against each other and the worker has to guess which copy is current.
+
+## 5. Semantics the worker must be right about
 
 - **Concurrency / back-off / retry: a state-transition truth table.** Rows are
   states, columns are events, cells are the next state and side effect — especially
@@ -88,11 +131,16 @@ paid for once already.
 - **Contract or freeze documents: an expected-discrepancy matrix.** Plan claim →
   shipped reality → what to do (document, flag, never invent). A worker rediscovered
   a "band" list parameter that never shipped.
+- **Pinned predicate / evidence sets come from the gate, not from the prose.** When a
+  brief fixes the exact set a thing must carry, derive it by reading the gate that has to
+  accept it. A five-predicate set copied out of plan prose could not pass the
+  (deliberately unchanged) materiality gate; the worker had to add the missing predicate
+  itself (2026-08-31, task 36).
 - **Environment facts that bite**: per-worktree databases, package-cache
   sandboxes, CI runner slowdown factors and the budget margins they imply, tools
   that must not run locally.
 
-## 5. Performance briefs
+## 6. Performance briefs
 
 - **Never prescribe a fix from a local measurement when local and CI diverge
   sharply.** State the required outcome (the budget, where it is frozen) and ask for
@@ -102,7 +150,7 @@ paid for once already.
   between, the budget-versus-infrastructure decision goes to the user with the
   evidence — not a third code round.
 
-## 6. Don't restate the environment's command rules
+## 7. Don't restate the environment's command rules
 
 A `claude` dispatch already prepends them: one plain command per call, no pipes /
 `&&` / `;` / inline env assignment / redirection, `cd` on its own, push with
@@ -112,7 +160,7 @@ That block is generated from the branch the task actually leased, so it is alway
 right and always identical. Repeating it by hand in a brief is how it drifts.
 Codex workers have a real shell and are deliberately not given the block.
 
-## 7. Before you send it
+## 8. Before you send it
 
 `test -s` the file; confirm disk and pool capacity (`mm dispatch` checks the disk);
 read the brief once as the worker: is there any instruction it would have to guess?

@@ -12,6 +12,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from middle_manager.companions import pr_tool
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
@@ -44,6 +45,21 @@ def _pr_tool() -> str | None:
     return pr_tool()
 
 
+def _pr_body(task_id: int, head: str, body_file: str | None) -> str:
+    """The pull request body: the caller's file if given, else a composed one.
+
+    ``--body-file`` overrides everything — a manager who has written the body by
+    hand should never have it second-guessed. Otherwise the body is composed from
+    the brief, the worker's reports, and the review; see
+    :mod:`middle_manager.pr_body`.
+    """
+    if body_file:
+        return Path(body_file).expanduser().read_text(encoding="utf-8")
+    from middle_manager import pr_body
+
+    return pr_body.compose(task_id, head_sha=head)
+
+
 def deliver(
     task_id: int,
     *,
@@ -51,6 +67,8 @@ def deliver(
     open_pr: bool = True,
     remote: str = "origin",
     base: str | None = None,
+    title: str | None = None,
+    body_file: str | None = None,
 ) -> DeliveryResult:
     conn = init_db()
     task = store.get_task(conn, task_id)
@@ -92,9 +110,9 @@ def deliver(
                 "--head",
                 branch,
                 "--title",
-                task["title"],
+                title or task["title"],
                 "--body",
-                f"Automated delivery of task {task_id} ({head[:8]}).",
+                _pr_body(task_id, head, body_file),
             ]
             if base:
                 argv += ["--base", base]
