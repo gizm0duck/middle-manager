@@ -137,7 +137,9 @@ class SupervisorServer:
                         repo=request["repo"],
                         title=request["title"],
                         instructions=request.get("instructions", ""),
-                        provider=request.get("provider", "fake"),
+                        # No provider named: the supervisor resolves the configured
+                        # one. Never defaulted here, and never to `fake`.
+                        provider=request.get("provider"),
                         run_id=request.get("run_id"),
                         model=request.get("model"),
                         reasoning=request.get("reasoning"),

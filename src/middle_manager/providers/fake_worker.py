@@ -21,6 +21,9 @@ A worker that ends its turn without a done note, without pushing, or waiting on 
 backgrounded command is not done — the supervisor says so (see
 :mod:`middle_manager.turn_end`). The default path here models a worker that
 *finished*; the markers above model each way of not finishing.
+
+Whatever the path, this worker never pushes its stub anywhere but a local path:
+see :func:`_check_push_target`.
 """
 
 from __future__ import annotations
@@ -46,16 +49,52 @@ def _git(args: list[str], cwd: str) -> str:
     return proc.stdout.strip()
 
 
+#: Set to ``1`` to let the fake worker push somewhere that is not a local path.
+#: Only a deliberate end-to-end test against a real remote should ever set it.
+ALLOW_REMOTE_PUSH_ENV = "MM_FAKE_ALLOW_REMOTE_PUSH"
+
+
+class RemotePushRefused(RuntimeError):
+    """The fake worker was pointed at a remote it must not write to."""
+
+
+def _check_push_target(worktree: str) -> None:
+    """Refuse to push a stub anywhere but a path on this machine.
+
+    This worker's whole output is a placeholder file and a commit that says
+    nothing. On 2026-09-04 a dispatch that fell back to the fake provider pushed
+    exactly that to github.com within seconds, and the branch had to be deleted by
+    hand (issue #49). A remote with a URL scheme or an scp-style ``user@host:``
+    prefix is somewhere real, so the push stops before it starts.
+    """
+    from middle_manager.repos import is_local_remote
+
+    url = _git(["remote", "get-url", "origin"], cwd=worktree)
+    if is_local_remote(url):
+        return
+    if os.environ.get(ALLOW_REMOTE_PUSH_ENV) == "1":
+        return
+    raise RemotePushRefused(
+        f"the fake provider refuses to push to {url} — that is not a local path, and this "
+        "worker only writes a stub. Dispatch with --provider claude or --provider codex, or "
+        f"set {ALLOW_REMOTE_PUSH_ENV}=1 for a deliberate end-to-end test."
+    )
+
+
 def _finish_the_gate(spec: dict, session_id: str) -> None:
     """What a worker that actually finished does: push the branch, file a done note.
 
     Both are evidence the supervisor checks before calling a turn ``worker_done``,
     so the compliant path has to do them; the ``NOPUSH`` / ``NODONE`` markers take
     each away to model a turn that ended mid-gate.
+
+    Raises :class:`RemotePushRefused` — before pushing anything — when the branch
+    would land on a remote that is not a local path.
     """
     instructions = spec.get("instructions", "")
     branch, worktree = spec.get("branch"), spec["worktree_path"]
     if branch and "NOPUSH" not in instructions:
+        _check_push_target(worktree)
         _git(["push", "--quiet", "origin", f"HEAD:{branch}"], cwd=worktree)
     if "NODONE" not in instructions:
         from middle_manager import progress
@@ -100,7 +139,16 @@ def main(argv: list[str] | None = None) -> int:
     session_id = spec.get("resume_session_id") or uuid.uuid4().hex
     _emit({"type": "session", "session_id": session_id})
     _emit({"type": "assistant", "session_id": session_id, "text": f"starting {spec['title']}"})
+    try:
+        return _work(spec, session_id)
+    except RemotePushRefused as exc:
+        # No result event and a nonzero exit: the adapter reads that as a failure
+        # and carries this message, naming the remote, into the worker result.
+        _emit({"type": "error", "session_id": session_id, "text": str(exc)})
+        return 4
 
+
+def _work(spec: dict, session_id: str) -> int:
     instructions = spec.get("instructions", "")
     worktree = spec["worktree_path"]
 

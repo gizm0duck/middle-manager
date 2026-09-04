@@ -267,8 +267,29 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     return 2
 
 
+def _registered_repo_origin(repo: str) -> str | None:
+    """The base clone's ``origin`` URL for a registered repo, or None if unknowable.
+
+    This is the remote a worker's worktree inherits, so it is the one a warning
+    about where a push would land has to name. A repo that is not registered (or
+    a state tree that cannot be opened) simply yields no answer: the dispatch
+    itself reports that, and a warning must never be the thing that fails.
+    """
+    try:
+        from middle_manager import repos
+        from middle_manager.state import init_db, store
+
+        row = store.get_repo(init_db(), repo)
+        if row is None:
+            return None
+        return repos.remote_url(row["local_path"])
+    except Exception:
+        return None
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     from middle_manager import preflight
+    from middle_manager.config import default_worker_provider
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
     # Preflight first: refuse before any task state exists, and say why plainly.
@@ -301,13 +322,28 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             return 1
         print(f'objective taken from the brief\'s first heading: "{title}"')
 
+    # An omitted --provider means "whatever this instance runs workers as", never
+    # the stub provider: defaulting to `fake` sent a real task to a fake worker on
+    # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
+    provider = args.provider or default_worker_provider()
+    if provider == "fake":
+        from middle_manager import repos
+
+        origin = _registered_repo_origin(args.repo)
+        if origin and not repos.is_local_remote(origin):
+            print(
+                f"warning: --provider fake on {args.repo}, whose origin is {origin} — the fake "
+                "worker writes a stub and refuses to push to a remote that is not a local path; "
+                "pass --provider claude or --provider codex for real work"
+            )
+
     client = SupervisorClient()
     try:
         resp = client.dispatch_task(
             repo=args.repo,
             title=title,
             instructions=instructions,
-            provider=args.provider,
+            provider=provider,
             model=args.model,
             reasoning=args.reasoning,
             run_id=args.run_id,
@@ -1461,9 +1497,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.add_argument(
         "--provider",
-        default="fake",
+        default=None,
         choices=["fake", "claude", "codex"],
-        help="worker provider",
+        help="worker provider (default: the configured one); `fake` only when asked for by name",
     )
     dispatch.add_argument("--model", default=None, help="worker model (clamped to ceiling)")
     dispatch.add_argument("--reasoning", default=None, help="worker reasoning (clamped to ceiling)")
