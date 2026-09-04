@@ -10,11 +10,13 @@ it was done differently every time and skipped whenever the day was busy.
 This module composes that body instead:
 
 - **Why** — the first section of the archived brief, after its opening heading.
-- **What** — the worker's closing report, plus anything it filed under "Outside
-  scope, required to build" or "Flagged, not done" in an earlier report.
+- **What** — the worker's closing report — or, when the done note has not landed
+  yet, its newest report with the phase named — plus anything it filed under
+  "Outside scope, required to build" or "Flagged, not done" in an earlier report.
 - **Verification** — the worker's last test report and the reviewer's approval note.
-- **Stack** — the branch this work was dispatched from, when it sits on another
-  layer, or a plain statement that it targets the default branch.
+- **Stack** — the branch this work was dispatched from, when that branch is a layer
+  below rather than the repository's own default branch, or a plain statement that
+  it targets the default branch.
 
 Everything is quoted from what people actually wrote; nothing is invented. Sections
 with no source say so in a sentence rather than going missing, so a body is always
@@ -75,7 +77,7 @@ def _cap(text: str, limit: int) -> str:
     return text[:limit].rstrip() + " … (trimmed)"
 
 
-def first_section(text: str) -> str:
+def first_section(text: str, *, own_title: str = "") -> str:
     """The brief's first section after its opening heading.
 
     A brief opens with the outcome and then explains why the work is worth doing;
@@ -83,6 +85,11 @@ def first_section(text: str) -> str:
     Prose directly under the opening heading counts as that section; so does the
     first sub-section, whose own heading is kept as a bold lead line so its wording
     is not lost.
+
+    ``own_title`` is the heading the caller is about to put this section under. A
+    brief whose first sub-section is "## Why" would otherwise render under the
+    composed "## Why" as a bold "**Why**" line saying the same word twice, so a lead
+    that matches is dropped; any other label ("Problem", "Gap") is kept.
     """
     lines = text.splitlines()
     index = 0
@@ -97,7 +104,8 @@ def first_section(text: str) -> str:
     body: list[str] = []
     depth, label = _heading_of(lines[index])
     if label is not None:
-        body.append(f"**{label}**")
+        if not own_title or _normalize(label) != _normalize(own_title):
+            body.append(f"**{label}**")
         index += 1
     for line in lines[index:]:
         line_depth, line_label = _heading_of(line)
@@ -158,7 +166,7 @@ def _latest_note(notes: list[dict], phase: str) -> str:
 def _why(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
     brief = archived_brief(conn, task)
     if brief.strip():
-        section = first_section(brief) or brief
+        section = first_section(brief, own_title="Why") or brief
         return _cap(section, WHY_CAP)
     return (
         "No brief was archived for this work, so there is nothing to quote here. "
@@ -166,22 +174,39 @@ def _why(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
     )
 
 
+def _latest_report(notes: list[dict]) -> tuple[str, str]:
+    """(note, phase) for the newest report that says anything, else ("", "")."""
+    for entry in notes:  # newest first
+        note = (entry.get("note") or "").strip()
+        if note:
+            return note, (entry.get("phase") or "").strip()
+    return "", ""
+
+
 def _what(notes: list[dict]) -> str:
-    done = _latest_note(notes, "done")
-    parts = [done] if done else []
+    lead = _latest_note(notes, "done")
+    if lead:
+        parts = [lead]
+    else:
+        # A done note filed seconds after delivery is not in hand yet, but the
+        # worker's last word is — quote it, and say which phase it came from so no
+        # reader mistakes a mid-flight report for a closing one.
+        lead, phase = _latest_report(notes)
+        if not lead:
+            return (
+                "The worker filed no closing report, so there is nothing to quote here; "
+                "the change itself is the diff on this branch."
+            )
+        phase_label = f"`{phase}`" if phase else "its last recorded"
+        parts = [f"The worker's latest report, filed at the {phase_label} phase:\n\n{lead}"]
     for heading in CARRIED_HEADINGS:
-        if _normalize(heading) in _normalize(done):
-            continue  # the closing report already carries it, verbatim
+        if _normalize(heading) in _normalize(lead):
+            continue  # the report already quoted above carries it, verbatim
         for entry in notes:
             carried = named_section(entry.get("note") or "", heading)
             if carried:
                 parts.append(f"**{heading}**\n\n{carried}")
                 break
-    if not parts:
-        return (
-            "The worker filed no closing report, so there is nothing to quote here; "
-            "the change itself is the diff on this branch."
-        )
     return _cap("\n\n".join(parts), WHAT_CAP)
 
 
@@ -206,10 +231,23 @@ def _verification(notes: list[dict], approval: str, head: str) -> str:
     return _cap("\n\n".join(parts), VERIFICATION_CAP)
 
 
-def _stack(task: sqlite3.Row) -> str:
+def _default_branch(conn: sqlite3.Connection, repo_id: int | None) -> str:
+    if repo_id is None:
+        return "main"
+    row = conn.execute("SELECT default_branch FROM repos WHERE id = ?", (repo_id,)).fetchone()
+    if row is None:
+        return "main"
+    return (row["default_branch"] or "main").strip() or "main"
+
+
+def _stack(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
     stacked_on = ""
     if "stacked_on" in task.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
         stacked_on = (task["stacked_on"] or "").strip()
+    # A task dispatched with `--base main` records the default branch as its
+    # starting point. That is the bottom of a stack, not a layer above one.
+    if stacked_on == _default_branch(conn, task["repo_id"]):
+        stacked_on = ""
     if stacked_on:
         return (
             f"This work was started from the branch `{stacked_on}` and opens against it, "
@@ -278,7 +316,7 @@ def compose(task_id: int, *, head_sha: str = "", conn: sqlite3.Connection | None
                 "## Verification",
                 _verification(notes, approval_note(task_id), head),
                 "## Stack",
-                _stack(task),
+                _stack(conn, task),
                 "---",
                 _footer(task, head),
             ]
