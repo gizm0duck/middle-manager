@@ -505,8 +505,9 @@ readable at a glance by someone who just wants to know if it's done.
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
 | Review | `mm review show|approve|request-changes|status <task_id>` |
-| Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
-| Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
+| Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing, and takes the task's compose stack down) |
+| Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot and takes the task's compose stack down), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
+| Per-task compose stacks | `mm task env set <id> compose_project=<name>` records the stack a task brought up (a worker naming `COMPOSE_PROJECT_NAME=...` in a `mm progress` note is picked up automatically); `mm task env show <id> [--json]` lists what's recorded. `mm deliver --merged`, `mm task close`, and `mm worktree prune` then run `docker compose -p <name> down -v --remove-orphans` for it and print what went. No docker, or a stack already gone, is never an error. `mm health` lists stacks named `task_<n>`/`*_task_<n>` whose task is already over as prunable — that's the Docker network ceiling filling up |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
 | Lavish (local fallback) | `mm artifact <run_id> --title ... --sections '[...]'`, `mm feedback <id>` |
 | Cross-repo order | `mm plan <run_id>` |

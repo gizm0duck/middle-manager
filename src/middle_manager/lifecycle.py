@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from middle_manager import compose
 from middle_manager.state import init_db, store
 from middle_manager.worktree import Lease, LeaseError, LeaseManager
 
@@ -141,6 +142,9 @@ def close_task(task_id: int, reason: str) -> dict:
         lease_note = release_task_lease(task_id, reason=f"task closed: {reason.strip()}")
     except LifecycleError as exc:
         lease_note = {"released": False, "note": str(exc)}
+    # A closed task's compose stack is nobody's working state; it was holding a
+    # Docker network and a volume until someone noticed.
+    torn_down = compose.teardown_for_task(task_id, trigger="task close", conn=conn)
     store.append_event(
         conn,
         kind="task_closed",
@@ -149,6 +153,7 @@ def close_task(task_id: int, reason: str) -> dict:
             "reason": reason.strip(),
             "previous_status": previous,
             "lease_released": bool(lease_note and lease_note.get("released")),
+            "compose_project": (torn_down or {}).get("project"),
         },
         run_id=task["run_id"],
         task_id=task_id,
@@ -159,6 +164,7 @@ def close_task(task_id: int, reason: str) -> dict:
         "previous_status": previous,
         "reason": reason.strip(),
         "lease": lease_note,
+        "compose": torn_down,
     }
 
 

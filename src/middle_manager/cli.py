@@ -309,6 +309,12 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
         print(f"  {verb} {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
     for r in res["skipped"]:
         print(f"  kept {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
+    from middle_manager import compose
+
+    for stack in res.get("compose") or []:
+        line = compose.describe(stack)
+        if line:
+            print(f"  {line}")
     print(
         f"{verb} {len(res['removed'])} worktree(s), "
         f"{human_bytes(res['reclaimed_bytes'])} reclaimed; "
@@ -373,9 +379,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_task(args: argparse.Namespace) -> int:
     """Snapshot a task, or run one of the lifecycle bookkeeping commands."""
+    from middle_manager import compose
     from middle_manager.lifecycle import LifecycleError, close_task, set_task_status
 
     try:
+        if args.task_cmd == "env":
+            return _cmd_task_env(args)
         if args.task_cmd == "close":
             res = close_task(args.task_id, args.reason)
             lease = res.get("lease") or {}
@@ -383,6 +392,9 @@ def _cmd_task(args: argparse.Namespace) -> int:
                 f"task {args.task_id}: {res['previous_status']} -> closed "
                 f"({res['reason']}); {lease.get('note', 'no lease on record')}"
             )
+            line = compose.describe(res.get("compose"))
+            if line:
+                print(line)
             return 0
         if args.task_cmd == "set-status":
             res = set_task_status(args.task_id, args.status, args.note)
@@ -393,6 +405,45 @@ def _cmd_task(args: argparse.Namespace) -> int:
         print(f"task {args.task_cmd}: {exc}", file=sys.stderr)
         return 1
     return _cmd_task_show(args)
+
+
+def _cmd_task_env(args: argparse.Namespace) -> int:
+    """Small facts attached to a task — today, the compose stack it owns."""
+    from middle_manager import compose
+    from middle_manager.state import init_db, store
+
+    conn = init_db()
+    if store.get_task(conn, args.task_id) is None:
+        print(f"task {args.task_id} not found", file=sys.stderr)
+        return 1
+    if args.task_env_cmd == "set":
+        for assignment in args.assignments:
+            key, sep, value = assignment.partition("=")
+            if not sep or not key.strip():
+                print(f"expected key=value, got {assignment!r}", file=sys.stderr)
+                return 1
+            key, value = key.strip(), value.strip()
+            if key == compose.COMPOSE_PROJECT_KEY:
+                try:
+                    compose.record_project(args.task_id, value, conn=conn)
+                except compose.ComposeError as exc:
+                    print(f"task env set: {exc}", file=sys.stderr)
+                    return 1
+            else:
+                store.set_task_env(conn, args.task_id, key, value)
+            print(f"task {args.task_id}: {key} = {value}")
+        return 0
+
+    rows = store.task_env(conn, args.task_id)
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return 0
+    if not rows:
+        print(f"task {args.task_id}: nothing recorded")
+        return 0
+    for row in rows:
+        print(f"{row['key']} = {row['value']}  ({row['source']}, {row['updated_at']})")
+    return 0
 
 
 def _cmd_task_show(args: argparse.Namespace) -> int:
@@ -542,12 +593,16 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_deliver(args: argparse.Namespace) -> int:
+    from middle_manager import compose
     from middle_manager.delivery import DeliveryError, deliver, record_merged
 
     try:
         if args.merged:
             res = record_merged(args.task_id, args.merged)
             print(f"task {res.task_id}: {res.note}")
+            line = compose.describe(res.compose)
+            if line:
+                print(line)
             return 0
         res = deliver(
             args.task_id,
@@ -673,12 +728,21 @@ def _cmd_health(args: argparse.Namespace) -> int:
         if args.quiet_minutes is not None
         else health.quiet_threshold()
     )
+    from middle_manager import compose
+
     entries = health.check(quiet_after=quiet_after)
     tools = health.claude_tool_profile()
+    stacks = compose.prunable_stacks()
     if args.json:
-        print(json.dumps({"workers": entries, "claude_tools": tools}, indent=2))
+        print(
+            json.dumps(
+                {"workers": entries, "claude_tools": tools, "prunable_compose_stacks": stacks},
+                indent=2,
+            )
+        )
         return 0
     print(health.describe_claude_tools(tools))
+    print(compose.describe_prunable(stacks))
     if not entries:
         print("no workers in flight")
         return 0 if tools["ok"] else 1
@@ -1296,6 +1360,25 @@ def build_parser() -> argparse.ArgumentParser:
     tkset.add_argument("task_id", type=int)
     tkset.add_argument("status", choices=list(TASK_STATUSES))
     tkset.add_argument("--note", default=None, help="why the status was corrected")
+    tkenv = tksub.add_parser(
+        "env",
+        help=(
+            "small facts attached to a task — set `compose_project=<name>` and the "
+            "task's compose stack is torn down when the task ends"
+        ),
+    )
+    tkenvsub = tkenv.add_subparsers(dest="task_env_cmd", required=True)
+    tkenvset = tkenvsub.add_parser("set", help="record key=value on a task")
+    tkenvset.add_argument("task_id", type=int)
+    tkenvset.add_argument(
+        "assignments",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help="e.g. compose_project=task_12",
+    )
+    tkenvshow = tkenvsub.add_parser("show", help="everything recorded on a task")
+    tkenvshow.add_argument("task_id", type=int)
+    tkenvshow.add_argument("--json", action="store_true", help="machine-readable output")
     task.set_defaults(func=_cmd_task)
 
     lease = sub.add_parser("lease", help="worktree lease bookkeeping")

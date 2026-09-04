@@ -12,6 +12,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from middle_manager import compose
 from middle_manager.companions import companion_bin
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
 from middle_manager.state import init_db, store
@@ -32,6 +33,8 @@ class DeliveryResult:
     pushed: bool
     pr_url: str | None
     note: str
+    #: What tearing down the task's compose stack did, when it owned one.
+    compose: dict | None = None
 
 
 def _run(argv: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -156,6 +159,9 @@ def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> 
         run_id=task["run_id"],
         task_id=task_id,
     )
+    # The task is over, so the database it brought up for itself is over too. This
+    # is the last moment anything knows the stack belongs to this task.
+    torn_down = compose.teardown_for_task(task_id, trigger="deliver --merged", conn=conn)
     return DeliveryResult(
         task_id=task_id,
         branch=branch,
@@ -163,6 +169,7 @@ def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> 
         pushed=False,
         pr_url=None,
         note=f"recorded as delivered at {merged_sha[:8]} (already merged; nothing pushed)",
+        compose=torn_down,
     )
 
 
