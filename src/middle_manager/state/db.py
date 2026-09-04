@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     head_sha TEXT NOT NULL,
     verdict TEXT NOT NULL,
     findings TEXT,
+    note TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -244,6 +245,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # exits: its late exit code belongs to a session nobody is waiting on.
         if col not in runner_cols:
             conn.execute(f"ALTER TABLE runners ADD COLUMN {col} TEXT")
+    review_cols = _column_names(conn, "reviews")
+    if "note" not in review_cols:
+        # The reviewer's own words, bound to the SHA they read; delivery quotes them.
+        conn.execute("ALTER TABLE reviews ADD COLUMN note TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:
