@@ -145,21 +145,79 @@ def test_task_env_wants_key_equals_value(repo, capsys):
     assert "key=value" in capsys.readouterr().err
 
 
-def test_a_progress_note_naming_the_stack_records_it(repo):
+def test_a_progress_note_naming_this_tasks_own_stack_records_it(repo):
     task_id = _task(repo)
     progress.record(
         task_id,
         phase="implement",
-        note="brought the database up with COMPOSE_PROJECT_NAME=task_42 on port 55432",
+        note=f"brought the database up with COMPOSE_PROJECT_NAME=task_{task_id} on port 55432",
     )
-    assert compose.project_for(task_id) == "task_42"
+    assert compose.project_for(task_id) == f"task_{task_id}"
     assert store.task_env(init_db(), task_id)[0]["source"] == "progress-note"
+
+
+def test_a_prefixed_per_task_name_is_this_tasks_own_stack_too(repo):
+    task_id = _task(repo)
+    progress.record(task_id, phase="implement", note=f"COMPOSE_PROJECT_NAME=papaya_task_{task_id}")
+    assert compose.project_for(task_id) == f"papaya_task_{task_id}"
 
 
 def test_a_progress_note_without_a_stack_records_nothing(repo):
     task_id = _task(repo)
     progress.record(task_id, phase="implement", note="ran the suite; all green")
     assert compose.project_for(task_id) is None
+
+
+# --------------------------------------------------------------------------- #
+# A note is prose, and what it arms is `down -v`
+#
+# This machine runs shared stacks (chat-with-agents) and the user's own
+# (radar_phase6_7) beside the per-task ones. A worker that merely *mentions* one
+# must never arm a teardown that would take its volumes with it.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("shared", ["chat-with-agents", "radar_phase6_7", "papaya-backend"])
+def test_a_note_naming_a_shared_stack_is_ignored(repo, shared):
+    task_id = _task(repo)
+
+    progress.record(
+        task_id, phase="implement", note=f"pointed at the shared COMPOSE_PROJECT_NAME={shared}"
+    )
+
+    assert compose.project_for(task_id) is None
+    ignored = _events(task_id, "compose_project_ignored")
+    assert [e["project"] for e in ignored] == [shared]
+    assert "not task" in ignored[0]["summary"]
+    assert f"mm task env set {task_id}" in ignored[0]["summary"]
+
+
+def test_a_note_naming_another_tasks_stack_is_ignored(repo):
+    other = _task(repo, title="somebody else's task")
+    task_id = _task(repo)
+
+    progress.record(task_id, phase="implement", note=f"COMPOSE_PROJECT_NAME=task_{other}")
+
+    assert compose.project_for(task_id) is None
+    assert compose.project_for(other) is None
+    assert [e["project"] for e in _events(task_id, "compose_project_ignored")] == [f"task_{other}"]
+
+
+def test_an_ignored_note_arms_no_teardown_at_all(repo, fake_docker):
+    task_id = _task(repo, status="worker_done")
+    progress.record(task_id, phase="implement", note="COMPOSE_PROJECT_NAME=chat-with-agents")
+
+    res = delivery.record_merged(task_id, "f" * 40)
+
+    assert res.compose is None
+    assert fake_docker.calls == [], "a mentioned stack is somebody's running work"
+
+
+def test_the_manager_can_still_set_a_name_a_note_would_not_have_been_trusted_for(repo):
+    """`mm task env set` is a decision, not a mention, so it stays free-form."""
+    task_id = _task(repo)
+    assert main(["task", "env", "set", str(task_id), "compose_project=chat-with-agents"]) == 0
+    assert compose.project_for(task_id) == "chat-with-agents"
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,14 @@ a worker names it in a progress note) and read back at the three moments a task'
 worktree is given up: ``mm deliver --merged``, ``mm task close``, and
 ``mm worktree prune``.
 
+What gets recorded *automatically* is deliberately narrow. Teardown destroys
+volumes, and this machine runs shared stacks (``chat-with-agents``) and the
+user's own (``radar_phase6_7``) beside the per-task ones. A worker's progress note
+is prose, so a name learned from one is accepted only when it is that task's own
+per-task name; any other stack a note happens to mention is dropped with an event
+saying so. A name the manager types with ``mm task env set`` is taken as given —
+that is a decision, not a mention.
+
 Teardown is best-effort by construction. Docker may not be installed, may not be
 running, and the stack may already be gone — none of which is a reason to fail a
 delivery or leave a lease held. Every failure here is reported and swallowed.
@@ -104,11 +112,44 @@ def project_for(task_id: int, *, conn: sqlite3.Connection | None = None) -> str 
 
 
 def note_project(task_id: int, note: str, *, conn: sqlite3.Connection | None = None) -> str | None:
-    """Record a compose project a progress note mentions. Never raises."""
+    """Record a compose project a progress note mentions, if it is this task's own.
+
+    A progress note is prose a worker wrote, and what it arms here is
+    ``docker compose down -v`` — which destroys volumes. This machine runs shared
+    stacks (``chat-with-agents``) and the user's own (``radar_phase6_7``) beside
+    the per-task ones, so a worker that merely *mentions* one must never arm its
+    teardown. A name learned this way is therefore accepted only when it is the
+    per-task name for **this** task: ``task_<id>``, or ``<prefix>_task_<id>``.
+    Anything else is recorded as an ignored-name event and dropped.
+
+    ``mm task env set`` stays free-form on purpose: that one the manager typed
+    deliberately, and it is the escape hatch this refusal points at.
+    """
     project = detect_project(note)
     if project is None:
         return None
     try:
+        conn = conn or init_db()
+        if task_id_of(project) != task_id:
+            task = store.get_task(conn, task_id)
+            store.append_event(
+                conn,
+                kind="compose_project_ignored",
+                payload={
+                    "task_id": task_id,
+                    "project": project,
+                    "summary": (
+                        f"a progress note named compose project {project!r}, which is not "
+                        f"task {task_id}'s own stack (task_{task_id} or <prefix>_task_{task_id}) "
+                        "— not recorded, so nothing here will tear it down. If that really is "
+                        f"the stack to remove, say so deliberately with `mm task env set "
+                        f"{task_id} compose_project={project}`."
+                    ),
+                },
+                run_id=task["run_id"] if task else None,
+                task_id=task_id,
+            )
+            return None
         return record_project(task_id, project, source="progress-note", conn=conn)
     except (ComposeError, sqlite3.Error):
         return None
