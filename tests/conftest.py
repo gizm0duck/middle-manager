@@ -46,6 +46,27 @@ def _fixture_repos_are_their_own_forge(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_dispatch_defaults_to_fake(request, monkeypatch):
+    """A hermetic dispatch that names no provider means the fake one.
+
+    In production an unnamed provider resolves to the configured worker ceiling
+    (``config.default_worker_provider``) and is never ``fake`` — defaulting to
+    ``fake`` is what pushed a stub branch to a live remote on 2026-09-04 (issue
+    #49). The hermetic suite has no config and wants the deterministic local
+    worker, so the default is substituted here, in the tests, rather than left as
+    a fallback in the shipped code where a real dispatch could land on it.
+
+    Tests of the resolution rule itself carry ``@pytest.mark.real_provider_default``
+    and see the real function.
+    """
+    if "real_provider_default" in request.keywords:
+        return
+    from middle_manager import config
+
+    monkeypatch.setattr(config, "default_worker_provider", lambda: "fake")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_treehouse_home(tmp_path, monkeypatch):
     """Keep the pool scan off the developer's real treehouse pool.
 

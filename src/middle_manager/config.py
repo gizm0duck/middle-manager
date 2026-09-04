@@ -223,6 +223,25 @@ def load_config(path: Path | None = None) -> MMConfig:
     return cfg
 
 
+def default_worker_provider() -> str:
+    """The provider a dispatch uses when the caller named none.
+
+    It is the configured worker ceiling's provider — the same ceiling ``--model``
+    and ``--reasoning`` are clamped to. It is deliberately never ``fake``: the
+    dispatch ``--provider`` flag used to default to ``fake``, so a manager who
+    omitted it on 2026-09-04 got a stub-writing worker that pushed a branch to a
+    real GitHub remote within seconds (issue #49).
+
+    With no readable config there is no ceiling to read, so this falls back to the
+    schema default rather than guessing ``fake``; the dispatch then fails plainly
+    at the ceiling check with "run `mm setup` first".
+    """
+    try:
+        return load_config().worker.provider
+    except ConfigError:
+        return WorkerCeiling().provider
+
+
 def save_config(cfg: MMConfig, path: Path | None = None) -> Path:
     cfg.validate()
     p = path or config_path()

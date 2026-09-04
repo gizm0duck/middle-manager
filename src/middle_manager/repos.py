@@ -83,6 +83,27 @@ def is_forge_url(url: str | None) -> bool:
     return forge_slug(url) is not None
 
 
+# A remote that is not a path on this filesystem: anything carrying a URL scheme
+# (`https://`, `ssh://`, `file://`, ...) or written scp-style (`git@host:owner/x`).
+_REMOTE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+_SCP_LIKE = re.compile(r"^[^/@]+@[^/:]+:")
+
+
+def is_local_remote(url: str | None) -> bool:
+    """True when a git remote URL is a plain path on this machine.
+
+    The fake provider is only safe against a local remote: it writes a stub and
+    pushes it, which on a real forge is a junk branch strangers can see (issue
+    #49). Anything with a scheme or an scp-style ``user@host:`` prefix is off the
+    machine; a remote that cannot be read at all counts as non-local, because
+    "unknown" is not a reason to push.
+    """
+    if not url or not url.strip():
+        return False
+    candidate = url.strip()
+    return not (_REMOTE_SCHEME.match(candidate) or _SCP_LIKE.match(candidate))
+
+
 @dataclass
 class AddedRepo:
     name: str

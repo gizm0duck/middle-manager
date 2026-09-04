@@ -34,6 +34,7 @@ testpaths = ["tests"]
 markers = [
     "live: spawns real Claude/Codex CLIs; opt-in and excluded from the default run",
     "strict_forge: exercises the real forge-URL rule in `mm repo add` instead of the fixture default that makes a temp source repo its own forge",
+    "real_provider_default: exercises the real unnamed-provider rule (the configured worker provider) instead of the fixture default that makes a hermetic dispatch fake",
 ]
 # Default run stays hermetic (no live network, no provider spawning).
 addopts = "-m 'not live'"

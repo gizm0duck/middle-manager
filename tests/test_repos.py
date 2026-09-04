@@ -195,6 +195,24 @@ def test_forge_urls_are_recognised_and_reduced_to_owner_and_name() -> None:
         assert not repos.is_forge_url(not_a_forge)
 
 
+def test_only_a_plain_path_counts_as_a_local_remote() -> None:
+    """What decides whether the fake provider may push (issue #49)."""
+    for local in ("/Users/me/workspace/papaya-infra", "../peer.git", "./x", "relative/path"):
+        assert repos.is_local_remote(local), local
+    for elsewhere in (
+        GITHUB_URL,
+        "git@github.com:Papaya-HQ/papaya-infra.git",
+        "ssh://git@github.com/Papaya-HQ/papaya-infra",
+        "http://internal.example/x.git",
+        "file:///Users/me/workspace/papaya-infra",
+        # Unreadable is not a licence to push.
+        "",
+        "   ",
+        None,
+    ):
+        assert not repos.is_local_remote(elsewhere), elsewhere
+
+
 @pytest.mark.strict_forge
 def test_add_from_a_path_takes_the_forge_from_that_path_s_origin(tmp_path, mm_home) -> None:
     source = _make_source_repo(tmp_path / "source")

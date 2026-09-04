@@ -105,16 +105,22 @@ class FakeProvider(ProviderAdapter):
         session_id = None
         usage = self.parse_usage(events)
         result_ev = None
+        error_text = None
         for ev in events:
             if ev.session_id:
                 session_id = ev.session_id
             if ev.kind == "result":
                 result_ev = ev
+            if ev.kind == "error" and ev.text:
+                error_text = ev.text
         # Fail-closed: a missing result event is a failure, never an assumed success.
+        # The worker's own error text carries the reason — the remote it refused to
+        # push to, say — so the failure names it instead of only reporting an exit code.
         if result_ev is None:
+            reason = error_text or "no result event"
             return WorkerResult(
                 status="failed",
-                summary=f"no result event (exit={exit_code})",
+                summary=f"{reason} (exit={exit_code})",
                 session_id=session_id,
                 usage=usage,
             )

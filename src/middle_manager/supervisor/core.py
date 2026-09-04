@@ -102,13 +102,20 @@ class Supervisor:
         repo: str,
         title: str,
         instructions: str = "",
-        provider: str = "fake",
+        provider: str | None = None,
         run_id: int | None = None,
         model: str | None = None,
         reasoning: str | None = None,
         base: str | None = None,
         stack_on: int | None = None,
     ) -> dict:
+        # A caller that names no provider gets the configured worker provider. It
+        # used to get `fake`, which on 2026-09-04 sent a real task to a stub worker
+        # that pushed a branch to a live GitHub remote (issue #49). Imported here,
+        # not at module scope, so the hermetic suite can substitute its own default.
+        from middle_manager.config import default_worker_provider
+
+        provider = provider or default_worker_provider()
         conn = init_db()
         repo_row = store.get_repo(conn, repo)
         if repo_row is None:
@@ -371,13 +378,15 @@ class Supervisor:
         # it is being worked again, not `failed` from the session we just replaced.
         superseded = store.supersede_runners(conn, task_id, reason="resume")
         store.set_task_status(conn, task_id, "in_progress")
+        from middle_manager.config import default_worker_provider
+
         spec = TaskSpec(
             task_id=task_id,
             title=task["title"],
             instructions=message or "",
             worktree_path=task["worktree_path"] or "",
             base_sha=task["base_sha"] or "",
-            provider=task["provider"] or "fake",
+            provider=task["provider"] or default_worker_provider(),
             model=task["model"],
             reasoning=task["reasoning"],
             run_id=task["run_id"],
