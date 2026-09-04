@@ -508,11 +508,18 @@ def _cmd_answer(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from middle_manager.review import ReviewError, build_bundle, is_approved_at_head, record_review
+    from middle_manager.review import (
+        ReviewError,
+        approval_note,
+        build_bundle,
+        is_approved_at_head,
+        record_review,
+    )
 
     try:
         if args.review_cmd == "show":
-            from middle_manager import progress
+            from middle_manager import captures, progress
+            from middle_manager.state import init_db, store
 
             bundle = build_bundle(args.task_id)
             # The worker's own report comes first, in full: judging a diff without
@@ -527,6 +534,20 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 )
                 print(latest["note"] or "(no note)")
                 print()
+            # The receipts the worker named, listed so nobody approves a visual
+            # change on the strength of a sentence about screenshots.
+            task = store.get_task(init_db(), args.task_id)
+            listing = captures.render(
+                captures.capture_paths(r["note"] for r in reports),
+                root=task["worktree_path"] if task is not None else None,
+            )
+            if listing:
+                print(listing)
+                print()
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on the standing approval: {note}")
+                print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -534,8 +555,10 @@ def _cmd_review(args: argparse.Namespace) -> int:
             print(bundle.diffstat or "(no changes)")
             return 0
         if args.review_cmd == "approve":
-            res = record_review(args.task_id, "approved", args.findings or "")
+            res = record_review(args.task_id, "approved", args.findings or "", note=args.note or "")
             print(f"approved task {args.task_id} at {res['head_sha'][:8]}")
+            if res["note"]:
+                print(f"note recorded with the approval: {res['note']}")
             return 0
         if args.review_cmd == "request-changes":
             res = record_review(args.task_id, "changes_requested", args.findings or "")
@@ -544,6 +567,9 @@ def _cmd_review(args: argparse.Namespace) -> int:
         if args.review_cmd == "status":
             approved, reason = is_approved_at_head(args.task_id)
             print(f"task {args.task_id}: {'APPROVED' if approved else 'NOT approved'} — {reason}")
+            note = approval_note(args.task_id)
+            if note:
+                print(f"note on that approval: {note}")
             return 0 if approved else 1
     except ReviewError as exc:
         print(f"review error: {exc}", file=sys.stderr)
@@ -1348,6 +1374,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("task_id", type=int)
         if name in ("approve", "request-changes"):
             p.add_argument("--findings", default=None, help="review notes")
+        if name == "approve":
+            p.add_argument(
+                "--note",
+                default=None,
+                help=(
+                    "what you checked and accepted, in your own words; stored against the "
+                    "commit you approved, printed by `mm review status|show`, and quoted "
+                    "in the pull request `mm deliver` opens"
+                ),
+            )
     review.set_defaults(func=_cmd_review)
 
     deliver = sub.add_parser("deliver", help="push and open a PR (requires approval at head)")

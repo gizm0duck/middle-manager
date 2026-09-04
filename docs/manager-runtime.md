@@ -334,8 +334,17 @@ When the user gives you an objective:
 ## Reviewing and delivering
 
 - Review the exact diff before delivery: `mm review show <task_id>`, then
-  `mm review approve <task_id>` or `mm review request-changes <task_id>
-  --findings ...`.
+  `mm review approve <task_id> --note "..."` or `mm review request-changes
+  <task_id> --findings ...`.
+- `mm review show` lists the receipts the worker named in its reports — every
+  capture directory with its files and sizes, every image on a line of its own so
+  you can open it, and any path that has gone marked "(not found)" rather than
+  failing the command. **Open the images before approving anything visual.**
+- The `--note` on an approval is your own account of what you checked and
+  accepted. It is stored against the exact commit you approved, printed back by
+  `mm review status` and `mm review show`, and quoted in the pull request body
+  `mm deliver` composes — so the reviewer's reasoning ships with the work instead
+  of dying in the terminal.
 - Deliver with `mm deliver <task_id>`. It **refuses unless an approved review is
   bound to the current head SHA** — never try to work around this. If the head
   moved after approval, re-review.
@@ -506,7 +515,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
 | Steer / resume | `mm steer <task_id> --message ...` (live Claude worker: interrupts and auto-resumes with the steer, task stays `in_progress`), `mm resume <task_id> [--message]` (flips the task back to `in_progress` immediately) — see [`task-lifecycle.md`](task-lifecycle.md) |
-| Review | `mm review show|approve|request-changes|status <task_id>` |
+| Review | `mm review show <task_id>` (worker report, the capture/receipt paths it named with sizes and openable image lines, the standing approval note, then the diffstat), `mm review approve <task_id> [--note "what you checked"] [--findings ...]`, `mm review request-changes <task_id> --findings ...`, `mm review status <task_id>` (also prints the approval note) |
 | Deliver | `mm deliver <task_id> [--no-pr] [--base ...]`; `mm deliver <task_id> --merged <sha>` when you merged the PR on GitHub yourself (records delivery, pushes nothing) |
 | Close out / repair | `mm task close <id> --reason "..."` (terminal `closed`, frees the slot), `mm task set-status <id> <status> --note "..."`, `mm lease release <task_id> [--reason ...]` |
 | Lavish (rich) | `lavish-review new <file> --title …` to scaffold (shipped Atlassian-style default); `lavish-axi <file>` to open; `lavish-axi poll <file>` **backgrounded or short-timeout only** — never a foreground long-poll |
