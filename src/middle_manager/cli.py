@@ -978,6 +978,63 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_watermark(args: argparse.Namespace) -> int:
+    """The newest processed timestamp per external record, so a sweep reads only what is new."""
+    from middle_manager import watermarks
+    from middle_manager.state import init_db
+
+    conn = init_db()
+    if args.watermark_cmd == "set":
+        try:
+            stored, previous = watermarks.set_watermark(
+                conn, args.key, args.timestamp, note=args.note
+            )
+        except watermarks.WatermarkError as exc:
+            print(f"watermark set: {exc}", file=sys.stderr)
+            return 1
+        if previous is None:
+            print(f"{args.key}: watermark {stored} (was unset)")
+        elif stored < previous:
+            print(
+                f"{args.key}: watermark {stored} (moved back from {previous}; "
+                "the next sweep re-reads)"
+            )
+        else:
+            print(f"{args.key}: watermark {stored} (was {previous})")
+        return 0
+    if args.watermark_cmd in ("get", "show"):
+        row = watermarks.get_watermark(conn, args.key)
+        if row is None:
+            print(
+                f"no watermark for {args.key} — the first sweep reads everything, then "
+                f"`mm watermark set {args.key} <newest comment timestamp>`",
+                file=sys.stderr,
+            )
+            return 1
+        if args.json:
+            print(json.dumps(dict(row), indent=2))
+        else:
+            print(row["watermark"])
+        return 0
+    if args.watermark_cmd == "clear":
+        if watermarks.delete_watermark(conn, args.key):
+            print(f"{args.key}: watermark cleared; the next sweep reads everything")
+            return 0
+        print(f"no watermark for {args.key}", file=sys.stderr)
+        return 1
+    rows = watermarks.list_watermarks(conn)
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return 0
+    if not rows:
+        print("no watermarks recorded")
+        return 0
+    for row in rows:
+        note = f"  {row['note']}" if row["note"] else ""
+        print(f"{row['watermark']}  recorded {row['recorded_at']}  {row['key']}{note}")
+    return 0
+
+
 def _cmd_todo(args: argparse.Namespace) -> int:
     """The manager's intent ledger: what's next and what's waiting on whom."""
     from middle_manager import board
@@ -1894,6 +1951,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     watch_cmd.set_defaults(func=_cmd_watch)
+
+    watermark = sub.add_parser(
+        "watermark",
+        help=(
+            "the newest comment timestamp you have processed per external record (ticket "
+            "URL or id), so a sweep asks only for what is newer"
+        ),
+    )
+    wmsub = watermark.add_subparsers(dest="watermark_cmd", required=True)
+    wmset = wmsub.add_parser("set", help="record the newest processed timestamp for a record")
+    wmset.add_argument("key", help="the record: a ticket URL or id, free-form")
+    wmset.add_argument("timestamp", help="ISO-8601, e.g. 2026-09-06T14:03:00Z; stored as UTC")
+    wmset.add_argument("--note", default=None, help="what the sweep did with it, optional")
+    wmget = wmsub.add_parser(
+        "get", aliases=["show"], help="print the watermark (exit 1 and say so when unset)"
+    )
+    wmget.add_argument("key")
+    wmget.add_argument("--json", action="store_true", help="the whole row")
+    wmclear = wmsub.add_parser("clear", help="forget a record's watermark; the next sweep re-reads")
+    wmclear.add_argument("key")
+    wmlist = wmsub.add_parser("list", help="every watermark, by key")
+    wmlist.add_argument("--json", action="store_true", help="machine-readable output")
+    watermark.set_defaults(func=_cmd_watermark)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")
     health_cmd.add_argument(

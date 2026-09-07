@@ -301,6 +301,19 @@ quietly; do not narrate the steps or report diagnostics.
    never restart it after a dispatch: the process stays alive and your monitor
    stays armed.
 
+   The heartbeat only knows about pull requests. For records it does not own —
+   external tickets, threads, anything with a comment feed you sweep — keep the
+   same per-record state yourself with `mm watermark`: before a sweep, `mm
+   watermark get <ticket url or id>` gives the newest comment timestamp you have
+   already processed, the sweep asks the source only for comments newer than
+   that, and once the new ones are handled, `mm watermark set <key> <newest
+   comment timestamp>` advances it. An empty sweep is then one list call, not a
+   re-read of every comment (six tickets re-read every ten minutes cost about
+   65k tokens a sweep and found something on well under one sweep in five). A
+   sweep is a read-and-filter job, so run it as a subagent on the cheapest model
+   you have, never the general-purpose default; an unset key means the first
+   sweep reads everything, and `mm watermark clear <key>` asks for a re-read.
+
 Preflight is invisible when it succeeds: the user just sees you open with a ready,
 in-character greeting.
 
@@ -571,6 +584,7 @@ readable at a glance by someone who just wants to know if it's done.
 | Worktrees & disk | `mm worktree list [--repo R]` (slot, task, status, branch, dirty/clean, size) — it walks the pool directories on disk as well as the leases, so a slot no active lease owns (a released lease, or one an earlier mm instance created) shows as `orphaned` instead of hiding; `mm worktree prune [--repo R] [--dry-run]` (removes the worktrees of `delivered`/`closed`/`cancelled` tasks **and** the orphaned slots, under one rule: clean, and every commit already on a remote; everything else is kept and listed with the reason) |
 | Delegate | `mm dispatch --repo ... --title ... --provider ... [--model] [--reasoning] [--stack-on <task_id>]` — `--stack-on` builds on that task: its lease branch becomes the starting point and the stack parent is recorded, so `mm stack` and `mm deliver` follow the chain. a `claude` dispatch automatically prepends the environment's command rules to the brief (one plain command per call, no pipes/`&&`/`;`/env-prefix/redirection, `cd` alone, run the authoritative suite in the foreground with a timeout of at least 20 minutes and never backgrounded, push with `git push origin HEAD:<branch>`, never open a PR, record denied commands under "Flagged, not done"). Don't restate them in the brief; codex dispatches don't get them |
 | Heartbeat | `mm watch` (background monitor; one line every `--interval` seconds, default 300) — in-flight workers, tasks waiting on you, and for every finished or delivered task whose branch has an open pull request: number, base, CI verdict (naming the failing checks), and mergeability, plus what flipped since the last tick. A pull request that merges or closes is named once and then drops off; `mm deliver <task> --merged <sha>` retires it for good. `--once` for one line, `--json` for machine output. Without `gh` it says `ci: unknown` rather than failing. It goes quiet on its own after two idle ticks (nothing in flight, nothing owed to you, no pending or failing checks, nothing new) and speaks again the moment that stops being true — leave it running rather than restarting it; `--exit-when-idle` makes it exit instead, for scripts |
+| External sweeps | `mm watermark get <key>` (the newest comment timestamp already processed on a ticket URL or id; exit 1 and a plain message when unset, so the first sweep reads everything), `mm watermark set <key> <iso-timestamp> [--note ...]` after the sweep has handled what was newer (stored as UTC; moving it back is allowed and named, for a re-read), `mm watermark list [--json]`, `mm watermark clear <key>`. A sweep asks the source only for comments newer than the watermark and runs on the cheapest model |
 | Status (non-blocking) | `mm run <run_id>`, `mm task <task_id>` (long form `mm task show <task_id>`), `mm status` — snapshot; returns immediately. A task whose turn ended mid-gate shows as `worker_stopped` with the reason named (no done note, unpushed commits, or a backgrounded command killed with the session) — that is work to resume, not work to review. Unpushed commits under a done note are the exception: the harness pushes the lease branch itself and the task lands `worker_done`, unless the remote refuses, and then the reason quotes the refusal |
 | Await (blocking primitive) | `mm wait <run_id> [--timeout]` — scripts/tests only; **not** in a live turn (use `--timeout 0` to drain) |
 | Answer a worker | `mm answer <task_id> --answer ... [--scope]` |
