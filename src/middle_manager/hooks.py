@@ -48,12 +48,11 @@ def handle_hook(event: str, payload: dict[str, Any]) -> dict:
         run_id=int(run_id) if run_id is not None else None,
         task_id=int(task_id) if task_id is not None else None,
     )
-    result: dict[str, Any] = {
-        "ok": True,
-        "event": normalized,
-        "run_id": run_id,
-        "task_id": task_id,
-    }
+    # Hook stdout is a provider-facing protocol, not an acknowledgement channel.
+    # Keep the durable event metadata in the database, but emit only fields that
+    # Claude Code and Codex both understand. Unknown top-level keys make both
+    # harnesses report the hook result as invalid JSON output.
+    result: dict[str, Any] = {}
 
     # Codex and Claude both accept additional context at session start and a
     # blocking continuation at Stop. The stop-active guard is supplied by the
@@ -61,7 +60,6 @@ def handle_hook(event: str, payload: dict[str, Any]) -> dict:
     if normalized == "session_start":
         context = session_start_context(conn)
         if context:
-            result["additionalContext"] = context
             result["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",
                 "additionalContext": context,
