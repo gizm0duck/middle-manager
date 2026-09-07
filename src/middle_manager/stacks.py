@@ -451,7 +451,43 @@ def render_stack(layers: list[Layer]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def delivery_base(conn, task, base: str | None) -> tuple[str | None, str | None]:
+def merge_order(conn, task) -> str | None:
+    """Where a layer sits in its stack and what must merge before it, from local state.
+
+    Read into `mm review show` and the pull request body. Only a task that records
+    a stack parent gets one; the bottom of a stack, or a task on no stack, is
+    described by the pull request body's own default-branch sentence. No forge is
+    consulted: the order is a fact about the chain, and the merged marks come
+    from what `mm deliver --merged` recorded.
+    """
+    parent_id = task["stacked_on_task"] if "stacked_on_task" in task.keys() else None  # noqa: SIM118
+    if not parent_id:
+        return None
+    chain = _chain_for_task(conn, int(task["id"]))
+    position = next(
+        (i for i, row in enumerate(chain, start=1) if int(row["id"]) == int(task["id"])), None
+    )
+    if position is None:
+        return None
+    ahead = chain[: position - 1]
+    if not ahead:
+        return None
+    steps = []
+    for row in ahead:
+        merged = "merged" if row["merged_at"] else "unmerged"
+        steps.append(f'task {int(row["id"])} "{row["title"]}" (branch {row["branch"]}, {merged})')
+    parent = ahead[-1]
+    return (
+        f"stack: layer {position} of {len(chain)}; its pull request targets "
+        f"{parent['branch']}. Merge order: "
+        + ", then ".join(steps)
+        + f", then this task {int(task['id'])}."
+    )
+
+
+def delivery_base(
+    conn, task, base: str | None, *, explicit: bool = False, remote: str = "origin"
+) -> tuple[str | None, str | None]:
     """The base a stacked layer's pull request should target, and why if it changed.
 
     When the layer below has already merged, its branch is gone (or about to be):
@@ -459,6 +495,12 @@ def delivery_base(conn, task, base: str | None) -> tuple[str | None, str | None]
     review. GitHub's cascade retargets an *existing* pull request in that
     situation; a pull request being opened now has to be aimed at the default
     branch itself.
+
+    While the layer below is *not* merged, this layer is refused two ways unless
+    ``explicit`` says the caller passed ``--base`` and means it: opening against
+    the default branch (the diff would carry the parent's commits and the merge
+    would land them twice), and opening against a parent branch the forge has
+    never seen (the pull request cannot be created; deliver the parent first).
 
     Only a task that records a stack parent is checked: a bare ``--base`` says
     where to open the pull request and nothing about a chain, and asking the forge
@@ -476,14 +518,45 @@ def delivery_base(conn, task, base: str | None) -> tuple[str | None, str | None]
         if repo_row is not None:
             slug = repos.forge_slug(repo_row["forge_url"])
             default_branch = repo_row["default_branch"] or "main"
-    if base == default_branch:
-        return base, None
-    pr = pull_request_for(base, cwd=task["worktree_path"], slug=slug)
-    if pr is None or not pr.get("mergedAt"):
-        return base, None
-    parent_label = f"task {int(parent_id)}" if parent_id else f"branch {base}"
-    return default_branch, (
-        f"the layer below ({parent_label}, pull request #{pr.get('number')} on {base}) has "
-        f"merged, so this pull request targets {default_branch} instead of a merged branch; "
-        "GitHub's cascade has not retargeted it because it did not exist yet"
+    parent = store.get_task(conn, int(parent_id))
+    parent_short = f"task {int(parent_id)}"
+    parent_label = (
+        f'{parent_short} "{parent["title"]}" (branch {parent["branch"]})'
+        if parent is not None
+        else parent_short
     )
+    parent_merged = parent is not None and bool(parent["merged_at"])
+    if base == default_branch:
+        if explicit or parent_merged:
+            return base, None
+        raise StackError(
+            f"refusing to open task {int(task['id'])} against {default_branch}: its stack "
+            f"parent {parent_label} has not merged, so this pull request would carry the "
+            f"parent's commits too. Merge {parent_short} first, or pass --base "
+            f"{default_branch} to open it there anyway."
+        )
+    pr = pull_request_for(base, cwd=task["worktree_path"], slug=slug)
+    if pr is None:
+        if explicit or parent_merged or _branch_on_remote(task["worktree_path"], remote, base):
+            return base, None
+        raise StackError(
+            f"refusing to open task {int(task['id'])} against {base}: its stack parent "
+            f"{parent_label} has not been pushed to the forge yet, so no pull request can "
+            f"target that branch. Deliver {parent_short} first (or `mm task push "
+            f"{int(parent_id)}`), or pass --base to override."
+        )
+    if not pr.get("mergedAt"):
+        return base, None
+    return default_branch, (
+        f"the layer below (task {int(parent_id)}, pull request #{pr.get('number')} on {base}) "
+        f"has merged, so this pull request targets {default_branch} instead of a merged "
+        "branch; GitHub's cascade has not retargeted it because it did not exist yet"
+    )
+
+
+def _branch_on_remote(worktree: str | None, remote: str, branch: str) -> bool:
+    """Does the forge have this branch at all? Asked only when it has no pull request."""
+    if not worktree:
+        return False
+    rc, out = _git(worktree, "ls-remote", "--heads", remote, branch)
+    return rc == 0 and bool(out.strip())

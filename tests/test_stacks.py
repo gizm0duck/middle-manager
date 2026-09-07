@@ -414,3 +414,85 @@ def test_deliver_targets_main_when_the_layer_below_has_already_merged(mm_home, m
     assert pr_argv[pr_argv.index("--base") + 1] == "main"
     assert "has merged" in res.note
     assert "cascade has not retargeted it" in res.note
+
+
+# --------------------------------------------------------------------------- #
+# 5. An upper layer is not opened past an unmerged parent (issue #61)
+# --------------------------------------------------------------------------- #
+
+
+def _deliverable(monkeypatch, calls: list[list[str]]) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        delivery,
+        "_run",
+        lambda argv, cwd=None: (
+            calls.append(argv)
+            or SimpleNamespace(returncode=0, stdout="https://example/pr/12\n", stderr="")
+        ),
+    )
+    monkeypatch.setattr(delivery, "is_approved_at_head", lambda tid: (True, ""))
+    monkeypatch.setattr(delivery, "head_sha", lambda wt: "f" * 40)
+    monkeypatch.setattr(delivery, "_pr_tool", lambda: "gh")
+
+
+def test_deliver_refuses_an_upper_layer_against_main_while_its_parent_is_unmerged(
+    mm_home, monkeypatch
+) -> None:
+    conn = init_db()
+    _run_id, bottom, top = _two_layer_stack(conn)
+    # The recorded starting branch is main — the shape a hand-repaired row takes —
+    # while the chain still says this layer sits on the bottom one.
+    store.update_task_fields(conn, top, worktree_path="/tmp/wt", stacked_on="main")
+    calls: list[list[str]] = []
+    _deliverable(monkeypatch, calls)
+    monkeypatch.setattr(stacks, "pull_request_for", lambda branch, **kw: None)
+
+    with pytest.raises(delivery.DeliveryError) as exc:
+        delivery.deliver(top)
+    message = str(exc.value)
+    assert f'task {bottom} "bottom layer" (branch mm/task-1-aaa)' in message
+    assert "has not merged" in message
+    assert "--base main" in message
+    assert not any(a[:3] == ["gh", "pr", "create"] for a in calls), "nothing was opened"
+
+    # --base is the override: the manager said main and meant it.
+    delivery.deliver(top, base="main")
+    pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
+    assert pr_argv[pr_argv.index("--base") + 1] == "main"
+
+    # A parent recorded as merged is no longer in the way.
+    calls.clear()
+    store.set_task_status(conn, top, "worker_done")
+    store.update_task_fields(conn, bottom, merged_at="2026-09-06T00:00:00+00:00")
+    delivery.deliver(top)
+    assert any(a[:3] == ["gh", "pr", "create"] for a in calls)
+
+
+def test_deliver_refuses_an_upper_layer_whose_parent_branch_is_not_on_the_forge(
+    mm_home, monkeypatch
+) -> None:
+    """The case #57 makes common: layer 2 finishes before layer 1 has pushed."""
+    conn = init_db()
+    _run_id, bottom, top = _two_layer_stack(conn)
+    store.update_task_fields(conn, top, worktree_path="/tmp/wt")
+    calls: list[list[str]] = []
+    _deliverable(monkeypatch, calls)
+    monkeypatch.setattr(stacks, "pull_request_for", lambda branch, **kw: None)
+    monkeypatch.setattr(stacks, "_branch_on_remote", lambda wt, remote, branch: False)
+
+    with pytest.raises(delivery.DeliveryError) as exc:
+        delivery.deliver(top)
+    message = str(exc.value)
+    assert f'task {bottom} "bottom layer" (branch mm/task-1-aaa)' in message
+    assert "has not been pushed to the forge" in message
+    assert f"mm task push {bottom}" in message
+    assert not any(a[:3] == ["gh", "pr", "create"] for a in calls)
+
+    # Once the parent's branch is on the forge, the layer opens against it as before.
+    monkeypatch.setattr(stacks, "_branch_on_remote", lambda wt, remote, branch: True)
+    store.set_task_status(conn, top, "worker_done")
+    delivery.deliver(top)
+    pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
+    assert pr_argv[pr_argv.index("--base") + 1] == "mm/task-1-aaa"
