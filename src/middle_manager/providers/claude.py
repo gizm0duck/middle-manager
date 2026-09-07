@@ -61,7 +61,8 @@ class ClaudeAdapter(ProviderAdapter):
         rules, not the task's, so the runtime states them — once, identically,
         every time.
         """
-        return f"{command_rules(self.name, spec.branch)}\n---\n\n{super().worker_prompt(spec)}"
+        rules = command_rules(self.name, spec.branch, environment=spec.environment)
+        return f"{rules}\n---\n\n{super().worker_prompt(spec)}"
 
     def _common(self, argv: list[str], spec: TaskSpec) -> list[str]:
         if spec.model:

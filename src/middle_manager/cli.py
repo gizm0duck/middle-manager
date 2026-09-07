@@ -181,9 +181,15 @@ def _cmd_repo(args: argparse.Namespace) -> int:
 
     try:
         if args.repo_cmd == "set":
+            from middle_manager.environment import REPO_COLUMNS
+
+            changes = {col: getattr(args, col, None) for col in REPO_COLUMNS}
+            asked = args.migrations_glob is not None or any(
+                value is not None for value in changes.values()
+            )
             settings = (
-                set_settings(args.name, migrations_glob=args.migrations_glob)
-                if args.migrations_glob is not None
+                set_settings(args.name, migrations_glob=args.migrations_glob, **changes)
+                if asked
                 else get_settings(args.name)
             )
             print(settings.describe())
@@ -369,6 +375,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
     if resp.get("migration_advisory"):
         print(resp["migration_advisory"])
+    if resp.get("compose_project"):
+        port = f" on port {resp['db_port']}" if resp.get("db_port") else ""
+        print(
+            f"environment: compose project {resp['compose_project']}{port}; receipts go "
+            f"under {resp.get('evidence_path')}"
+        )
+    elif resp.get("evidence_path"):
+        print(f"environment: receipts go under {resp['evidence_path']}")
     if instructions.strip():
         # Archived whether the instructions came from a file or the command line:
         # this is the copy `mm deliver` quotes when it writes the pull request body,
@@ -749,10 +763,23 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 print()
             # The receipts the worker named, listed so nobody approves a visual
             # change on the strength of a sentence about screenshots.
-            task = store.get_task(init_db(), args.task_id)
+            conn = init_db()
+            task = store.get_task(conn, args.task_id)
+            paths = captures.capture_paths(r["note"] for r in reports)
+            if task is not None:
+                # The evidence directory the environment block pinned is listed
+                # whether or not the worker's report named it: a receipt filed
+                # where the block said is never invisible to the reviewer.
+                from middle_manager import environment
+
+                repo_row = conn.execute(
+                    "SELECT * FROM repos WHERE id = ?", (task["repo_id"],)
+                ).fetchone()
+                evidence_path = environment.evidence_path_for(repo_row, task["worktree_path"])
+                if evidence_path and os.path.isdir(evidence_path) and evidence_path not in paths:
+                    paths.insert(0, evidence_path)
             listing = captures.render(
-                captures.capture_paths(r["note"] for r in reports),
-                root=task["worktree_path"] if task is not None else None,
+                paths, root=task["worktree_path"] if task is not None else None
             )
             if listing:
                 print(listing)
@@ -1523,6 +1550,69 @@ def build_parser() -> argparse.ArgumentParser:
             "where this repo keeps database migrations, so dispatch and review can warn "
             "when two unmerged tasks add one off the same head; default "
             "**/alembic/versions/*.py, empty string restores it"
+        ),
+    )
+    # The environment block every worker dispatched to this repo is handed
+    # (issue #60). Each is optional; `no` or an empty string clears it.
+    rset.add_argument(
+        "--compose-stack",
+        dest="compose_stack",
+        default=None,
+        metavar="YES|NO|FILE",
+        help=(
+            "this repo runs a per-task database stack with docker compose: `yes` for the "
+            "repo's default compose file, or the compose file's repo-relative path; dispatch "
+            "then assigns compose_project=task_<n> and a port and puts the override recipe "
+            "in the worker's brief; `no` clears it"
+        ),
+    )
+    rset.add_argument(
+        "--db-port-base",
+        dest="db_port_base",
+        default=None,
+        metavar="PORT",
+        help=(
+            "the base a task's database host port is derived from (base + task id), "
+            "e.g. 54000; 0 clears it"
+        ),
+    )
+    rset.add_argument(
+        "--push-hook-runs-full-suite",
+        dest="push_hook_runs_full_suite",
+        default=None,
+        metavar="YES|NO",
+        help=(
+            "this repo's pre-push hook runs the full suite: workers are told to stop at the "
+            "code-level gates, commit, and report the head SHA in their done note, and the "
+            "harness pushes the lease branch on their behalf"
+        ),
+    )
+    rset.add_argument(
+        "--local-gate",
+        dest="local_gate",
+        default=None,
+        metavar="COMMAND",
+        help=(
+            "the scoped suite a worker runs before reporting done, e.g. "
+            '"make test-backend"; the full suite is CI\'s; empty string clears it'
+        ),
+    )
+    rset.add_argument(
+        "--full-suite-owner",
+        dest="full_suite_owner",
+        default=None,
+        metavar="WHO",
+        help="who runs the full suite (default ci); empty string restores the default",
+    )
+    rset.add_argument(
+        "--evidence-dir",
+        dest="evidence_dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "worktree-relative directory workers write receipts to (default .mm-evidence; "
+            "excluded from version control, listed by `mm review show`); empty string "
+            "restores it"
         ),
     )
     repo.set_defaults(func=_cmd_repo)

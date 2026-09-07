@@ -18,6 +18,7 @@ from middle_manager.providers.base import (
     WorkerResult,
 )
 from middle_manager.providers.capability import allows_interrupt_steer, capabilities_for
+from middle_manager.providers.command_rules import command_rules
 
 
 class CodexAdapter(ProviderAdapter):
@@ -25,6 +26,17 @@ class CodexAdapter(ProviderAdapter):
 
     def probe(self) -> dict:
         return capabilities_for("codex")
+
+    def worker_prompt(self, spec: TaskSpec) -> str:
+        """No command rules (Codex has a real shell), but the same environment block.
+
+        Where receipts go, which suite is the local gate, and which database stack
+        is this task's are facts about the repository, so a Codex worker reads the
+        block a Claude worker does — from the same function.
+        """
+        block = command_rules(self.name, spec.branch, environment=spec.environment)
+        body = super().worker_prompt(spec)
+        return f"{block}\n---\n\n{body}" if block else body
 
     def start(self, spec: TaskSpec) -> list[str]:
         argv = [

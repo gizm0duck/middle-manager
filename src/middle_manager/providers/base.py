@@ -27,6 +27,10 @@ class TaskSpec:
     # Repo-memory preamble prepended to a fresh worker's prompt so it consults and
     # updates the repo's shared notes/tasks. Set by the supervisor at dispatch.
     memory_preamble: str | None = None
+    # The per-repository environment block (evidence directory, local gate,
+    # private database stack, push-hook policy). Rendered by the supervisor at
+    # dispatch from repo config; the adapters place it with the command rules.
+    environment: str | None = None
 
 
 @dataclass

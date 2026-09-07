@@ -84,10 +84,19 @@ paid for once already.
 - **Generated artifacts**: which commands regenerate them and that they are
   committed; the frozen fixtures that must stay byte-identical.
 - **Receipts come from the worker's shell, never from a test.** A test that writes to the
-  brief's evidence directory (an absolute path such as `/private/tmp/...`) passes locally
-  and errors on CI, where the path does not exist (task 91, 2026-09-03). Tests write only
-  under pytest's `tmp_path`; the worker copies the dump into the evidence directory with
-  its own commands.
+  evidence directory passes locally and errors on CI, where the path does not exist
+  (task 91, 2026-09-03). Tests write only under pytest's `tmp_path`; the worker copies
+  the dump into the evidence directory with its own commands.
+- **Never name `/private/tmp` as the evidence directory.** The worker's shell cannot reach
+  it (21 tasks between 2026-09-01 and 09-07 lost a cycle to that). The runtime's
+  environment block pins `<worktree>/.mm-evidence/` — inside the worktree, excluded from
+  version control, listed by `mm review show` — and `mm repo set --evidence-dir` changes
+  it per repo. The brief names the artefacts; the block names the directory.
+- **Environment facts come from `mm repo set`, not from the brief.** The private database
+  stack (`compose_project=task_<n>`, its port, the `make`/`.env` override recipe), the
+  local gate versus CI's full suite, and the push-hook policy are rendered into every
+  dispatched brief from repo config. A brief restating them by hand drifts; a brief that
+  needs one changed changes the repo setting instead.
 - **Claude-provider briefs do not name a branch.** The runtime's command rules pin the push
   to the task's lease branch (`mm/task-<n>-...`); a brief naming another branch is ignored
   and confuses the worker. The manager opens the PR from the lease branch.
@@ -99,9 +108,9 @@ paid for once already.
 Three named sections, the same names every time, so a worker can find the rule instead
 of re-reading the brief for it.
 
-- **Evidence contract.** Which artefacts count as proof, the absolute directory they
-  must land in (the worker creates it), and how each is named or sized — one line per
-  artefact. "Capture screenshots" with no destination produced two receipt-less
+- **Evidence contract.** Which artefacts count as proof and how each is named or sized —
+  one line per artefact. The directory is the environment block's `.mm-evidence/` inside
+  the worktree (the worker creates it); do not name another. "Capture screenshots" with no destination produced two receipt-less
   deliveries in one window (2026-09-01).
 - **Standing gate policy.** Which single gate is authoritative; what a flaky gate means
   (re-run once, then report the flake with both outputs — never loosen it, never skip
