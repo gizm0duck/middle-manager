@@ -95,6 +95,64 @@ def test_stack_on_starts_from_the_parent_task_s_branch_and_records_the_chain(
     )
 
 
+def test_stack_on_accepts_a_parent_whose_branch_has_not_been_pushed_yet(
+    server, source_repo
+) -> None:
+    """The next layer is briefed with the previous one; it must not wait for a push.
+
+    On 2026-09-05 (issue #57) ``--stack-on 127`` was refused two minutes after
+    task 127 was dispatched: its lease branch existed only in its worktree, and
+    the child's start did ``git fetch <forge> <branch>`` and nothing else. The
+    branch is a local ref in the shared base clone the whole time.
+    """
+    from middle_manager.worktree import LeaseManager
+
+    srv, client = server
+    added = repos.add_repo(source_repo)
+
+    # A parent still in progress: a real lease worktree on the registered clone
+    # with one commit of its own and no push. (A finished worker no longer models
+    # this — the harness pushes a done-but-unpushed lease branch for it.)
+    conn = init_db()
+    repo_row = store.get_repo(conn, added.name)
+    run_id = store.create_run(conn, "stack")
+    parent_id = store.add_task(conn, run_id=run_id, title="bottom layer", repo_id=repo_row["id"])
+    lease = LeaseManager().acquire(
+        repo_path=repo_row["local_path"], repo_id=repo_row["id"], task_id=parent_id
+    )
+    store.update_task_fields(
+        conn,
+        parent_id,
+        branch=lease.branch,
+        worktree_path=lease.worktree_path,
+        base_sha=lease.base_sha,
+        lease_id=lease.id,
+    )
+    store.set_task_status(conn, parent_id, "in_progress")
+    bottom_tip = _commit(lease.worktree_path, "bottom.txt", "work the forge has not seen")
+    on_remote = _git(source_repo, "ls-remote", "--heads", ".", lease.branch)
+    assert on_remote == "", "the premise: the parent's branch is not on the forge"
+
+    second = client.dispatch_task(
+        repo=added.name, title="next layer", run_id=run_id, stack_on=parent_id
+    )
+    assert second["ok"], second
+    task = client.task_status(second["task_id"])["task"]
+    assert task["stacked_on"] == lease.branch
+    assert task["stacked_on_task"] == parent_id
+    assert task["base_sha"] == bottom_tip, "the child starts from the parent's local tip"
+    subprocess.run(
+        ["git", "-C", task["worktree_path"], "merge-base", "--is-ancestor", bottom_tip, "HEAD"],
+        check=True,
+    )
+    # Naming the lease branch directly, instead of the task, is accepted the same way.
+    third = client.dispatch_task(
+        repo=added.name, title="by branch", run_id=run_id, base=lease.branch
+    )
+    assert third["ok"], third
+    assert client.task_status(third["task_id"])["task"]["base_sha"] == bottom_tip
+
+
 def test_stacking_on_a_task_with_no_branch_is_refused_plainly(server, source_repo) -> None:
     srv, client = server
     added = repos.add_repo(source_repo)
