@@ -61,9 +61,8 @@ def test_hook_records_lifecycle_event(mm_home) -> None:
     run_id = store.create_run(conn, "obj")
     task_id = store.add_task(conn, run_id=run_id, title="t")
     ack = hooks.handle_hook_stdin("Stop", json.dumps({"task_id": task_id, "reason": "turn end"}))
-    assert ack["ok"] is True
-    assert ack["event"] == "stop"
-    assert ack["run_id"] == run_id
+    assert ack["decision"] == "block"
+    assert "mm todo add" in ack["reason"]
     row = conn.execute(
         "SELECT kind, payload FROM events WHERE task_id = ? ORDER BY seq DESC LIMIT 1",
         (task_id,),
@@ -76,8 +75,7 @@ def test_hook_tolerates_bad_json(mm_home) -> None:
     conn = init_db()
     store.create_run(conn, "obj")
     ack = hooks.handle_hook_stdin("session-start", "not json")
-    assert ack["ok"] is True
-    assert ack["event"] == "session_start"
+    assert ack == {}
 
 
 def test_stop_hook_continues_due_assessment_once(mm_home) -> None:
@@ -99,8 +97,9 @@ def test_session_start_hook_injects_pending_assessment_context(mm_home) -> None:
 
     response = hooks.handle_hook_stdin("SessionStart", "{}")
 
-    assert "Periodic performance assessment" in response["additionalContext"]
+    context = response["hookSpecificOutput"]["additionalContext"]
+    assert "Periodic performance assessment" in context
     assert response["hookSpecificOutput"] == {
         "hookEventName": "SessionStart",
-        "additionalContext": response["additionalContext"],
+        "additionalContext": context,
     }

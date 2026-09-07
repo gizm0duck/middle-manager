@@ -34,7 +34,7 @@ def test_session_start_injects_pickup_context(mm_home) -> None:
 
     response = hooks.handle_hook_stdin("SessionStart", json.dumps({"source": "compact"}))
 
-    context = response["additionalContext"]
+    context = response["hookSpecificOutput"]["additionalContext"]
     assert "Middle Manager pickup context" in context
     assert "- Next (todo ledger): #1 review task's diff and deliver" in context
     assert f'Run {run_id} "ship it": task {task_id} "build" — worker_done' in context
@@ -45,7 +45,7 @@ def test_session_start_injects_pickup_context(mm_home) -> None:
 def test_session_start_is_quiet_when_nothing_is_open(mm_home) -> None:
     init_db()
     response = hooks.handle_hook_stdin("SessionStart", "{}")
-    assert "additionalContext" not in response
+    assert response == {}
 
 
 def test_stop_blocks_once_when_work_is_open_and_no_next_step(mm_home) -> None:

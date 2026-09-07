@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./bin/mm hook session-start"
+            "command": "\"$(git rev-parse --show-toplevel)/bin/mm\" hook session-start"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./bin/mm hook stop"
+            "command": "\"$(git rev-parse --show-toplevel)/bin/mm\" hook stop"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./bin/mm hook session-end"
+            "command": "\"$(git rev-parse --show-toplevel)/bin/mm\" hook session-end"
           }
         ]
       }
