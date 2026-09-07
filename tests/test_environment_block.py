@@ -154,6 +154,20 @@ def test_the_block_for_a_repo_with_a_compose_stack_carries_the_override_recipe()
     assert "delivered or closed" in text
 
 
+def test_a_repo_can_name_the_variable_its_makefile_reads_the_port_from() -> None:
+    text = environment.render(
+        _env(compose_stack="yes", db_port_base=55000, db_port_variable="PAPAYA_DB_PORT"),
+        task_id=165,
+        evidence_path="/wt/165/.mm-evidence",
+        compose_project="task_165",
+        db_port=55165,
+    )
+    assert "host port **55165** (`PAPAYA_DB_PORT`)" in text
+    assert "`make <target> COMPOSE_PROJECT_NAME=task_165 PAPAYA_DB_PORT=55165`" in text
+    assert "`COMPOSE_PROJECT_NAME=task_165`, `PAPAYA_DB_PORT=55165`" in text
+    assert "DB_PORT=55165`" not in text.replace("PAPAYA_DB_PORT=55165`", "")
+
+
 def test_the_push_hook_line_routes_the_push_through_the_harness() -> None:
     text = environment.render(
         _env(push_hook_runs_full_suite=True),

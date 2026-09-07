@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS repos (
     -- receipts go inside the worktree. All optional; unset reads as the default.
     compose_stack TEXT,
     db_port_base INTEGER,
+    -- The variable name the port travels under in make overrides and the root
+    -- .env (default DB_PORT; papaya-backend uses PAPAYA_DB_PORT).
+    db_port_variable TEXT,
     push_hook_runs_full_suite INTEGER,
     local_gate TEXT,
     full_suite_owner TEXT,
@@ -208,6 +211,17 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status, position, id);
 
+-- The newest comment (or event) timestamp the manager has processed on an
+-- external record — a ticket URL or id — so a sweep asks only for what is newer
+-- and an empty sweep costs one list call, not a re-read. Same shape `mm watch`
+-- keeps per pull request, for records the harness does not own.
+CREATE TABLE IF NOT EXISTS watermarks (
+    key TEXT PRIMARY KEY,
+    watermark TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    note TEXT
+);
+
 CREATE TABLE IF NOT EXISTS assessment_cycles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger TEXT NOT NULL,
@@ -307,6 +321,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, kind in (
         ("compose_stack", "TEXT"),
         ("db_port_base", "INTEGER"),
+        ("db_port_variable", "TEXT"),
         ("push_hook_runs_full_suite", "INTEGER"),
         ("local_gate", "TEXT"),
         ("full_suite_owner", "TEXT"),

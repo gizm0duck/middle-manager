@@ -346,7 +346,7 @@ def set_settings(
     """Configure a repo's settings. An empty string puts a field back on the default.
 
     ``environment_fields`` are the environment-block columns (``compose_stack``,
-    ``db_port_base``, ``push_hook_runs_full_suite``, ``local_gate``,
+    ``db_port_base``, ``db_port_variable``, ``push_hook_runs_full_suite``, ``local_gate``,
     ``full_suite_owner``, ``evidence_dir``); a refused value raises ``RepoError``.
     """
     from middle_manager import environment

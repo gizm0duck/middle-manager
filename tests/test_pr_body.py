@@ -272,3 +272,19 @@ def test_a_body_file_and_a_title_override_everything(task, tmp_path, monkeypatch
     argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
     assert argv[argv.index("--body") + 1] == "Written by hand, and not to be improved upon.\n"
     assert argv[argv.index("--title") + 1] == "A title I chose"
+
+
+def test_the_stack_section_states_the_merge_order_when_the_parent_is_a_task(task) -> None:
+    """A recorded stack parent is named in order, not just as a branch (issue #61)."""
+    parent = store.add_task(task.conn, run_id=1, title="bottom layer", repo_id=1)
+    store.update_task_fields(task.conn, parent, branch="mm/task-7-abc")
+    store.update_task_fields(task.conn, task.id, stacked_on="mm/task-7-abc", stacked_on_task=parent)
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "Merge that one first" in body
+    assert "Stack: layer 2 of 2; its pull request targets mm/task-7-abc." in body
+    assert f'task {parent} "bottom layer" (branch mm/task-7-abc, unmerged)' in body
+    assert f"then this task {task.id}." in body
+
+    store.update_task_fields(task.conn, parent, merged_at="2026-09-06T00:00:00+00:00")
+    body = pr_body.compose(task.id, head_sha="b" * 40, conn=task.conn)
+    assert "(branch mm/task-7-abc, merged)" in body

@@ -95,6 +95,64 @@ def test_stack_on_starts_from_the_parent_task_s_branch_and_records_the_chain(
     )
 
 
+def test_stack_on_accepts_a_parent_whose_branch_has_not_been_pushed_yet(
+    server, source_repo
+) -> None:
+    """The next layer is briefed with the previous one; it must not wait for a push.
+
+    On 2026-09-05 (issue #57) ``--stack-on 127`` was refused two minutes after
+    task 127 was dispatched: its lease branch existed only in its worktree, and
+    the child's start did ``git fetch <forge> <branch>`` and nothing else. The
+    branch is a local ref in the shared base clone the whole time.
+    """
+    from middle_manager.worktree import LeaseManager
+
+    srv, client = server
+    added = repos.add_repo(source_repo)
+
+    # A parent still in progress: a real lease worktree on the registered clone
+    # with one commit of its own and no push. (A finished worker no longer models
+    # this — the harness pushes a done-but-unpushed lease branch for it.)
+    conn = init_db()
+    repo_row = store.get_repo(conn, added.name)
+    run_id = store.create_run(conn, "stack")
+    parent_id = store.add_task(conn, run_id=run_id, title="bottom layer", repo_id=repo_row["id"])
+    lease = LeaseManager().acquire(
+        repo_path=repo_row["local_path"], repo_id=repo_row["id"], task_id=parent_id
+    )
+    store.update_task_fields(
+        conn,
+        parent_id,
+        branch=lease.branch,
+        worktree_path=lease.worktree_path,
+        base_sha=lease.base_sha,
+        lease_id=lease.id,
+    )
+    store.set_task_status(conn, parent_id, "in_progress")
+    bottom_tip = _commit(lease.worktree_path, "bottom.txt", "work the forge has not seen")
+    on_remote = _git(source_repo, "ls-remote", "--heads", ".", lease.branch)
+    assert on_remote == "", "the premise: the parent's branch is not on the forge"
+
+    second = client.dispatch_task(
+        repo=added.name, title="next layer", run_id=run_id, stack_on=parent_id
+    )
+    assert second["ok"], second
+    task = client.task_status(second["task_id"])["task"]
+    assert task["stacked_on"] == lease.branch
+    assert task["stacked_on_task"] == parent_id
+    assert task["base_sha"] == bottom_tip, "the child starts from the parent's local tip"
+    subprocess.run(
+        ["git", "-C", task["worktree_path"], "merge-base", "--is-ancestor", bottom_tip, "HEAD"],
+        check=True,
+    )
+    # Naming the lease branch directly, instead of the task, is accepted the same way.
+    third = client.dispatch_task(
+        repo=added.name, title="by branch", run_id=run_id, base=lease.branch
+    )
+    assert third["ok"], third
+    assert client.task_status(third["task_id"])["task"]["base_sha"] == bottom_tip
+
+
 def test_stacking_on_a_task_with_no_branch_is_refused_plainly(server, source_repo) -> None:
     srv, client = server
     added = repos.add_repo(source_repo)
@@ -356,3 +414,85 @@ def test_deliver_targets_main_when_the_layer_below_has_already_merged(mm_home, m
     assert pr_argv[pr_argv.index("--base") + 1] == "main"
     assert "has merged" in res.note
     assert "cascade has not retargeted it" in res.note
+
+
+# --------------------------------------------------------------------------- #
+# 5. An upper layer is not opened past an unmerged parent (issue #61)
+# --------------------------------------------------------------------------- #
+
+
+def _deliverable(monkeypatch, calls: list[list[str]]) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        delivery,
+        "_run",
+        lambda argv, cwd=None: (
+            calls.append(argv)
+            or SimpleNamespace(returncode=0, stdout="https://example/pr/12\n", stderr="")
+        ),
+    )
+    monkeypatch.setattr(delivery, "is_approved_at_head", lambda tid: (True, ""))
+    monkeypatch.setattr(delivery, "head_sha", lambda wt: "f" * 40)
+    monkeypatch.setattr(delivery, "_pr_tool", lambda: "gh")
+
+
+def test_deliver_refuses_an_upper_layer_against_main_while_its_parent_is_unmerged(
+    mm_home, monkeypatch
+) -> None:
+    conn = init_db()
+    _run_id, bottom, top = _two_layer_stack(conn)
+    # The recorded starting branch is main — the shape a hand-repaired row takes —
+    # while the chain still says this layer sits on the bottom one.
+    store.update_task_fields(conn, top, worktree_path="/tmp/wt", stacked_on="main")
+    calls: list[list[str]] = []
+    _deliverable(monkeypatch, calls)
+    monkeypatch.setattr(stacks, "pull_request_for", lambda branch, **kw: None)
+
+    with pytest.raises(delivery.DeliveryError) as exc:
+        delivery.deliver(top)
+    message = str(exc.value)
+    assert f'task {bottom} "bottom layer" (branch mm/task-1-aaa)' in message
+    assert "has not merged" in message
+    assert "--base main" in message
+    assert not any(a[:3] == ["gh", "pr", "create"] for a in calls), "nothing was opened"
+
+    # --base is the override: the manager said main and meant it.
+    delivery.deliver(top, base="main")
+    pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
+    assert pr_argv[pr_argv.index("--base") + 1] == "main"
+
+    # A parent recorded as merged is no longer in the way.
+    calls.clear()
+    store.set_task_status(conn, top, "worker_done")
+    store.update_task_fields(conn, bottom, merged_at="2026-09-06T00:00:00+00:00")
+    delivery.deliver(top)
+    assert any(a[:3] == ["gh", "pr", "create"] for a in calls)
+
+
+def test_deliver_refuses_an_upper_layer_whose_parent_branch_is_not_on_the_forge(
+    mm_home, monkeypatch
+) -> None:
+    """The case #57 makes common: layer 2 finishes before layer 1 has pushed."""
+    conn = init_db()
+    _run_id, bottom, top = _two_layer_stack(conn)
+    store.update_task_fields(conn, top, worktree_path="/tmp/wt")
+    calls: list[list[str]] = []
+    _deliverable(monkeypatch, calls)
+    monkeypatch.setattr(stacks, "pull_request_for", lambda branch, **kw: None)
+    monkeypatch.setattr(stacks, "_branch_on_remote", lambda wt, remote, branch: False)
+
+    with pytest.raises(delivery.DeliveryError) as exc:
+        delivery.deliver(top)
+    message = str(exc.value)
+    assert f'task {bottom} "bottom layer" (branch mm/task-1-aaa)' in message
+    assert "has not been pushed to the forge" in message
+    assert f"mm task push {bottom}" in message
+    assert not any(a[:3] == ["gh", "pr", "create"] for a in calls)
+
+    # Once the parent's branch is on the forge, the layer opens against it as before.
+    monkeypatch.setattr(stacks, "_branch_on_remote", lambda wt, remote, branch: True)
+    store.set_task_status(conn, top, "worker_done")
+    delivery.deliver(top)
+    pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
+    assert pr_argv[pr_argv.index("--base") + 1] == "mm/task-1-aaa"

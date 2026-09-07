@@ -557,6 +557,43 @@ def open_todo_count(conn: sqlite3.Connection) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Watermarks — the newest processed timestamp per external record
+# --------------------------------------------------------------------------- #
+
+
+def set_watermark(
+    conn: sqlite3.Connection, key: str, watermark: str, *, note: str | None = None
+) -> None:
+    """Record the newest timestamp processed on ``key``, replacing any earlier one."""
+    conn.execute(
+        """
+        INSERT INTO watermarks (key, watermark, recorded_at, note)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            watermark = excluded.watermark,
+            recorded_at = excluded.recorded_at,
+            note = excluded.note
+        """,
+        (key, watermark, _now(), note),
+    )
+    conn.commit()
+
+
+def get_watermark(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM watermarks WHERE key = ?", (key,)).fetchone()
+
+
+def list_watermarks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(conn.execute("SELECT * FROM watermarks ORDER BY key").fetchall())
+
+
+def delete_watermark(conn: sqlite3.Connection, key: str) -> bool:
+    cur = conn.execute("DELETE FROM watermarks WHERE key = ?", (key,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# --------------------------------------------------------------------------- #
 # Worker progress — structured phase reports (events of kind ``worker_progress``)
 # --------------------------------------------------------------------------- #
 

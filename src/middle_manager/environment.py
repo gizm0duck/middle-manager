@@ -46,13 +46,16 @@ DEFAULT_EVIDENCE_DIR = ".mm-evidence"
 DEFAULT_FULL_SUITE_OWNER = "ci"
 #: The task-scoped key holding the database host port assigned at dispatch.
 DB_PORT_KEY = "db_port"
-#: The variable name the recipe uses for that port. Compose files read it from
-#: the environment or the root ``.env``; Makefiles take it as a variable override.
+#: The default variable name the recipe uses for that port. Compose files read it
+#: from the environment or the root ``.env``; Makefiles take it as a variable
+#: override. A repository whose Makefile spells it differently (papaya-backend
+#: reads ``PAPAYA_DB_PORT``) sets ``--db-port-variable``.
 DB_PORT_VARIABLE = "DB_PORT"
 #: The columns ``mm repo set`` owns for this block.
 REPO_COLUMNS = (
     "compose_stack",
     "db_port_base",
+    "db_port_variable",
     "push_hook_runs_full_suite",
     "local_gate",
     "full_suite_owner",
@@ -126,6 +129,7 @@ class RepoEnvironment:
     repo: str
     compose_stack: str | None = None
     db_port_base: int | None = None
+    db_port_variable: str = DB_PORT_VARIABLE
     push_hook_runs_full_suite: bool = False
     local_gate: str | None = None
     full_suite_owner: str = DEFAULT_FULL_SUITE_OWNER
@@ -145,7 +149,7 @@ class RepoEnvironment:
         else:
             stack = self.compose_file or "the repository's default compose file"
         port = (
-            f"from {self.db_port_base} + task id"
+            f"from {self.db_port_base} + task id, as {self.db_port_variable}"
             if self.db_port_base
             else "not assigned (set --db-port-base)"
         )
@@ -171,10 +175,12 @@ def for_repo(row) -> RepoEnvironment:
     gate = str(_cell(row, "local_gate") or "").strip()
     stack = str(_cell(row, "compose_stack") or "").strip()
     base = _cell(row, "db_port_base")
+    variable = str(_cell(row, "db_port_variable") or "").strip()
     return RepoEnvironment(
         repo=name,
         compose_stack=stack or None,
         db_port_base=int(base) if base else None,
+        db_port_variable=variable or DB_PORT_VARIABLE,
         push_hook_runs_full_suite=bool(_cell(row, "push_hook_runs_full_suite")),
         local_gate=gate or None,
         full_suite_owner=owner or DEFAULT_FULL_SUITE_OWNER,
@@ -345,14 +351,16 @@ def render(
     )
     if compose_project:
         port_text = (
-            f" and host port **{db_port}** (`{DB_PORT_VARIABLE}`)" if db_port is not None else ""
+            f" and host port **{db_port}** (`{env.db_port_variable}`)"
+            if db_port is not None
+            else ""
         )
         file_flag = f" -f {env.compose_file}" if env.compose_file else ""
         overrides = f"COMPOSE_PROJECT_NAME={compose_project}"
         pin = [f"COMPOSE_PROJECT_NAME={compose_project}"]
         if db_port is not None:
-            overrides += f" {DB_PORT_VARIABLE}={db_port}"
-            pin.append(f"{DB_PORT_VARIABLE}={db_port}")
+            overrides += f" {env.db_port_variable}={db_port}"
+            pin.append(f"{env.db_port_variable}={db_port}")
         lines.append(
             f"- **Private database stack: compose project `{compose_project}`{port_text}.** "
             "This task owns that stack and nothing else; the shared container other "

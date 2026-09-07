@@ -303,8 +303,27 @@ def _registered_repo_origin(repo: str) -> str | None:
         return None
 
 
+def _cmd_brief(args: argparse.Namespace) -> int:
+    """`mm brief lint <file>`: what a worker cannot recover from in this brief."""
+    from middle_manager import brief_lint, preflight
+
+    try:
+        text = preflight.read_brief(args.file)
+    except preflight.PreflightError as exc:
+        print(f"brief lint: {exc}", file=sys.stderr)
+        return 1
+    findings = brief_lint.lint_brief(text)
+    kind = "defect brief" if brief_lint.is_defect_brief(text) else "brief"
+    if not findings:
+        print(f"{args.file}: {kind}, no findings")
+        return 0
+    print(brief_lint.render(findings, args.file))
+    print(f"{args.file}: {kind}, {len(findings)} finding(s)")
+    return 1
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    from middle_manager import preflight
+    from middle_manager import brief_lint, preflight
     from middle_manager.config import default_worker_provider
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -325,6 +344,20 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
+    if args.brief:
+        findings = brief_lint.lint_brief(instructions)
+        if findings:
+            # Wrong premises and self-contradicting scope cost 25 and 13 reflections
+            # in cycle 4 (issue #59); say so before the worker is out the door.
+            print(f"brief lint: {len(findings)} finding(s) in {args.brief}", file=sys.stderr)
+            print(brief_lint.render(findings, args.brief), file=sys.stderr)
+            if args.strict:
+                print(
+                    "dispatch refused: --strict and the brief lint found problems; fix the "
+                    "brief (see `mm brief lint`) or dispatch without --strict",
+                    file=sys.stderr,
+                )
+                return 1
 
     title = args.title
     if not title:
@@ -373,8 +406,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
-    if resp.get("migration_advisory"):
-        print(resp["migration_advisory"])
+    for advisory in ("migration_advisory", "overlap_advisory"):
+        if resp.get(advisory):
+            print(resp[advisory])
     if resp.get("compose_project"):
         port = f" on port {resp['db_port']}" if resp.get("db_port") else ""
         print(
@@ -798,6 +832,14 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 if flag:
                     print(flag)
                     print()
+                # Where this layer sits in its stack and what has to merge before
+                # it — the line ten reflections said the brief should have carried.
+                from middle_manager import stacks
+
+                order = stacks.merge_order(init_db(), task)
+                if order:
+                    print(order)
+                    print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "
                 f"({bundle.files_changed} file(s))"
@@ -1003,6 +1045,63 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         )
     except KeyboardInterrupt:
         return 0
+
+
+def _cmd_watermark(args: argparse.Namespace) -> int:
+    """The newest processed timestamp per external record, so a sweep reads only what is new."""
+    from middle_manager import watermarks
+    from middle_manager.state import init_db
+
+    conn = init_db()
+    if args.watermark_cmd == "set":
+        try:
+            stored, previous = watermarks.set_watermark(
+                conn, args.key, args.timestamp, note=args.note
+            )
+        except watermarks.WatermarkError as exc:
+            print(f"watermark set: {exc}", file=sys.stderr)
+            return 1
+        if previous is None:
+            print(f"{args.key}: watermark {stored} (was unset)")
+        elif stored < previous:
+            print(
+                f"{args.key}: watermark {stored} (moved back from {previous}; "
+                "the next sweep re-reads)"
+            )
+        else:
+            print(f"{args.key}: watermark {stored} (was {previous})")
+        return 0
+    if args.watermark_cmd in ("get", "show"):
+        row = watermarks.get_watermark(conn, args.key)
+        if row is None:
+            print(
+                f"no watermark for {args.key} — the first sweep reads everything, then "
+                f"`mm watermark set {args.key} <newest comment timestamp>`",
+                file=sys.stderr,
+            )
+            return 1
+        if args.json:
+            print(json.dumps(dict(row), indent=2))
+        else:
+            print(row["watermark"])
+        return 0
+    if args.watermark_cmd == "clear":
+        if watermarks.delete_watermark(conn, args.key):
+            print(f"{args.key}: watermark cleared; the next sweep reads everything")
+            return 0
+        print(f"no watermark for {args.key}", file=sys.stderr)
+        return 1
+    rows = watermarks.list_watermarks(conn)
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return 0
+    if not rows:
+        print("no watermarks recorded")
+        return 0
+    for row in rows:
+        note = f"  {row['note']}" if row["note"] else ""
+        print(f"{row['watermark']}  recorded {row['recorded_at']}  {row['key']}{note}")
+    return 0
 
 
 def _cmd_todo(args: argparse.Namespace) -> int:
@@ -1577,6 +1676,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     rset.add_argument(
+        "--db-port-variable",
+        dest="db_port_variable",
+        default=None,
+        metavar="NAME",
+        help=(
+            "the variable name the port travels under in make overrides and the root .env "
+            "(default DB_PORT; e.g. PAPAYA_DB_PORT); empty string restores the default"
+        ),
+    )
+    rset.add_argument(
         "--push-hook-runs-full-suite",
         dest="push_hook_runs_full_suite",
         default=None,
@@ -1644,6 +1753,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dispatch.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "refuse to dispatch when the brief lint finds anything (by default findings "
+            "are printed as warnings and the dispatch goes ahead)"
+        ),
+    )
+    dispatch.add_argument(
         "--provider",
         default=None,
         choices=["fake", "claude", "codex"],
@@ -1662,18 +1779,34 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "build on this task: the worker starts from that task's lease branch and "
             "the stack parent is recorded, so `mm stack` and `mm deliver` follow the "
-            "chain without being told a branch name"
+            "chain without being told a branch name. The parent need not have pushed "
+            "yet: a branch not on the forge is taken from the base clone or the "
+            "parent's lease worktree"
         ),
     )
     dispatch.add_argument(
         "--base",
         default=None,
         help=(
-            "start the worker from origin/<branch> instead of the repo base (stacked "
-            "PRs); recorded on the task so `mm deliver` opens the PR against it"
+            "start the worker from <branch> instead of the repo base (stacked PRs): "
+            "the forge's copy when it has one, else the local lease branch; recorded "
+            "on the task so `mm deliver` opens the PR against it"
         ),
     )
     dispatch.set_defaults(func=_cmd_dispatch)
+
+    brief = sub.add_parser("brief", help="check a task brief before dispatching it")
+    bsub = brief.add_subparsers(dest="brief_cmd", required=True)
+    blint = bsub.add_parser(
+        "lint",
+        help=(
+            "the shape a worker can be right about: Symptom before Hypotheses, a probe per "
+            "hypothesis, an Expected discrepancies row per hypothesis, scope rules that do "
+            "not contradict the required cases, and no evidence under /tmp. Exit 1 on findings"
+        ),
+    )
+    blint.add_argument("file", help="the brief (Markdown)")
+    brief.set_defaults(func=_cmd_brief)
 
     worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
     wtsub = worktree.add_subparsers(dest="worktree_cmd", required=True)
@@ -1984,6 +2117,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     watch_cmd.set_defaults(func=_cmd_watch)
+
+    watermark = sub.add_parser(
+        "watermark",
+        help=(
+            "the newest comment timestamp you have processed per external record (ticket "
+            "URL or id), so a sweep asks only for what is newer"
+        ),
+    )
+    wmsub = watermark.add_subparsers(dest="watermark_cmd", required=True)
+    wmset = wmsub.add_parser("set", help="record the newest processed timestamp for a record")
+    wmset.add_argument("key", help="the record: a ticket URL or id, free-form")
+    wmset.add_argument("timestamp", help="ISO-8601, e.g. 2026-09-06T14:03:00Z; stored as UTC")
+    wmset.add_argument("--note", default=None, help="what the sweep did with it, optional")
+    wmget = wmsub.add_parser(
+        "get", aliases=["show"], help="print the watermark (exit 1 and say so when unset)"
+    )
+    wmget.add_argument("key")
+    wmget.add_argument("--json", action="store_true", help="the whole row")
+    wmclear = wmsub.add_parser("clear", help="forget a record's watermark; the next sweep re-reads")
+    wmclear.add_argument("key")
+    wmlist = wmsub.add_parser("list", help="every watermark, by key")
+    wmlist.add_argument("--json", action="store_true", help="machine-readable output")
+    watermark.set_defaults(func=_cmd_watermark)
 
     health_cmd = sub.add_parser("health", help="are in-flight workers alive and talking?")
     health_cmd.add_argument(
