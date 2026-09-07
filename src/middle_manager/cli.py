@@ -297,8 +297,27 @@ def _registered_repo_origin(repo: str) -> str | None:
         return None
 
 
+def _cmd_brief(args: argparse.Namespace) -> int:
+    """`mm brief lint <file>`: what a worker cannot recover from in this brief."""
+    from middle_manager import brief_lint, preflight
+
+    try:
+        text = preflight.read_brief(args.file)
+    except preflight.PreflightError as exc:
+        print(f"brief lint: {exc}", file=sys.stderr)
+        return 1
+    findings = brief_lint.lint_brief(text)
+    kind = "defect brief" if brief_lint.is_defect_brief(text) else "brief"
+    if not findings:
+        print(f"{args.file}: {kind}, no findings")
+        return 0
+    print(brief_lint.render(findings, args.file))
+    print(f"{args.file}: {kind}, {len(findings)} finding(s)")
+    return 1
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    from middle_manager import preflight
+    from middle_manager import brief_lint, preflight
     from middle_manager.config import default_worker_provider
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
@@ -319,6 +338,20 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
+    if args.brief:
+        findings = brief_lint.lint_brief(instructions)
+        if findings:
+            # Wrong premises and self-contradicting scope cost 25 and 13 reflections
+            # in cycle 4 (issue #59); say so before the worker is out the door.
+            print(f"brief lint: {len(findings)} finding(s) in {args.brief}", file=sys.stderr)
+            print(brief_lint.render(findings, args.brief), file=sys.stderr)
+            if args.strict:
+                print(
+                    "dispatch refused: --strict and the brief lint found problems; fix the "
+                    "brief (see `mm brief lint`) or dispatch without --strict",
+                    file=sys.stderr,
+                )
+                return 1
 
     title = args.title
     if not title:
@@ -1554,6 +1587,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dispatch.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "refuse to dispatch when the brief lint finds anything (by default findings "
+            "are printed as warnings and the dispatch goes ahead)"
+        ),
+    )
+    dispatch.add_argument(
         "--provider",
         default=None,
         choices=["fake", "claude", "codex"],
@@ -1584,6 +1625,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dispatch.set_defaults(func=_cmd_dispatch)
+
+    brief = sub.add_parser("brief", help="check a task brief before dispatching it")
+    bsub = brief.add_subparsers(dest="brief_cmd", required=True)
+    blint = bsub.add_parser(
+        "lint",
+        help=(
+            "the shape a worker can be right about: Symptom before Hypotheses, a probe per "
+            "hypothesis, an Expected discrepancies row per hypothesis, scope rules that do "
+            "not contradict the required cases, and no evidence under /tmp. Exit 1 on findings"
+        ),
+    )
+    blint.add_argument("file", help="the brief (Markdown)")
+    brief.set_defaults(func=_cmd_brief)
 
     worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
     wtsub = worktree.add_subparsers(dest="worktree_cmd", required=True)
