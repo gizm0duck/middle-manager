@@ -347,6 +347,39 @@ class Supervisor:
 
         memory.seed_repo_memory(repo)
 
+        # The facts about this repository's environment that cost workers cycles
+        # when briefs carried them by hand (issue #60): the evidence directory
+        # inside the worktree, the local gate versus CI's full suite, a private
+        # database stack assigned to this task, and the push-hook policy. Settled
+        # here, recorded on the task, and rendered into the worker's prompt.
+        from middle_manager import environment
+
+        prepared = environment.prepare(
+            conn,
+            repo_row,
+            task_id=task_id,
+            worktree=lease.worktree_path,
+            branch=lease.branch,
+        )
+        if prepared.compose_project:
+            store.append_event(
+                conn,
+                kind="environment_assigned",
+                payload={
+                    "task_id": task_id,
+                    "compose_project": prepared.compose_project,
+                    "db_port": prepared.db_port,
+                    "evidence_path": prepared.evidence_path,
+                    "summary": (
+                        f"task {task_id} owns compose project {prepared.compose_project}"
+                        + (f" on port {prepared.db_port}" if prepared.db_port else "")
+                        + "; the block in its brief carries the override recipe"
+                    ),
+                },
+                run_id=run_id,
+                task_id=task_id,
+            )
+
         spec = TaskSpec(
             task_id=task_id,
             title=title,
@@ -359,6 +392,7 @@ class Supervisor:
             run_id=run_id,
             branch=lease.branch,
             memory_preamble=memory.worker_context(repo, task_id=task_id),
+            environment=prepared.block,
         )
         adapter = _adapter_for(provider)
         runner = RunnerGuardian(adapter)
@@ -379,6 +413,9 @@ class Supervisor:
             "branch": lease.branch,
             "worktree_path": lease.worktree_path,
             "migration_advisory": migration_advisory,
+            "compose_project": prepared.compose_project,
+            "db_port": prepared.db_port,
+            "evidence_path": prepared.evidence_path,
             "overlap_advisory": overlap_advisory,
         }
 

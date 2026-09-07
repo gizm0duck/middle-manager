@@ -52,13 +52,22 @@ heading:
 """
 
 
-def command_rules(provider: str, branch: str | None = None) -> str:
+def command_rules(provider: str, branch: str | None = None, environment: str | None = None) -> str:
     """The command-rules block for ``provider``, or "" when it needs none.
 
     Single source of truth: the dispatch path, the docs, and the tests all read
     this. ``branch`` fills in the push line; without one the worker is told to use
     its own branch name, which it can read from git.
+
+    ``environment`` is the per-repository environment block dispatch rendered
+    (:mod:`middle_manager.environment`): the evidence directory, the local gate,
+    the private database stack, the push-hook policy. It is appended after the
+    command rules for a Claude worker and is the whole block for a Codex worker,
+    whose sandbox has a real shell and needs no command rules — the environment
+    facts are the repository's, not the provider's.
     """
+    block = (environment or "").strip()
     if provider != "claude":
-        return ""
-    return _CLAUDE_RULES.format(branch=branch or "<your task branch>")
+        return f"{block}\n" if block else ""
+    rules = _CLAUDE_RULES.format(branch=branch or "<your task branch>")
+    return f"{rules}\n{block}\n" if block else rules

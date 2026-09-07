@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -30,6 +30,20 @@ CREATE TABLE IF NOT EXISTS repos (
     -- Where this repo keeps its database migrations, so dispatch and review can
     -- see two tasks adding one off the same head. Unset means the default glob.
     migrations_glob TEXT,
+    -- The environment block a worker is handed at dispatch (issue #60): whether
+    -- this repo runs a per-task compose stack (and which file), the base the
+    -- task's database port is derived from, whether the pre-push hook runs the
+    -- full suite, the scoped local gate, who owns the full suite, and where
+    -- receipts go inside the worktree. All optional; unset reads as the default.
+    compose_stack TEXT,
+    db_port_base INTEGER,
+    -- The variable name the port travels under in make overrides and the root
+    -- .env (default DB_PORT; papaya-backend uses PAPAYA_DB_PORT).
+    db_port_variable TEXT,
+    push_hook_runs_full_suite INTEGER,
+    local_gate TEXT,
+    full_suite_owner TEXT,
+    evidence_dir TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -304,6 +318,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Where this repo's migrations live. Unset reads as the default glob, so
         # every already-registered repo gets the collision advisory for free.
         conn.execute("ALTER TABLE repos ADD COLUMN migrations_glob TEXT")
+    for col, kind in (
+        ("compose_stack", "TEXT"),
+        ("db_port_base", "INTEGER"),
+        ("db_port_variable", "TEXT"),
+        ("push_hook_runs_full_suite", "INTEGER"),
+        ("local_gate", "TEXT"),
+        ("full_suite_owner", "TEXT"),
+        ("evidence_dir", "TEXT"),
+    ):
+        # The per-repo environment block (issue #60). Unset means the default, so
+        # every already-registered repo gets the evidence-directory and local/CI
+        # lines for free and declares a compose stack or a push hook when it has one.
+        if col not in repo_cols:
+            conn.execute(f"ALTER TABLE repos ADD COLUMN {col} {kind}")
     review_cols = _column_names(conn, "reviews")
     if "note" not in review_cols:
         # The reviewer's own words, bound to the SHA they read; delivery quotes them.

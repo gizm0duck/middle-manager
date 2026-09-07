@@ -30,6 +30,7 @@ EXCLUDE_ENV = "MM_AUTOCOMMIT_EXCLUDE"
 # Ordered; later rules win. A leading "!" keeps a path the earlier rules excluded.
 DEFAULT_EXCLUDES: tuple[str, ...] = (
     "evidence/",  # review evidence: captures, receipts, gate output
+    ".mm-evidence/",  # the in-worktree receipt directory the environment block pins
     "receipts/",
     "*.png",  # screenshots a worker took to prove its work
     "!docs/",  # …except the diagrams and images that belong to the repo

@@ -23,8 +23,9 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-#: Repo-relative roots the brief's evidence contract already names.
-EVIDENCE_ROOTS = ("docs/generated/", "docs/evidence/")
+#: Repo-relative roots the brief's evidence contract already names, and the
+#: in-worktree directory the environment block pins (issue #60).
+EVIDENCE_ROOTS = ("docs/generated/", "docs/evidence/", ".mm-evidence/")
 #: Words that make a directory a receipts directory whatever else it is called.
 EVIDENCE_WORDS = ("receipt", "evidence", "capture", "screenshot")
 #: Files worth handing the reviewer as an openable path.
