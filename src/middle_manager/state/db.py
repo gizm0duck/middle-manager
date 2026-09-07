@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -196,6 +196,17 @@ CREATE TABLE IF NOT EXISTS todos (
     done_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status, position, id);
+
+-- The newest comment (or event) timestamp the manager has processed on an
+-- external record — a ticket URL or id — so a sweep asks only for what is newer
+-- and an empty sweep costs one list call, not a re-read. Same shape `mm watch`
+-- keeps per pull request, for records the harness does not own.
+CREATE TABLE IF NOT EXISTS watermarks (
+    key TEXT PRIMARY KEY,
+    watermark TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    note TEXT
+);
 
 CREATE TABLE IF NOT EXISTS assessment_cycles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
