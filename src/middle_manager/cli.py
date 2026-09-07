@@ -400,8 +400,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
-    if resp.get("migration_advisory"):
-        print(resp["migration_advisory"])
+    for advisory in ("migration_advisory", "overlap_advisory"):
+        if resp.get(advisory):
+            print(resp[advisory])
     if instructions.strip():
         # Archived whether the instructions came from a file or the command line:
         # this is the copy `mm deliver` quotes when it writes the pull request body,
@@ -803,6 +804,14 @@ def _cmd_review(args: argparse.Namespace) -> int:
                 flag = migrations.review_flag(init_db(), task)
                 if flag:
                     print(flag)
+                    print()
+                # Where this layer sits in its stack and what has to merge before
+                # it — the line ten reflections said the brief should have carried.
+                from middle_manager import stacks
+
+                order = stacks.merge_order(init_db(), task)
+                if order:
+                    print(order)
                     print()
             print(
                 f"task {bundle.task_id}: {bundle.base_sha[:8]}..{bundle.head_sha[:8]} "

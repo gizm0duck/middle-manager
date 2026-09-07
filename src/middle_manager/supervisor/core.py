@@ -185,6 +185,22 @@ class Supervisor:
         except Exception:  # noqa: BLE001 - an advisory never costs the dispatch
             migration_advisory = None
 
+        # Whether another task in flight here already touches the files this brief
+        # names. Four parallel tasks on one module cost three hand-resolved
+        # conflicts on 2026-09-06 (issue #61); the sibling is named and --stack-on
+        # suggested. Also a suggestion, never a refusal.
+        overlap_advisory = None
+        touched: list[str] = []
+        try:
+            from middle_manager import overlap as _overlap
+
+            touched = _overlap.touched_paths(instructions, repo_row["local_path"])
+            overlap_advisory = _overlap.dispatch_advisory(
+                conn, repo_row, touched, stack_on=stack_on
+            )
+        except Exception:  # noqa: BLE001 - an advisory never costs the dispatch
+            overlap_advisory = None
+
         # Validate the task packet contract before doing any work.
         packet = {
             "title": title,
@@ -289,6 +305,12 @@ class Supervisor:
             stacked_on=base,
             stacked_on_task=stack_on,
         )
+        # What this brief says it touches, kept for the next dispatch to compare
+        # against before this worker has written a line.
+        with contextlib.suppress(Exception):
+            from middle_manager import overlap as _overlap
+
+            _overlap.record_touches(conn, task_id, touched)
         store.append_event(
             conn,
             kind="dispatched",
@@ -357,6 +379,7 @@ class Supervisor:
             "branch": lease.branch,
             "worktree_path": lease.worktree_path,
             "migration_advisory": migration_advisory,
+            "overlap_advisory": overlap_advisory,
         }
 
     def _resolve_and_enforce(

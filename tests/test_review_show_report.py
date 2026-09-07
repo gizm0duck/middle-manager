@@ -126,3 +126,35 @@ def test_review_show_says_nothing_when_the_two_migrations_have_different_parents
     )
     assert cli.main(["review", "show", str(second)]) == 0
     assert "MIGRATION COLLISION" not in capsys.readouterr().out
+
+
+def test_review_show_states_the_merge_order_for_a_stacked_layer(home, monkeypatch, capsys) -> None:
+    """Task 92: 'a line about merge order would have saved me discovering it at the end'."""
+    conn = home
+    run_id = store.create_run(conn, "stack")
+    bottom = store.add_task(conn, run_id=run_id, title="bottom layer")
+    store.update_task_fields(conn, bottom, branch="mm/task-1-aaa")
+    top = store.add_task(conn, run_id=run_id, title="top layer")
+    store.update_task_fields(
+        conn, top, branch="mm/task-2-bbb", stacked_on="mm/task-1-aaa", stacked_on_task=bottom
+    )
+
+    import middle_manager.review as review_mod
+
+    monkeypatch.setattr(
+        review_mod,
+        "build_bundle",
+        lambda tid: SimpleNamespace(
+            task_id=tid, base_sha="a" * 40, head_sha="b" * 40, files_changed=1, diffstat="1 file"
+        ),
+    )
+    assert cli.main(["review", "show", str(top)]) == 0
+    out = capsys.readouterr().out
+    assert "stack: layer 2 of 2; its pull request targets mm/task-1-aaa" in out, out
+    assert f'task {bottom} "bottom layer" (branch mm/task-1-aaa, unmerged)' in out
+    assert f"then this task {top}" in out
+    assert out.index("stack: layer") < out.index(f"task {top}: ")
+
+    # The bottom layer has no parent: nothing to sequence, so nothing is printed.
+    assert cli.main(["review", "show", str(bottom)]) == 0
+    assert "stack: layer" not in capsys.readouterr().out

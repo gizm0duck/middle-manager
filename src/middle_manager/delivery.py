@@ -106,6 +106,7 @@ def deliver(
     branch = task["branch"]
     if not worktree or not branch:
         raise DeliveryError("task has no worktree/branch to deliver")
+    explicit_base = base is not None
     if base is None and "stacked_on" in task.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
         # A task dispatched with --base opens its PR against that branch unless
         # the caller says otherwise; stacked PRs no longer depend on remembering.
@@ -123,10 +124,17 @@ def deliver(
     except stacks.StackError as exc:
         raise DeliveryError(str(exc)) from exc
 
-    # A layer whose parent has already merged cannot target the parent's branch.
+    # A layer whose parent has already merged cannot target the parent's branch;
+    # one whose parent has not merged is refused against the default branch, and
+    # against a parent branch the forge has not seen, unless --base says otherwise.
     base_note = None
     if base:
-        base, base_note = stacks.delivery_base(conn, task, base)
+        try:
+            base, base_note = stacks.delivery_base(
+                conn, task, base, explicit=explicit_base, remote=remote
+            )
+        except stacks.StackError as exc:
+            raise DeliveryError(str(exc)) from exc
 
     # The gate: never ship work that was not reviewed at its current head.
     approved, reason = is_approved_at_head(task_id)

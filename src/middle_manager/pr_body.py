@@ -249,11 +249,19 @@ def _stack(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
     if stacked_on == _default_branch(conn, task["repo_id"]):
         stacked_on = ""
     if stacked_on:
-        return (
+        lead = (
             f"This work was started from the branch `{stacked_on}` and opens against it, "
             "so it sits on top of the change on that branch rather than on the default "
             "branch. Merge that one first, then this."
         )
+        # When the parent is a recorded task, name the whole chain in merge order:
+        # ten reflections in one week said the brief should have carried this line.
+        from middle_manager import stacks
+
+        order = stacks.merge_order(conn, task)
+        if order:
+            return f"{lead}\n\n{order[0].upper()}{order[1:]}"
+        return lead
     return (
         "Bottom of its stack: this work started from the repository's default branch "
         "and targets it directly. Nothing has to land before it."
