@@ -13,10 +13,15 @@ from middle_manager.router import (
 )
 
 
-def _config(max_model="sonnet", max_reasoning="medium"):
+def _config(
+    max_model="sonnet",
+    max_reasoning="medium",
+    default_model="haiku",
+    default_reasoning="low",
+):
     return MMConfig(
         manager=ManagerProfile("claude", "opus", "high"),
-        worker=WorkerCeiling("claude", max_model, max_reasoning),
+        worker=WorkerCeiling("claude", max_model, max_reasoning, default_model, default_reasoning),
     )
 
 
@@ -45,28 +50,45 @@ def test_unknown_model_rejected_unless_ceiling() -> None:
         enforce_ceiling(_config("sonnet"), WorkerProfile("claude", "mystery", "low"))
 
 
-def _codex_config(max_model="gpt-5-codex", max_reasoning="medium"):
+def _codex_config(
+    max_model="gpt-5-codex",
+    max_reasoning="medium",
+    default_model=None,
+    default_reasoning=None,
+):
     return MMConfig(
         manager=ManagerProfile("claude", "opus", "high"),
-        worker=WorkerCeiling("codex", max_model, max_reasoning),
+        worker=WorkerCeiling("codex", max_model, max_reasoning, default_model, default_reasoning),
     )
 
 
-def test_codex_chooses_ceiling_model_not_a_fabricated_one() -> None:
-    # Codex has no model ladder: whatever the ceiling names is the only option.
-    profile = choose_worker(_codex_config("gpt-5.6-sol"))
+def test_codex_chooses_configured_default_not_a_cheaper_model_implicitly() -> None:
+    profile = choose_worker(_codex_config("gpt-5.6-sol", "xhigh", "gpt-5.6-sol", "high"))
     assert profile.model == "gpt-5.6-sol"
+    assert profile.reasoning == "high"
     assert choose_worker(_codex_config("gpt-5.6-sol"), complexity="hard").model == "gpt-5.6-sol"
 
 
 def test_codex_rejects_model_other_than_ceiling() -> None:
-    with pytest.raises(CeilingError):
-        enforce_ceiling(_codex_config("gpt-5.6-sol"), WorkerProfile("codex", "gpt-5-codex", "low"))
+    config = _codex_config("gpt-5.6-sol")
+    enforce_ceiling(config, WorkerProfile("codex", "gpt-5.6-luna", "low"))
+    enforce_ceiling(config, WorkerProfile("codex", "gpt-5.6-terra", "medium"))
     enforce_ceiling(_codex_config("gpt-5.6-sol"), WorkerProfile("codex", "gpt-5.6-sol", "medium"))
+    with pytest.raises(CeilingError):
+        enforce_ceiling(config, WorkerProfile("codex", "gpt-6-astra", "low"))
+    with pytest.raises(CeilingError):
+        enforce_ceiling(config, WorkerProfile("codex", "unknown-codex", "low"))
+
+
+def test_different_real_provider_never_bypasses_ceiling() -> None:
+    with pytest.raises(CeilingError, match="does not match"):
+        enforce_ceiling(_codex_config("gpt-5.6-sol"), WorkerProfile("claude", "haiku", "low"))
 
 
 def test_unranked_claude_ceiling_only_allows_itself() -> None:
     # A ranked request against an unranked ceiling must not slip through.
     with pytest.raises(CeilingError):
         enforce_ceiling(_config("custom-model"), WorkerProfile("claude", "haiku", "low"))
-    assert choose_worker(_config("custom-model")).model == "custom-model"
+    assert choose_worker(_config("custom-model", default_model="custom-model")).model == (
+        "custom-model"
+    )

@@ -95,6 +95,20 @@ def test_codex_start_argv() -> None:
     assert any("model_reasoning_effort" in a for a in argv)
 
 
+def test_codex_resume_keeps_explicit_model_and_reasoning() -> None:
+    argv = CodexAdapter().resume(
+        _spec(
+            "codex",
+            resume_session_id="thread-9",
+            model="gpt-5.6-sol",
+            reasoning="high",
+        )
+    )
+    assert argv[:3] == ["codex", "exec", "resume"]
+    assert "--model" in argv and "gpt-5.6-sol" in argv
+    assert 'model_reasoning_effort="high"' in argv
+
+
 def test_codex_start_prepends_memory_preamble() -> None:
     spec = _spec("codex", memory_preamble="Shared repo memory: read notes.md, log tasks.md")
     prompt = CodexAdapter().start(spec)[2]

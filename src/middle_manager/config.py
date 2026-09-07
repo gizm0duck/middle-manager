@@ -39,6 +39,13 @@ class WorkerCeiling:
     provider: str = "codex"
     max_model: str = "gpt-5-codex"
     max_reasoning: str = "medium"
+    # Defaults are independent of the ceiling: omitted task choices must resolve
+    # deterministically instead of leaking through to a harness/account default.
+    # Appended for positional-constructor compatibility with the original three
+    # ceiling fields.
+    default_model: str | None = None
+    default_reasoning: str | None = None
+    max_concurrent: int = 2
 
 
 @dataclass
@@ -148,6 +155,12 @@ class MMConfig:
             raise ConfigError(f"manager.reasoning must be one of {REASONING_LEVELS}")
         if self.worker.max_reasoning not in REASONING_LEVELS:
             raise ConfigError(f"worker.max_reasoning must be one of {REASONING_LEVELS}")
+        if self.worker.default_model is None:
+            self.worker.default_model = self.worker.max_model
+        if self.worker.default_reasoning is None:
+            self.worker.default_reasoning = self.worker.max_reasoning
+        if self.worker.default_reasoning not in REASONING_LEVELS:
+            raise ConfigError(f"worker.default_reasoning must be one of {REASONING_LEVELS}")
         if self.cost_posture not in COST_POSTURES:
             raise ConfigError(f"cost_posture must be one of {COST_POSTURES}")
         for name in ("model",):
@@ -155,6 +168,29 @@ class MMConfig:
                 raise ConfigError(f"manager.{name} must be set")
         if not self.worker.max_model:
             raise ConfigError("worker.max_model must be set")
+        if not self.worker.default_model:
+            raise ConfigError("worker.default_model must be set")
+        if (
+            isinstance(self.worker.max_concurrent, bool)
+            or not isinstance(self.worker.max_concurrent, int)
+            or self.worker.max_concurrent < 1
+        ):
+            raise ConfigError("worker.max_concurrent must be a positive integer")
+        # Import locally to keep config serialization independent while using the
+        # router's one authoritative model/reasoning comparison.
+        from middle_manager.router import CeilingError, WorkerProfile, enforce_ceiling
+
+        try:
+            enforce_ceiling(
+                self,
+                WorkerProfile(
+                    self.worker.provider,
+                    self.worker.default_model,
+                    self.worker.default_reasoning,
+                ),
+            )
+        except CeilingError as exc:
+            raise ConfigError(f"worker default exceeds its ceiling: {exc}") from exc
         for name in (
             "completed_runs",
             "max_days",
@@ -197,9 +233,14 @@ class MMConfig:
 
 
 def _from_dict(data: dict) -> MMConfig:
+    worker = dict(data.get("worker", {}))
+    # A pre-defaults config inherits its former ceiling explicitly. That keeps old
+    # custom-model configs loadable and deterministic without guessing a rank.
+    worker.setdefault("default_model", worker.get("max_model", WorkerCeiling.max_model))
+    worker.setdefault("default_reasoning", worker.get("max_reasoning", WorkerCeiling.max_reasoning))
     cfg = MMConfig(
         manager=ManagerProfile(**data.get("manager", {})),
-        worker=WorkerCeiling(**data.get("worker", {})),
+        worker=WorkerCeiling(**worker),
         cost_posture=data.get("cost_posture", "lean"),
         authority=Authority(**data.get("authority", {})),
         tools=ToolsPolicy(**data.get("tools", {})),

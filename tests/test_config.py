@@ -27,6 +27,9 @@ def test_round_trip(tmp_path) -> None:
     loaded = load_config(path)
     assert loaded.manager.provider == "claude"
     assert loaded.worker.max_model == "gpt-5-codex"
+    assert loaded.worker.default_model == "gpt-5-codex"
+    assert loaded.worker.default_reasoning == "medium"
+    assert loaded.worker.max_concurrent == 2
     assert loaded.authority.merge is False
     assert loaded.cost_posture == "lean"
     assert loaded.assessments.completed_runs == 5
@@ -50,6 +53,9 @@ max_reasoning = "medium"
     loaded = load_config(path)
     assert loaded.assessments.enabled is True
     assert loaded.assessments.max_days == 14
+    assert loaded.worker.default_model == "gpt-5-codex"
+    assert loaded.worker.default_reasoning == "medium"
+    assert loaded.worker.max_concurrent == 2
 
 
 def test_missing_config_raises(tmp_path) -> None:
@@ -71,3 +77,16 @@ def test_invalid_provider_rejected() -> None:
 
 def test_merge_defaults_off() -> None:
     assert Authority().merge is False
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_worker_concurrency_must_be_a_positive_integer(value) -> None:
+    cfg = MMConfig(worker=WorkerCeiling(max_concurrent=value))
+    with pytest.raises(ConfigError, match="positive integer"):
+        cfg.validate()
+
+
+def test_worker_default_must_fit_model_and_reasoning_ceiling() -> None:
+    cfg = MMConfig(worker=WorkerCeiling("codex", "gpt-5.6-sol", "high", "gpt-6-astra", "xhigh"))
+    with pytest.raises(ConfigError, match="worker default exceeds"):
+        cfg.validate()

@@ -69,6 +69,8 @@ class CodexAdapter(ProviderAdapter):
         ]
         if spec.model:
             argv += ["--model", spec.model]
+        if spec.reasoning:
+            argv += ["-c", f'model_reasoning_effort="{spec.reasoning}"']
         return argv
 
     def supports_interrupt_steer(self) -> bool:

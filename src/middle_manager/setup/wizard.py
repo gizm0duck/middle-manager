@@ -19,7 +19,7 @@ from middle_manager.config import (
     save_config,
 )
 from middle_manager.memory import ensure_memory_layout
-from middle_manager.paths import ensure_layout
+from middle_manager.paths import config_path, ensure_layout
 from middle_manager.setup.discovery import discover, usable_harnesses
 from middle_manager.state.db import init_db
 
@@ -60,6 +60,14 @@ def build_config(overrides: dict) -> MMConfig:
             provider=worker_provider,
             max_model=overrides.get("worker_max_model", _default_model(worker_provider)),
             max_reasoning=overrides.get("worker_max_reasoning", "medium"),
+            default_model=overrides.get(
+                "worker_default_model",
+                overrides.get("worker_max_model", _default_model(worker_provider)),
+            ),
+            default_reasoning=overrides.get(
+                "worker_default_reasoning", overrides.get("worker_max_reasoning", "medium")
+            ),
+            max_concurrent=overrides.get("worker_max_concurrent", 2),
         ),
         cost_posture=overrides.get("cost_posture", "lean"),
         authority=Authority(
@@ -104,20 +112,39 @@ def run_setup(non_interactive: bool = False, overrides: dict | None = None) -> M
 
 def config_models(overrides: dict) -> MMConfig:
     """`mm config models` — rerun discovery and change either profile."""
-    try:
-        current = load_config()
-    except ConfigError:
-        current = None
-    merged = dict(overrides)
-    if current is not None:
-        merged.setdefault("manager_provider", current.manager.provider)
-        merged.setdefault("manager_model", current.manager.model)
-        merged.setdefault("manager_reasoning", current.manager.reasoning)
-        merged.setdefault("worker_provider", current.worker.provider)
-        merged.setdefault("worker_max_model", current.worker.max_model)
-        merged.setdefault("worker_max_reasoning", current.worker.max_reasoning)
-        merged.setdefault("cost_posture", current.cost_posture)
-    cfg = build_config(merged)
+    # Only an absent file means first-time construction. An existing but invalid
+    # config may hold authority and custom policy that must not be replaced by a
+    # newly built default config; surface the error and leave its bytes untouched.
+    path = config_path()
+    current = load_config(path) if path.exists() else None
+    if current is None:
+        cfg = build_config(overrides)
+    else:
+        report = discover()
+        usable = usable_harnesses(report)
+        manager_provider = overrides.get("manager_provider", current.manager.provider)
+        worker_provider = overrides.get("worker_provider", current.worker.provider)
+        for role, provider in (("manager", manager_provider), ("worker", worker_provider)):
+            if provider not in usable:
+                raise ConfigError(f"{role} provider {provider!r} is not usable; usable: {usable}")
+
+        current.manager.provider = manager_provider
+        current.worker.provider = worker_provider
+        for key, target, attr in (
+            ("manager_model", current.manager, "model"),
+            ("manager_reasoning", current.manager, "reasoning"),
+            ("worker_max_model", current.worker, "max_model"),
+            ("worker_max_reasoning", current.worker, "max_reasoning"),
+            ("worker_default_model", current.worker, "default_model"),
+            ("worker_default_reasoning", current.worker, "default_reasoning"),
+            ("worker_max_concurrent", current.worker, "max_concurrent"),
+        ):
+            if key in overrides:
+                setattr(target, attr, overrides[key])
+        if "cost_posture" in overrides:
+            current.cost_posture = overrides["cost_posture"]
+        current.validate()
+        cfg = current
     save_config(cfg)
     return cfg
 

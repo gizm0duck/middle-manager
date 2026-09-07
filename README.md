@@ -183,7 +183,8 @@ mm assessment status                  # cadence and current performance-review c
 
 All my working state lives under `.mm/` (gitignored — it's my desk, not the repo):
 
-- `config.toml` — manager profile, worker ceiling, cost posture, authority,
+- `config.toml` — manager profile, worker defaults and ceiling, active-worker limit,
+  cost posture, authority,
   self-assessment cadence, and the tool profile Claude workers launch with
   (`claude.allowed_tools`; `MM_CLAUDE_ALLOWED_TOOLS` overrides it for a session).
 - `state.db` — SQLite source of truth (repos, runs, tasks, decisions, sessions,
@@ -201,11 +202,47 @@ All my working state lives under `.mm/` (gitignored — it's my desk, not the re
 
 ## Who does what — me vs. the workers
 
-You pick an expensive manager profile (me) and a hard worker ceiling — provider,
-top model, top reasoning — during setup. I assign the smallest worker who can do
-each job and only reach for a bigger model when the work proves it needs one. The
-ceiling is enforced *in code*, so I can't "accidentally" bill you for my model
-doing a junior's task. I'd never. (I might mention how much I saved you, though.)
+You pick a manager profile (me), a deterministic worker default, and a hard worker
+ceiling — provider, top model, and top reasoning. Omitted task choices use the
+worker default; they never inherit the signed-in account's CLI defaults. Explicit
+lower-cost task profiles are allowed below the ceiling, but Middle Manager never
+automatically selects a more expensive profile.
+
+For the small Codex team profile — a future manager session on Astra/xhigh, workers
+defaulting to Sol/high, a Sol/xhigh hard ceiling, and two active workers — configure:
+
+```sh
+mm config models \
+  --manager-provider codex --manager-model gpt-6-astra --manager-reasoning xhigh \
+  --worker-provider codex \
+  --worker-default-model gpt-5.6-sol --worker-default-reasoning high \
+  --worker-max-model gpt-5.6-sol --worker-max-reasoning xhigh \
+  --worker-max-concurrent 2
+```
+
+Changing the manager profile affects the next manager launch; it cannot change the
+model of an already-running chat. A task may explicitly request `gpt-5.6-terra` or
+`gpt-5.6-luna` (and an allowed reasoning effort) for supporting work. The recognized
+Codex safety order is Luna < Terra < Sol < Astra; an unknown custom name is accepted
+only when it exactly matches the configured ceiling.
+
+`worker.max_concurrent` is a basic admission cap for normal operation under one
+manager-owned supervisor; it counts active provider executions, not completed
+worktrees awaiting review. The manager should serialize dispatch and resume calls,
+never issue a duplicate resume for a live task, and keep one writer per shared module.
+If a launch failure leaves stale runner state, check worker health and reconcile it
+before retrying. If an automatic continuation is refused because capacity filled in
+the meantime, manually resume it after a slot opens.
+
+This iteration does not provide a cross-process lock, a distributed scheduler, or
+durable automatic-continuation retries. Do not run multiple supervisors for one
+`.mm` home. The cap is an operational guardrail, not a hard dollar budget or a
+distributed-concurrency guarantee.
+
+Codex workers receive their concrete model and `model_reasoning_effort` on both start
+and resume. The current Claude adapter does not forward the configured reasoning
+effort, so this recommended effort-controlled team uses Codex; Middle Manager does
+not invent or translate unverified Claude effort mappings.
 
 ## What I won't do without checking with you first
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from middle_manager.config import ConfigError, load_config
+from middle_manager import cli
+from middle_manager.config import ConfigError, MMConfig, WorkerCeiling, load_config, save_config
 from middle_manager.setup import discovery, wizard
 
 
@@ -73,3 +74,81 @@ def test_config_authority_toggles_merge(mm_home, monkeypatch) -> None:
     assert load_config().authority.merge is False
     wizard.config_authority({"merge": True})
     assert load_config().authority.merge is True
+
+
+def test_config_models_preserves_every_unrequested_setting(mm_home, monkeypatch) -> None:
+    report = _fake_report(["claude", "codex"])
+    monkeypatch.setattr(wizard, "discover", lambda: report)
+    monkeypatch.setattr(wizard, "usable_harnesses", lambda r: discovery.usable_harnesses(r))
+    cfg = MMConfig(worker=WorkerCeiling("codex", "gpt-5.6-sol", "xhigh", "gpt-5.6-sol", "high", 3))
+    cfg.authority.merge = True
+    cfg.authority.open_pr = False
+    cfg.tools.location = "custom/tools"
+    cfg.health.quiet_minutes = 27
+    cfg.assessments.completed_runs = 9
+    cfg.claude.allowed_tools = ["Read", "Bash(make:*)"]
+    save_config(cfg)
+    expected = cfg.to_dict()
+    expected["manager"]["model"] = "sonnet"
+
+    wizard.config_models({"manager_model": "sonnet"})
+
+    assert load_config().to_dict() == expected
+
+
+def test_config_models_leaves_invalid_existing_config_bytes_untouched(mm_home) -> None:
+    path = mm_home / "config.toml"
+    path.parent.mkdir(parents=True)
+    original = b"""cost_posture = "lean"
+[manager]
+provider = "codex"
+model = "gpt-6-astra"
+reasoning = "xhigh"
+[worker]
+provider = "codex"
+max_model = "gpt-5.6-sol"
+max_reasoning = "xhigh"
+default_model = "gpt-5.6-sol"
+default_reasoning = "high"
+max_concurrent = 0
+[authority]
+merge = true
+"""
+    path.write_bytes(original)
+
+    with pytest.raises(ConfigError, match="positive integer"):
+        wizard.config_models({"manager_model": "gpt-6-astra"})
+
+    assert path.read_bytes() == original
+
+
+def test_config_models_cli_parses_worker_defaults_and_concurrency(monkeypatch, capsys) -> None:
+    captured = {}
+    cfg = MMConfig(worker=WorkerCeiling("codex", "gpt-5.6-sol", "xhigh", "gpt-5.6-sol", "high", 4))
+
+    def update(overrides):
+        captured.update(overrides)
+        return cfg
+
+    monkeypatch.setattr(wizard, "config_models", update)
+    assert (
+        cli.main(
+            [
+                "config",
+                "models",
+                "--worker-default-model",
+                "gpt-5.6-sol",
+                "--worker-default-reasoning",
+                "high",
+                "--worker-max-concurrent",
+                "4",
+            ]
+        )
+        == 0
+    )
+    assert captured == {
+        "worker_default_model": "gpt-5.6-sol",
+        "worker_default_reasoning": "high",
+        "worker_max_concurrent": 4,
+    }
+    assert "concurrency 4" in capsys.readouterr().out
