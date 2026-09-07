@@ -1670,15 +1670,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "build on this task: the worker starts from that task's lease branch and "
             "the stack parent is recorded, so `mm stack` and `mm deliver` follow the "
-            "chain without being told a branch name"
+            "chain without being told a branch name. The parent need not have pushed "
+            "yet: a branch not on the forge is taken from the base clone or the "
+            "parent's lease worktree"
         ),
     )
     dispatch.add_argument(
         "--base",
         default=None,
         help=(
-            "start the worker from origin/<branch> instead of the repo base (stacked "
-            "PRs); recorded on the task so `mm deliver` opens the PR against it"
+            "start the worker from <branch> instead of the repo base (stacked PRs): "
+            "the forge's copy when it has one, else the local lease branch; recorded "
+            "on the task so `mm deliver` opens the PR against it"
         ),
     )
     dispatch.set_defaults(func=_cmd_dispatch)

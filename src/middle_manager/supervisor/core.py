@@ -53,14 +53,29 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
-def _start_from_branch(worktree_path: str, branch: str, remote: str = "origin") -> str:
-    """Move a fresh worktree onto ``<remote>/<branch>`` and return the resulting HEAD.
+def _start_from_branch(
+    worktree_path: str,
+    branch: str,
+    remote: str = "origin",
+    local_source: str | None = None,
+) -> str:
+    """Move a fresh worktree onto ``branch`` and return the resulting HEAD.
 
-    ``remote`` is the repo's forge remote. For a repo registered from a local
-    path, ``origin`` is that local clone and the branch a stack is built on lives
-    on the forge instead.
+    The branch is looked for in three places, in order: on ``remote`` (the repo's
+    forge — for a repo registered from a local path, ``origin`` is that local clone
+    and the branch a stack is built on lives on the forge instead); as a local ref
+    of the base clone, which every lease worktree shares; and in ``local_source``,
+    the lease worktree of the task being stacked on, fetched as a peer.
+
+    The last two are what let a layer start from a parent that has not pushed
+    yet. On 2026-09-05 (issue #57) ``--stack-on`` was refused two minutes after
+    the parent was dispatched, because only the forge was ever asked — while the
+    parent's lease branch sat in the base clone the whole time. Which tip the
+    child starts from is recorded as its ``base_sha`` either way; the push comes
+    later, with the parent's own delivery.
     """
     import subprocess
+    from pathlib import Path
 
     def git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -68,19 +83,38 @@ def _start_from_branch(worktree_path: str, branch: str, remote: str = "origin") 
         )
 
     fetched = git("fetch", "--quiet", remote, branch)
-    if fetched.returncode != 0:
+    if fetched.returncode == 0:
+        target, source = "FETCH_HEAD", f"{remote}/{branch}"
+    elif git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+        target, source = f"refs/heads/{branch}", f"the local branch {branch}"
+    elif (
+        local_source
+        and Path(local_source).is_dir()
+        and (git("fetch", "--quiet", local_source, branch).returncode == 0)
+    ):
+        target, source = "FETCH_HEAD", f"{branch} in the lease worktree {local_source}"
+    else:
         raise SupervisorError(
             f"cannot start from {branch!r}: git fetch {remote} {branch} failed: "
-            f"{fetched.stderr.strip()[:200]}"
+            f"{fetched.stderr.strip()[:200]}; and no local branch {branch!r} exists in the "
+            "base clone either"
         )
-    reset = git("reset", "--hard", "--quiet", "FETCH_HEAD")
+    reset = git("reset", "--hard", "--quiet", target)
     if reset.returncode != 0:
         raise SupervisorError(
-            f"cannot start from {branch!r}: git reset --hard {remote}/{branch} failed: "
+            f"cannot start from {branch!r}: git reset --hard onto {source} failed: "
             f"{reset.stderr.strip()[:200]}"
         )
     head = git("rev-parse", "HEAD")
     return head.stdout.strip()
+
+
+def _lease_worktree_for_branch(conn, branch: str) -> str | None:
+    """The lease worktree of the task whose branch this is, if any is recorded."""
+    row = conn.execute(
+        "SELECT worktree_path FROM tasks WHERE branch = ? ORDER BY id DESC LIMIT 1", (branch,)
+    ).fetchone()
+    return row["worktree_path"] if row is not None and row["worktree_path"] else None
 
 
 class Supervisor:
@@ -226,7 +260,10 @@ class Supervisor:
                 from middle_manager import repos as _repos
 
                 base_sha = _start_from_branch(
-                    lease.worktree_path, base, _repos.upstream_remote(repo_row)
+                    lease.worktree_path,
+                    base,
+                    _repos.upstream_remote(repo_row),
+                    local_source=_lease_worktree_for_branch(conn, base),
                 )
             except SupervisorError as exc:
                 store.set_task_status(conn, task_id, "failed")

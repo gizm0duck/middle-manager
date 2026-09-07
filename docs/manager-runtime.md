@@ -442,7 +442,10 @@ that see one slice with no context.
   <previous task_id>`. The starting branch is derived from that task's lease, the
   stack parent is recorded, the worker starts from that branch, and `mm deliver`
   opens the pull request against it without being told again. (`--base <branch>`
-  still works when you genuinely mean a branch rather than a task.)
+  still works when you genuinely mean a branch rather than a task.) The parent
+  does not have to have pushed: a lease branch the forge has not seen yet is
+  taken from the base clone, so every layer of a stack can be dispatched the
+  moment its brief is ready — never poll the forge for the parent's branch.
 - **`mm stack <task_id>` is how you read a stack.** It renders bottom-up — the
   order it has to merge in — with each layer's branch, pull request and its base,
   review state, and whether that base still matches the layer below, which is the
