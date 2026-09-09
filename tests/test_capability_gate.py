@@ -64,3 +64,87 @@ def test_committed_matrix_matches_m0(tmp_path) -> None:
     assert capability.allows_interrupt_steer("codex", cli_version="0.150.1") is True
     # Codex is single-shot: mid-process steer stays false even so.
     assert capability.capabilities_for("codex")["mid_process_steer"] is False
+
+
+def _write_local(tmp_path, monkeypatch, providers) -> None:
+    """Point MM_HOME at a scratch dir and write the machine-local record there."""
+    home = tmp_path / "mm-home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MM_HOME", str(home))
+    (home / "provider-capabilities.json").write_text(
+        json.dumps({"providers": providers}), encoding="utf-8"
+    )
+    capability.clear_cache()
+
+
+def test_local_record_overrides_tracked(tmp_path, monkeypatch) -> None:
+    # The tracked record proves claude at 2.1.251; this machine runs 2.1.226.
+    assert capability.allows_interrupt_steer("claude", cli_version="2.1.226") is False
+    _write_local(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": {
+                "cli_version": "2.1.226",
+                "capabilities": {
+                    "resume_after_sigint_tool": True,
+                    "resume_after_sigkill": True,
+                    "session_survives_process_exit": True,
+                },
+            }
+        },
+    )
+    assert capability.allows_interrupt_steer("claude", cli_version="2.1.226") is True
+    assert capability.recorded_version("claude") == "2.1.226"
+    assert capability.record_source("claude") == capability.LOCAL
+
+
+def test_local_override_is_per_provider(tmp_path, monkeypatch) -> None:
+    # Probing only claude must not demote the tracked codex row to unproven.
+    _write_local(
+        tmp_path,
+        monkeypatch,
+        {"claude": {"cli_version": "2.1.226", "capabilities": {}}},
+    )
+    assert capability.record_source("claude") == capability.LOCAL
+    assert capability.record_source("codex") == capability.TRACKED
+    assert capability.allows_interrupt_steer("codex", cli_version="0.150.1") is True
+
+
+def test_missing_local_record_falls_back_to_tracked(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("MM_HOME", str(home))
+    capability.clear_cache()
+    assert capability.record_source("claude") == capability.TRACKED
+    assert capability.allows_interrupt_steer("claude", cli_version="2.1.251") is True
+
+
+def test_explicit_path_ignores_local_override(tmp_path, monkeypatch) -> None:
+    # An explicit path means "exactly this file" — no override consulted.
+    _write_local(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": {
+                "cli_version": "9.9.9",
+                "capabilities": {
+                    "resume_after_sigint_tool": True,
+                    "resume_after_sigkill": True,
+                    "session_survives_process_exit": True,
+                },
+            }
+        },
+    )
+    p = _write(tmp_path / "explicit.json", {"claude": {"cli_version": "1.0.0"}})
+    assert capability.recorded_version("claude", path=p) == "1.0.0"
+    assert capability.allows_interrupt_steer("claude", cli_version="9.9.9", path=p) is False
+
+
+def test_unknown_provider_has_no_source(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "no-home"
+    home.mkdir()
+    monkeypatch.setenv("MM_HOME", str(home))
+    capability.clear_cache()
+    assert capability.record_source("nope") is None
+    assert capability.recorded_version("nope") is None

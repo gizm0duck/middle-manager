@@ -1,9 +1,22 @@
-"""Load the committed provider capability matrix and gate steering behavior.
+"""Load the provider capability matrix and gate steering behavior.
 
 Adapters consult this to decide whether they may offer mid-flight interrupt
 steering (versus checkpoint-at-completion steering plus a fresh-session recovery
 packet). Fail-closed: a missing file, provider, or flag reads as ``False``, and a
 CLI whose version no longer matches the recorded probe is treated as unproven.
+
+Two records feed the matrix:
+
+* the tracked ``provider-capabilities.json`` at the repo root, which describes
+  whatever CLI versions the maintainer probed; and
+* a machine-local ``.mm/provider-capabilities.json``, written by a local probe
+  run and gitignored with the rest of ``.mm``.
+
+Precedence is **per provider**, not per file: a local probe of one provider
+overrides only that provider and leaves the tracked rows for the others intact.
+That matters because a machine can usually only probe the harnesses it actually
+has installed, and a whole-file override would silently demote every provider it
+could not reach to unproven.
 """
 
 from __future__ import annotations
@@ -13,9 +26,13 @@ import os
 from functools import lru_cache
 
 import middle_manager
+from middle_manager.paths import local_capabilities_path
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(middle_manager.__file__)))
 _DEFAULT_PATH = os.path.join(_REPO_ROOT, "provider-capabilities.json")
+
+TRACKED = "tracked"
+LOCAL = "local"
 
 _ALL_FLAGS = (
     "session_id_in_stream",
@@ -44,6 +61,23 @@ def _load(path: str) -> dict:
         return {}
 
 
+def _resolve(provider: str, path: str | None) -> tuple[dict | None, str | None]:
+    """Return ``(record, source)`` for a provider, local overriding tracked.
+
+    An explicit ``path`` means the caller wants exactly that file, so no
+    override is consulted. ``source`` is ``LOCAL``, ``TRACKED``, or ``None``
+    when the provider is absent from both.
+    """
+    if path is not None:
+        record = _load(path).get(provider)
+        return record, (TRACKED if record else None)
+    record = _load(str(local_capabilities_path())).get(provider)
+    if record:
+        return record, LOCAL
+    record = _load(_DEFAULT_PATH).get(provider)
+    return record, (TRACKED if record else None)
+
+
 def capabilities_for(
     provider: str, cli_version: str | None = None, path: str | None = None
 ) -> dict[str, bool]:
@@ -53,8 +87,7 @@ def capabilities_for(
     record is treated as not applicable (all flags False), since interrupt/resume
     behavior drifts across CLI versions.
     """
-    providers = _load(path or _DEFAULT_PATH)
-    record = providers.get(provider)
+    record, _ = _resolve(provider, path)
     base = dict.fromkeys(_ALL_FLAGS, False)
     if not record:
         return base
@@ -84,6 +117,20 @@ def allows_interrupt_steer(
 
 
 def recorded_version(provider: str, path: str | None = None) -> str | None:
-    providers = _load(path or _DEFAULT_PATH)
-    record = providers.get(provider)
+    record, _ = _resolve(provider, path)
     return record.get("cli_version") if record else None
+
+
+def record_source(provider: str, path: str | None = None) -> str | None:
+    """Which record answered for this provider: ``LOCAL``, ``TRACKED``, or None.
+
+    ``mm doctor`` reports this so a drift line names the file the user would
+    have to re-probe or update.
+    """
+    _, source = _resolve(provider, path)
+    return source
+
+
+def clear_cache() -> None:
+    """Drop the memoized file reads (after a probe writes a new record)."""
+    _load.cache_clear()

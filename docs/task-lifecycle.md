@@ -72,7 +72,9 @@ still on disk. It prints the SHA it pushed, or the refusal it got.
 ## Steering a live worker
 
 `mm steer <task> --message ...` picks its mode from the provider's proven
-capabilities (`provider-capabilities.json`), and reports which one it used:
+capabilities (the machine-local `.mm/provider-capabilities.json` if a local
+probe wrote one for that provider, otherwise the tracked
+`provider-capabilities.json`), and reports which one it used:
 
 | Mode | When | What happens |
 | --- | --- | --- |

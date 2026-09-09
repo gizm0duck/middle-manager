@@ -6,6 +6,8 @@ import subprocess
 
 import pytest
 
+from middle_manager.providers import capability
+
 
 @pytest.fixture(autouse=True)
 def _force_git_lease_backend(monkeypatch):
@@ -76,6 +78,22 @@ def _isolated_treehouse_home(tmp_path, monkeypatch):
     developer's own worktrees in range.
     """
     monkeypatch.setenv("MM_TREEHOUSE_HOME", str(tmp_path / "treehouse-home"))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_capability_record(tmp_path, monkeypatch):
+    """Keep the capability gate off the developer's machine-local probe record.
+
+    ``.mm/provider-capabilities.json`` overrides the tracked matrix per provider,
+    and ``MM_HOME`` falls back to the cwd — so on a developer machine that has run
+    `make probe`, any test not requesting ``mm_home`` would read that real record
+    and assert against whatever this laptop happens to prove. Point the override
+    at an empty temp home so the hermetic suite sees only the tracked matrix.
+    """
+    monkeypatch.setenv("MM_HOME", str(tmp_path / "capability-home"))
+    capability.clear_cache()
+    yield
+    capability.clear_cache()
 
 
 @pytest.fixture
