@@ -569,3 +569,26 @@ def test_disk_refusal_says_so_when_there_is_nothing_to_reclaim(repo):
     with pytest.raises(preflight.PreflightError) as exc:
         preflight.check_disk(floor_gb=10**9)
     assert "nothing to reclaim right now" in str(exc.value)
+
+
+def test_prune_never_takes_a_slot_a_resumable_task_still_names(repo):
+    """Task 158 (issue #58): lease released on failure, slot still on disk, task
+    still resumable — prune called it an orphan and removed it."""
+    task_id, lease = _lease_a_task(repo, status="failed")
+    # The lease is handed back but the checkout stays on disk (a pooled slot).
+    store.release_lease(init_db(), lease.id)
+
+    res = prune()
+
+    assert res["removed"] == []
+    [skipped] = res["skipped"]
+    assert skipped["task_id"] == task_id
+    assert skipped["orphaned"] is True
+    assert f"task {task_id} (failed)" in skipped["reason"]
+    assert "can be resumed into it" in skipped["reason"]
+    assert Path(lease.worktree_path).exists()
+
+    # Once the task is over, the same slot is an ordinary clean orphan again.
+    store.set_task_status(init_db(), task_id, "closed")
+    res = prune()
+    assert [r["path"] for r in res["removed"]] == [lease.worktree_path]

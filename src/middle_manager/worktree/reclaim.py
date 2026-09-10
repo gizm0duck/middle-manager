@@ -145,8 +145,15 @@ def _inspect(entry: WorktreeEntry) -> WorktreeEntry:
     rc, out = _git(["rev-list", "--count", "HEAD", "--not", "--remotes"], entry.checkout)
     entry.unpushed_commits = int(out) if rc == 0 and out.isdigit() else -1
 
-    if not entry.orphaned and entry.task_status not in RECLAIMABLE_STATUSES:
+    if (
+        not entry.orphaned or entry.task_id is not None
+    ) and entry.task_status not in RECLAIMABLE_STATUSES:
         entry.reason = f"task is {entry.task_status or 'unknown'}, not finished with"
+        if entry.orphaned:
+            entry.reason = (
+                f"no active lease, but task {entry.task_id} ({entry.task_status}) still names "
+                "this slot as its worktree and can be resumed into it"
+            )
         return entry
     if entry.dirty:
         entry.reason = "uncommitted changes in the worktree"
@@ -291,6 +298,18 @@ def orphan_slots(
         path = row["worktree_path"] or ""
         owned.add(_resolved(path))
         owned.add(_resolved(Path(path).parent))
+    # A slot no lease owns can still be the recorded worktree of a task that is
+    # not over — a failed worker whose lease was handed back while its task is
+    # still `mm resume`-able. Task 158 lost its checkout that way on 2026-09-06
+    # (issue #58). Such a slot is listed, with the task named, and never taken.
+    resumable: dict[str, tuple[int, str]] = {}
+    for row in conn.execute(
+        "SELECT id, status, worktree_path FROM tasks WHERE worktree_path IS NOT NULL "
+        "AND status NOT IN (?, ?, ?)",
+        RECLAIMABLE_STATUSES,
+    ).fetchall():
+        for key in (_resolved(row["worktree_path"]), _resolved(Path(row["worktree_path"]).parent)):
+            resumable.setdefault(key, (int(row["id"]), row["status"]))
     repos_by_path = managed_base_clones(conn)
 
     entries: list[WorktreeEntry] = []
@@ -308,21 +327,19 @@ def orphan_slots(
             owner = repos_by_path.get(_main_repo_of(str(checkout)))
             if repo is not None and owner != repo:
                 continue
-            entries.append(
-                _inspect(
-                    WorktreeEntry(
-                        lease_id="",
-                        path=str(slot),
-                        repo=owner,
-                        task_id=None,
-                        task_status=None,
-                        branch=_branch_of(str(checkout)),
-                        orphaned=True,
-                        checkout_path=str(checkout),
-                        managed=owner is not None,
-                    )
-                )
+            named_by = resumable.get(_resolved(slot)) or resumable.get(_resolved(checkout))
+            entry = WorktreeEntry(
+                lease_id="",
+                path=str(slot),
+                repo=owner,
+                task_id=named_by[0] if named_by else None,
+                task_status=named_by[1] if named_by else None,
+                branch=_branch_of(str(checkout)),
+                orphaned=True,
+                checkout_path=str(checkout),
+                managed=owner is not None,
             )
+            entries.append(_inspect(entry))
     return entries
 
 

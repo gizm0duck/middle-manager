@@ -124,26 +124,48 @@ class LeaseManager:
         repo_id: int | None = None,
         task_id: int | None = None,
         branch_prefix: str = "mm",
+        branch: str | None = None,
     ) -> Lease:
+        """Lease a fresh worktree; a fresh branch unless ``branch`` names the task's own.
+
+        ``branch`` is for a task getting its worktree *back* (issue #58): the
+        pull request, the remote, and every record already carry that name, so
+        the rebuilt checkout is put on it — the existing local branch when the
+        base clone still has one, a new branch at the clone's head otherwise.
+        The caller moves it to the right commit afterwards.
+        """
         if self.backend == "treehouse":
-            return self._acquire_treehouse(repo_path, repo_id, task_id, branch_prefix)
-        return self._acquire_git(repo_path, repo_id, task_id, branch_prefix)
+            return self._acquire_treehouse(repo_path, repo_id, task_id, branch_prefix, branch)
+        return self._acquire_git(repo_path, repo_id, task_id, branch_prefix, branch)
 
     def _acquire_git(
-        self, repo_path: str, repo_id: int | None, task_id: int | None, branch_prefix: str
+        self,
+        repo_path: str,
+        repo_id: int | None,
+        task_id: int | None,
+        branch_prefix: str,
+        branch: str | None,
     ) -> Lease:
         lease_id = uuid.uuid4().hex[:12]
-        branch = f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id}"
         pool = worktree_pools_dir()
         pool.mkdir(parents=True, exist_ok=True)
         worktree_path = str(pool / lease_id)
 
         base_sha = _git(["rev-parse", "HEAD"], cwd=repo_path)
-        _git(["worktree", "add", "-q", "-b", branch, worktree_path, "HEAD"], cwd=repo_path)
+        if branch and _branch_exists(repo_path, branch):
+            _git(["worktree", "add", "-q", worktree_path, branch], cwd=repo_path)
+        else:
+            branch = branch or f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id}"
+            _git(["worktree", "add", "-q", "-b", branch, worktree_path, "HEAD"], cwd=repo_path)
         return self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
 
     def _acquire_treehouse(
-        self, repo_path: str, repo_id: int | None, task_id: int | None, branch_prefix: str
+        self,
+        repo_path: str,
+        repo_id: int | None,
+        task_id: int | None,
+        branch_prefix: str,
+        branch: str | None,
     ) -> Lease:
         holder = f"mm-task-{task_id or 'adhoc'}"
         out = _run_treehouse(_th_acquire_argv(holder), cwd=repo_path)
@@ -153,8 +175,11 @@ class LeaseManager:
         base_sha = _git(["rev-parse", "HEAD"], cwd=worktree_path)
         # Treehouse hands out a pooled checkout; give the task its own branch so
         # delivery can push HEAD:<branch> exactly as with the git backend.
-        branch = f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id[:12]}"
-        _git(["switch", "-c", branch], cwd=worktree_path)
+        if branch and _branch_exists(worktree_path, branch):
+            _git(["switch", branch], cwd=worktree_path)
+        else:
+            branch = branch or f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id[:12]}"
+            _git(["switch", "-c", branch], cwd=worktree_path)
         return self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
 
     def _record(
@@ -210,6 +235,17 @@ class LeaseManager:
     def is_dirty(self, lease: Lease) -> bool:
         out = _git(["status", "--porcelain"], cwd=lease.worktree_path)
         return bool(out.strip())
+
+
+def _branch_exists(repo_path: str, branch: str) -> bool:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
 
 
 def with_suppressed_branch_delete(repo_path: str, branch: str) -> None:

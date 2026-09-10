@@ -25,9 +25,9 @@ def _capture_runs(supervisor: Supervisor, monkeypatch) -> list:
     captured = []
     monkeypatch.setattr(core, "_adapter_for", lambda provider: FakeProvider())
 
-    def capture(runner, spec):
+    def capture(runner, spec, execution=None):
         captured.append(spec)
-        supervisor._release_capacity(spec.task_id)
+        supervisor._release(execution)
 
     monkeypatch.setattr(supervisor, "_run_task", capture)
     return captured

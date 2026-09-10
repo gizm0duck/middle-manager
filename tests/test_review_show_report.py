@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import make_git_repo
-from middle_manager import cli, progress
+from middle_manager import cli, migrations, progress
 from middle_manager.state import init_db, store
 
 
@@ -35,42 +36,68 @@ def _git(path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _worktree_adding_a_migration(path, *, revision: str, down_revision: str) -> tuple[str, str]:
-    """A worktree whose diff against its base adds exactly one Alembic revision."""
-    make_git_repo(path)
-    base = _git(path, "rev-parse", "HEAD")
-    migration = path / "backend" / "alembic" / "versions" / f"{revision}.py"
+def _lease_worktree(conn, clone, task_id: int) -> str:
+    """A real lease worktree of the base clone, on the task's own branch, recorded as active."""
+    branch = f"mm/task-{task_id}-abc"
+    path = Path(clone).parent / f"slot-{task_id}"
+    _git(clone, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+    store.add_lease(
+        conn,
+        lease_id=f"lease-{task_id}",
+        repo_id=1,
+        task_id=task_id,
+        branch=branch,
+        worktree_path=str(path),
+        base_sha=_git(clone, "rev-parse", "HEAD"),
+        backend="git",
+    )
+    store.update_task_fields(
+        conn,
+        task_id,
+        worktree_path=str(path),
+        base_sha=_git(clone, "rev-parse", "HEAD"),
+        branch=branch,
+        lease_id=f"lease-{task_id}",
+    )
+    return str(path)
+
+
+def _add_migration(worktree, *, revision: str, down_revision: str) -> None:
+    migration = Path(worktree) / "backend" / "alembic" / "versions" / f"{revision}.py"
     migration.parent.mkdir(parents=True, exist_ok=True)
     migration.write_text(_MIGRATION.format(revision=revision, down_revision=down_revision))
-    _git(path, "add", ".")
-    _git(path, "commit", "-qm", f"add revision {revision}")
-    return str(path), base
+    _git(worktree, "add", ".")
+    _git(
+        worktree,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@e.com",
+        "commit",
+        "-qm",
+        f"add revision {revision}",
+    )
 
 
 def _two_tasks_each_adding_a_migration(conn, tmp_path, *, first_parent: str, second_parent: str):
+    clone = make_git_repo(tmp_path / "clone")
     repo_id = store.add_repo(
         conn,
         name="backend",
         origin=str(tmp_path / "origin"),
-        local_path=str(tmp_path / "clone"),
+        local_path=clone,
         default_branch="main",
         base_sha=None,
     )
     run_id = store.create_run(conn, "two migrations")
     ids = []
-    for index, (title, revision, parent) in enumerate(
-        (
-            ("add the events table", "aaa", first_parent),
-            ("add the sessions table", "bbb", second_parent),
-        )
+    for title, revision, parent in (
+        ("add the events table", "aaa", first_parent),
+        ("add the sessions table", "bbb", second_parent),
     ):
         task_id = store.add_task(conn, run_id=run_id, title=title, repo_id=repo_id)
-        worktree, base = _worktree_adding_a_migration(
-            tmp_path / f"worker-{index}", revision=revision, down_revision=parent
-        )
-        store.update_task_fields(
-            conn, task_id, worktree_path=worktree, base_sha=base, branch=f"mm/task-{task_id}-abc"
-        )
+        worktree = _lease_worktree(conn, clone, task_id)
+        _add_migration(worktree, revision=revision, down_revision=parent)
         store.set_task_status(conn, task_id, "in_progress")
         ids.append(task_id)
     return ids
@@ -158,3 +185,149 @@ def test_review_show_states_the_merge_order_for_a_stacked_layer(home, monkeypatc
     # The bottom layer has no parent: nothing to sequence, so nothing is printed.
     assert cli.main(["review", "show", str(bottom)]) == 0
     assert "stack: layer" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Ownership is by commit, not by path (issue #74); in flight is bounded (issue #56)
+# --------------------------------------------------------------------------- #
+
+
+def _historical_task(conn, *, title: str, status: str, worktree: str, branch: str, merged=False):
+    """A finished task whose record still points at a slot somebody else holds now."""
+    run_id = store.create_run(conn, title)
+    task_id = store.add_task(conn, run_id=run_id, title=title, repo_id=1)
+    store.update_task_fields(
+        conn, task_id, worktree_path=worktree, branch=branch, base_sha="0" * 40, lease_id=None
+    )
+    if merged:
+        store.update_task_fields(conn, task_id, merged_sha="f" * 40, merged_at="2026-08-01T00:00Z")
+    store.set_task_status(conn, task_id, status)
+    return task_id
+
+
+def test_recycled_slot_paths_do_not_turn_one_migration_into_phantom_competitors(
+    home, tmp_path, capsys
+) -> None:
+    """Task 170's own migration was reported as colliding with tasks 4, 80 and 90:
+    all three records pointed at the pool slot task 170 now held (2026-09-07)."""
+    conn = home
+    clone = make_git_repo(tmp_path / "clone")
+    store.add_repo(
+        conn,
+        name="backend",
+        origin=str(tmp_path / "origin"),
+        local_path=clone,
+        default_branch="main",
+        base_sha=None,
+    )
+    run_id = store.create_run(conn, "radar")
+    current = store.add_task(conn, run_id=run_id, title="radar engine foundation", repo_id=1)
+    slot = _lease_worktree(conn, clone, current)
+    _add_migration(slot, revision="d8f0a2c4", down_revision="c7e9a1b3")
+    store.set_task_status(conn, current, "worker_done")
+
+    # Three finished tasks whose records name the same slot, with branches that
+    # are retired (the base clone never had them) — the shape in the report.
+    for title, status, merged in (
+        ("old failed", "failed", False),
+        ("old delivered", "delivered", True),
+        ("old delivered too", "delivered", True),
+    ):
+        _historical_task(
+            conn, title=title, status=status, worktree=slot, branch=f"mm/{title}", merged=merged
+        )
+
+    assert cli.main(["review", "show", str(current)]) == 0
+    out = capsys.readouterr().out
+    assert "MIGRATION COLLISION" not in out, out
+    assert "MIGRATION CHECK INCOMPLETE" not in out, out
+
+
+def test_an_unmerged_delivered_task_at_a_recycled_path_is_checked_by_its_branch(
+    home, tmp_path, capsys
+) -> None:
+    """The positive case beside the phantom one: a real second branch off the same
+    parent is still found, from its commits, after its slot was handed on."""
+    conn = home
+    first, second = _two_tasks_each_adding_a_migration(
+        home, tmp_path, first_parent="base", second_parent="base"
+    )
+    # The first task delivered (PR open, unmerged) and its slot was pruned: the
+    # lease is released, the directory is gone, the branch survives in the clone.
+    clone = str(tmp_path / "clone")
+    first_row, second_row = store.get_task(conn, first), store.get_task(conn, second)
+    store.release_lease(conn, first_row["lease_id"])
+    _git(clone, "worktree", "remove", "--force", first_row["worktree_path"])
+    store.set_task_status(conn, first, "delivered")
+    # And the second task's checkout now lives at the very path the first recorded.
+    _git(clone, "worktree", "move", second_row["worktree_path"], first_row["worktree_path"])
+    store.update_task_fields(conn, second, worktree_path=first_row["worktree_path"])
+    conn.execute(
+        "UPDATE leases SET worktree_path = ? WHERE id = ?",
+        (first_row["worktree_path"], second_row["lease_id"]),
+    )
+    conn.commit()
+
+    assert cli.main(["review", "show", str(second)]) == 0
+    out = capsys.readouterr().out
+    assert "MIGRATION COLLISION" in out, out
+    assert f'task {first} "add the events table"' in out
+
+
+def test_a_failed_task_is_not_in_flight_however_recent(home, tmp_path, capsys) -> None:
+    """Tasks 2–5 (issue #56) were `failed` Codex runs with real migrations on their
+    branches; they suggested `--stack-on` a month after anyone had looked at them."""
+    conn = home
+    first, second = _two_tasks_each_adding_a_migration(
+        home, tmp_path, first_parent="base", second_parent="base"
+    )
+    store.set_task_status(conn, first, "failed")
+    assert cli.main(["review", "show", str(second)]) == 0
+    assert "MIGRATION COLLISION" not in capsys.readouterr().out
+    assert migrations.dispatch_advisory(conn, store.get_repo(conn, "backend")) is not None
+    assert f"--stack-on {first}" not in (
+        migrations.dispatch_advisory(conn, store.get_repo(conn, "backend")) or ""
+    )
+
+
+def test_an_in_flight_task_nobody_has_touched_for_a_month_is_not_in_flight(home, tmp_path) -> None:
+    conn = home
+    first, _second = _two_tasks_each_adding_a_migration(
+        home, tmp_path, first_parent="base", second_parent="base"
+    )
+    repo = store.get_repo(conn, "backend")
+    assert f"--stack-on {first}" in (migrations.dispatch_advisory(conn, repo) or "")
+
+    conn.execute(
+        "UPDATE tasks SET updated_at = ? WHERE id = ?", ("2026-08-01T00:00:00+00:00", first)
+    )
+    conn.commit()
+    advisory = migrations.dispatch_advisory(conn, repo) or ""
+    assert f"--stack-on {first}" not in advisory
+
+    # A live runner is proof of life whatever the timestamp says.
+    store.register_runner(conn, runner_id="r1", task_id=first, provider="fake")
+    store.update_runner(conn, "r1", status="running")
+    assert f"--stack-on {first}" in (migrations.dispatch_advisory(conn, repo) or "")
+
+
+def test_review_names_an_in_flight_task_whose_commits_cannot_be_read(
+    home, tmp_path, capsys
+) -> None:
+    """Missing or retired branches are said out loud, never silently passed."""
+    conn = home
+    first, second = _two_tasks_each_adding_a_migration(
+        home, tmp_path, first_parent="base", second_parent="base"
+    )
+    first_row = store.get_task(conn, first)
+    store.release_lease(conn, first_row["lease_id"])
+    clone = str(tmp_path / "clone")
+    _git(clone, "worktree", "remove", "--force", first_row["worktree_path"])
+    _git(clone, "branch", "-D", first_row["branch"])
+
+    assert cli.main(["review", "show", str(second)]) == 0
+    out = capsys.readouterr().out
+    assert "MIGRATION COLLISION" not in out
+    assert "MIGRATION CHECK INCOMPLETE" in out, out
+    assert f'task {first} "add the events table"' in out
+    assert "exists neither in an owned worktree nor in the base clone" in out

@@ -54,8 +54,10 @@ class SupervisorClient:
     def resume_task(self, task_id: int, message: str | None = None) -> dict:
         return self._call({"cmd": "resume_task", "task_id": task_id, "message": message})
 
-    def steer_task(self, task_id: int, message: str) -> dict:
-        return self._call({"cmd": "steer_task", "task_id": task_id, "message": message})
+    def steer_task(self, task_id: int, message: str, delivery: str = "append") -> dict:
+        return self._call(
+            {"cmd": "steer_task", "task_id": task_id, "message": message, "delivery": delivery}
+        )
 
     def answer_question(
         self, task_id: int, answer: str, scope: str = "run", rationale: str | None = None

@@ -19,9 +19,19 @@ defect, a FAIL, or a symptom) gets every check:
    acceptance or test line naming the same backticked token are pointed at;
 5. no absolute ``/tmp`` or ``/private/tmp`` path in an evidence section.
 
-Any other brief gets only checks 4 and 5. The heuristics are deliberately
-narrow: a false positive costs the manager's trust in the lint, a miss costs
-one more reflection.
+Any other brief gets only checks 4 and 5.
+
+Every brief, defect or not, also owes four outcome sections (issue #77): Goals,
+Intent, In scope, Out of scope. A brief can specify steps and tests without
+saying what success is, why it matters, or where to stop; a worker then
+optimises a mechanism or hardens something adjacent while the product outcome
+sits unfinished. Check 6 asks only that each section exists and says something
+— structure, not semantic quality. The same four sections are what
+:func:`standing_scope` carries into every resume and steer packet, so a
+continuation is self-contained and cannot silently drop a boundary.
+
+The heuristics are deliberately narrow: a false positive costs the manager's
+trust in the lint, a miss costs one more reflection.
 """
 
 from __future__ import annotations
@@ -48,6 +58,33 @@ _DEFECT_WORDS = re.compile(r"\bdefect\b|\bsymptom\b", re.IGNORECASE)
 _FAIL_WORD = re.compile(r"\bFAIL\b")
 
 _CAUSE_WORDS = ("hypothes", "cause", "mechanism", "diagnos")
+
+#: The outcome sections every brief carries, with what each one is for. The
+#: patterns anchor at the start of the heading so "Non-goals" is not "Goals".
+OUTCOME_SECTIONS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "Goals",
+        re.compile(r"^goals?\b"),
+        "the observable outcomes this task must deliver, its acceptance criteria, and the "
+        "authoritative project contract or plan when one exists",
+    ),
+    (
+        "Intent",
+        re.compile(r"^intent\b"),
+        "why the task is needed, who benefits, and the desired outcome as distinct from any "
+        "suggested implementation",
+    ),
+    (
+        "In scope",
+        re.compile(r"^in[ -]scope\b"),
+        "the concrete changes, components and verification the worker is authorised to do",
+    ),
+    (
+        "Out of scope",
+        re.compile(r"^(?:out[ -]of[ -]scope|not in scope)\b"),
+        "the explicit exclusions and stopping boundaries, including tempting adjacent work",
+    ),
+)
 _SCOPE_WORDS = ("scope", "rule", "constraint", "derivation")
 _ACCEPTANCE_WORDS = ("acceptance", "test", "verif", "case")
 
@@ -285,6 +322,94 @@ def _check_evidence_paths(lines: list[_Line]) -> list[Finding]:
     return findings
 
 
+def _section_body(lines: list[_Line], heading: _Line) -> list[_Line]:
+    """The lines under ``heading`` until the next heading of its level or higher."""
+    level = len(_HEADING.match(heading.text).group(1))  # type: ignore[union-attr]
+    body: list[_Line] = []
+    for line in lines:
+        if line.number <= heading.number:
+            continue
+        match = _HEADING.match(line.text)
+        if match is not None and len(match.group(1)) <= level:
+            break
+        body.append(line)
+    return body
+
+
+def _outcome_headings(lines: list[_Line]) -> dict[str, _Line | None]:
+    found: dict[str, _Line | None] = {}
+    for name, pattern, _purpose in OUTCOME_SECTIONS:
+        found[name] = None
+        for line in lines:
+            heading = _own_heading(line)
+            if heading is not None and pattern.match(heading):
+                found[name] = line
+                break
+    return found
+
+
+def outcome_sections(text: str) -> dict[str, str]:
+    """The four outcome sections' bodies, by canonical name, for the ones present and non-empty."""
+    lines = _classified_lines(text)
+    out: dict[str, str] = {}
+    for name, heading in _outcome_headings(lines).items():
+        if heading is None:
+            continue
+        body = "\n".join(ln.text for ln in _section_body(lines, heading)).strip("\n")
+        if body.strip():
+            out[name] = body
+    return out
+
+
+def standing_scope(text: str) -> str | None:
+    """The block a resume or steer packet carries so it stands on its own.
+
+    A continuation replaces the worker's instructions for the turn; without the
+    brief's boundaries repeated, a replacement packet silently erases them. The
+    four sections are quoted verbatim, framed as unchanged unless the message
+    itself says otherwise — a deliberate scope change is then something the
+    message states, never something it drops. ``None`` when the brief has none
+    of the sections, so a brief from before this rule is passed through as-is.
+    """
+    sections = outcome_sections(text)
+    if not sections:
+        return None
+    parts = [
+        "--- Standing scope, carried from the brief. It is unchanged unless the message "
+        "above says otherwise; anything it excludes stays excluded. ---"
+    ]
+    for name, _pattern, _purpose in OUTCOME_SECTIONS:
+        body = sections.get(name)
+        if body:
+            parts.append(f"## {name}\n{body}")
+    return "\n\n".join(parts)
+
+
+def _check_outcome_sections(lines: list[_Line]) -> list[Finding]:
+    findings: list[Finding] = []
+    headings = _outcome_headings(lines)
+    for name, _pattern, purpose in OUTCOME_SECTIONS:
+        heading = headings[name]
+        if heading is None:
+            findings.append(
+                Finding(
+                    1,
+                    f"no {name} section — add `## {name}`: {purpose}. A worker with no "
+                    f"{name.lower()} optimises the mechanism instead of the outcome",
+                )
+            )
+            continue
+        body = _section_body(lines, heading)
+        if not any(ln.text.strip() and _own_heading(ln) is None for ln in body):
+            findings.append(
+                Finding(
+                    heading.number,
+                    f"`## {name}` is empty — say {purpose}",
+                )
+            )
+    return findings
+
+
 def lint_brief(text: str) -> list[Finding]:
     """Every finding for ``text``, in line order.
 
@@ -298,6 +423,7 @@ def lint_brief(text: str) -> list[Finding]:
         findings += _check_probes(hypotheses)
         if hypotheses:
             findings += _check_discrepancies(lines, hypotheses)
+    findings += _check_outcome_sections(lines)
     findings += _check_self_consistency(lines)
     findings += _check_evidence_paths(lines)
     return sorted(findings, key=lambda f: f.line)

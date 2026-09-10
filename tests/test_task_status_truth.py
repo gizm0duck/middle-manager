@@ -140,7 +140,7 @@ def test_duplicate_resume_does_not_replace_a_live_task(server, source_repo):
     # state changes.
     resp = client.resume_task(task_id, "carry on")
     assert not resp["ok"]
-    assert "already has a live execution" in resp["error"]
+    assert "live execution" in resp["error"]
     assert client.task_status(task_id)["task"]["status"] == "in_progress"
     assert not _events(task_id, "resumed")
     assert [row["id"] for row in store.live_runners_for_task(init_db(), task_id)] == [old_runner_id]
@@ -172,7 +172,7 @@ def test_resume_flips_status_to_in_progress_before_the_worker_speaks(
 
     # No worker actually runs: the status must be truthful the instant resume
     # returns, not once the resumed process happens to emit its first event.
-    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: None)
+    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec, **kw: None)
     resp = client.resume_task(task_id, "pick it back up")
     assert resp["status"] == "in_progress"
     assert client.task_status(task_id)["task"]["status"] == "in_progress"

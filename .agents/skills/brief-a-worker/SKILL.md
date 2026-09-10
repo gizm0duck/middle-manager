@@ -2,13 +2,14 @@
 name: brief-a-worker
 description: >-
   The checklist a task brief must satisfy before `mm dispatch` — the things a
-  worker cannot recover once it has started: the exact starting commit, the design
-  reference for UI work, one authoritative verification suite, the test-hygiene
-  checks that only fail on CI, the evidence contract, gate policy and scope-change
-  protocol every brief carries, and the tables that turn prose semantics into
-  something a worker can be right about. Use every time you write or revise a brief;
-  it exists because each item on it cost a worker cycle between 2026-08-30 and
-  2026-09-03.
+  worker cannot recover once it has started: the Goals, Intent, In scope and Out of
+  scope sections that make the brief outcome-led and bounded, the exact starting
+  commit, the design reference for UI work, one authoritative verification suite,
+  the test-hygiene checks that only fail on CI, the evidence contract, gate policy
+  and scope-change protocol every brief carries, and the tables that turn prose
+  semantics into something a worker can be right about. Use every time you write or
+  revise a brief; it exists because each item on it cost a worker cycle between
+  2026-08-30 and 2026-09-03.
 user-invocable: false
 ---
 
@@ -18,6 +19,39 @@ A worker does exactly what the brief says and nothing it cannot know. Codex
 workers cannot be redirected mid-turn, so a brief that is wrong at the start is a
 wasted dispatch. Before `mm dispatch --brief <file>`, walk this list; every item was
 paid for once already.
+
+## 0. Outcome first: Goals, Intent, In scope, Out of scope
+
+Every brief opens with these four sections, under those headings, before any
+mechanism. `mm brief lint` and `mm dispatch --brief` refuse an empty or missing one
+under `--strict` and warn otherwise. They exist because a brief can specify steps
+and tests without saying what success is, why it matters, or where to stop — and a
+worker then optimises the mechanism, adds an adjacent capability, or hardens
+something speculative while the product outcome sits unfinished (issue #77).
+
+- **Goals.** The observable outcomes this task must deliver, its contribution to the
+  overall project goal, and the acceptance criteria as pass/fail items. Name the
+  authoritative project contract or plan when one exists, with its section. The
+  acceptance criteria live here, once; the closeout checklist at the end refers to
+  them rather than restating them.
+- **Intent.** Why the task is needed, who benefits, and the problem or experience it
+  improves. Separate the *outcome* from any *suggested approach*: "read it from
+  `delivery_events`" is a route, "the answer is on the page" is the requirement. A
+  worker that knows the difference flags a dead route instead of inventing a second
+  source.
+- **In scope.** The concrete capabilities, files or components, changes and
+  verification this task covers — what the worker is authorised to do.
+- **Out of scope.** Explicit exclusions and stopping boundaries, including the
+  tempting adjacent work: legacy compatibility, redesigns, speculative abstractions,
+  unrelated cleanup, additional hardening not needed for the agreed outcome. Name
+  them; "nothing else" is not a boundary a worker can check against.
+
+These four travel. The runtime appends them verbatim to every resume and steer
+packet as a *standing scope* block, so a continuation stands on its own and cannot
+silently drop an exclusion. A deliberate scope change is therefore something a
+steer *says* ("Out of scope is amended: …"); it is never something a packet omits.
+See [`docs/brief-example.md`](../../../docs/brief-example.md) for a complete short
+brief and the packet the worker receives after a steer.
 
 ## 1. The packet itself
 
@@ -37,8 +71,11 @@ paid for once already.
 - **Scope fence, both directions.** What is in (the plan section, verbatim), what is
   explicitly out (the neighbouring sections by name), and the two report headings
   the worker must fill: "Outside scope, required to build" and "Flagged, not done".
-- **The plan-note gate.** Require a `--phase plan` note (≤ 16 lines) mapping every
-  sub-part to files before code, and say you will read it against the section.
+- **The plan-note gate.** Require a `--phase plan` note (≤ 16 lines) before code that
+  maps each Goal to the files that deliver it and names anything the plan would need
+  that Out of scope excludes — and say you will read it against the four sections.
+  A plan that serves a mechanism no Goal asks for, or that quietly reaches into an
+  exclusion, is steered before implementation, not reviewed after it.
 
 ## 2. UI work: name the design reference
 
@@ -120,11 +157,14 @@ of re-reading the brief for it.
   files it under "Flagged, not done" instead of trying a third fix. Three workers stalled
   on a gate nobody owned and two gate cycles were lost for want of this block
   (window ending 2026-09-01).
-- **Scope-change protocol.** What the worker does when the brief turns out to be wrong:
-  stop at the checkpoint, state the conflict and the smallest correct alternative under
-  "Flagged, not done", and wait. Never widen scope silently, never invent a substitute
-  requirement. A worker resolving a wrong brief on its own cost one stale-intent incident
-  and one two-round change request.
+- **Scope-change protocol.** What the worker does when the brief turns out to be wrong
+  or an out-of-scope dependency turns up: stop at the checkpoint, and under "Flagged,
+  not done" state the conflict, its effect on the Goals and on the timeline, and the
+  smallest correct alternative — then wait. Never widen scope silently, never implement
+  something Out of scope excludes, never invent a substitute requirement. The manager
+  decides under its existing authority rules (routine: decide; scope expansion or a
+  product call: the user). A worker resolving a wrong brief on its own cost one
+  stale-intent incident and one two-round change request.
 
 Then **one closeout checklist at the end of the brief** — every acceptance item, gate and
 receipt in a single list — instead of the same constraints repeated inside each section.
@@ -171,5 +211,7 @@ Codex workers have a real shell and are deliberately not given the block.
 
 ## 8. Before you send it
 
-`test -s` the file; confirm disk and pool capacity (`mm dispatch` checks the disk);
-read the brief once as the worker: is there any instruction it would have to guess?
+`test -s` the file; `mm brief lint` it (the four outcome sections, and the defect
+shape when it is one); confirm disk and pool capacity (`mm dispatch` checks the
+disk); read the brief once as the worker: is there any instruction it would have to
+guess, and could it tell from the brief alone when it is done and when to stop?

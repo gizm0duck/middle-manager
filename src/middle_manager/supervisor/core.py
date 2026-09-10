@@ -9,11 +9,12 @@ supervisor restart.
 from __future__ import annotations
 
 import contextlib
-import functools
 import json
 import os
 import threading
 import time
+import uuid
+from dataclasses import dataclass
 
 from middle_manager import decisions
 from middle_manager.config import ConfigError, load_config
@@ -32,24 +33,25 @@ class SupervisorError(Exception):
     pass
 
 
-class _CapacityReservation:
-    """One not-yet-bound execution slot; identity is the reservation token."""
+@dataclass
+class _Execution:
+    """One admitted worker execution, from admission to the provider process's exit.
 
-    pass
+    The token is the whole identity. A reservation used to be keyed by the
+    calling thread and a bound slot by the task (issue #70): two resumes of one
+    stopped task could both reserve before either bound, the second binding
+    overwrote the first, and a finalizer for an old session released whatever
+    slot the task held *now*. Every path that gives a slot back names the
+    execution it is giving back, so an old finalizer can never release a newer
+    execution's slot, and an execution knows its task from admission — before
+    any branch sync, status write, or runner creation — so a duplicate resume
+    is refused with no side effects at all.
+    """
 
-
-def _release_pending_capacity_on_error(method):
-    """Make pre-launch admission rollback deterministic for public starts."""
-
-    @functools.wraps(method)
-    def wrapped(self, *args, **kwargs):
-        try:
-            return method(self, *args, **kwargs)
-        except BaseException:
-            self._release_pending_capacity()
-            raise
-
-    return wrapped
+    token: str
+    task_id: int | None
+    #: Set once the execution has a runner thread; until then it is pending.
+    bound: bool = False
 
 
 def _adapter_for(provider: str):
@@ -144,8 +146,8 @@ class Supervisor:
         self._threads: dict[int, threading.Thread] = {}
         self._runners: dict[int, RunnerGuardian] = {}
         self._leases: dict[int, object] = {}
-        self._pending_capacity: dict[int, _CapacityReservation] = {}
-        self._capacity_slots: dict[int, _CapacityReservation] = {}
+        #: Every admitted execution, pending or bound, by token.
+        self._executions: dict[str, _Execution] = {}
         # Question fingerprints already auto-answered per task; a fingerprint that
         # reappears after its stored answer is escalated instead of looping.
         self._auto_answered: dict[int, set[str]] = {}
@@ -153,7 +155,6 @@ class Supervisor:
     # ------------------------------------------------------------------ #
     # Dispatch
     # ------------------------------------------------------------------ #
-    @_release_pending_capacity_on_error
     def dispatch_task(
         self,
         *,
@@ -256,8 +257,50 @@ class Supervisor:
                     "`mm config claude --allowed-tools 'Read,Edit,Bash(git:*),...'`."
                 )
 
-        capacity = self._reserve_capacity(conn, limit=self._max_concurrent(provider), task_id=None)
+        execution = self._admit(conn, limit=self._max_concurrent(provider), task_id=None)
+        try:
+            return self._launch_dispatched(
+                conn,
+                execution,
+                repo_row=repo_row,
+                repo=repo,
+                title=title,
+                instructions=instructions,
+                provider=provider,
+                run_id=run_id,
+                model=model,
+                reasoning=reasoning,
+                base=base,
+                stack_on=stack_on,
+                touched=touched,
+                migration_advisory=migration_advisory,
+                overlap_advisory=overlap_advisory,
+            )
+        except BaseException:
+            # Whatever failed — the lease, the branch, provisioning, the adapter's
+            # argv, the thread — this execution is over and its slot goes back.
+            self._release(execution)
+            raise
 
+    def _launch_dispatched(
+        self,
+        conn,
+        execution: _Execution,
+        *,
+        repo_row,
+        repo: str,
+        title: str,
+        instructions: str,
+        provider: str,
+        run_id: int | None,
+        model: str | None,
+        reasoning: str | None,
+        base: str | None,
+        stack_on: int | None,
+        touched: list[str],
+        migration_advisory: str | None,
+        overlap_advisory: str | None,
+    ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
             store.set_run_status(conn, run_id, "running")
@@ -427,15 +470,13 @@ class Supervisor:
             self._runners[task_id] = runner
             self._leases[task_id] = (lease, repo_row["local_path"])
 
-        thread = threading.Thread(target=self._run_task, args=(runner, spec), daemon=True)
+        thread = threading.Thread(
+            target=self._run_task, args=(runner, spec), kwargs={"execution": execution}, daemon=True
+        )
         with self._lock:
             self._threads[task_id] = thread
-        self._bind_capacity(capacity, task_id)
-        try:
-            thread.start()
-        except Exception:
-            self._release_capacity(task_id)
-            raise
+        self._bind(execution, task_id)
+        thread.start()
 
         return {
             "run_id": run_id,
@@ -491,58 +532,85 @@ class Supervisor:
                 return WorkerCeiling().max_concurrent
             raise SupervisorError(f"run `mm setup` first: {exc}") from exc
 
-    def _reserve_capacity(self, conn, *, limit: int, task_id: int | None) -> _CapacityReservation:
-        """Atomically reserve a short-lived supervisor-local execution slot.
+    def _admit(self, conn, *, limit: int, task_id: int | None) -> _Execution:
+        """Atomically admit one execution, or refuse with nothing changed.
 
-        Normal operation uses one manager-owned :class:`Supervisor` per ``MM_HOME``.
-        Its short mutex protects admission inside that process; this is not a
-        cross-process or distributed scheduler. Persisted starting/running rows from
-        an earlier supervisor are counted conservatively until reconciliation marks
-        them otherwise.
+        Normal operation uses one manager-owned :class:`Supervisor` per
+        ``MM_HOME`` (enforced by the server's owner lock). The short mutex here
+        protects admission inside that process; this is not a distributed
+        scheduler. Persisted starting/running rows from an earlier supervisor
+        are counted conservatively until reconciliation marks them otherwise.
+        A resume names its task at admission, so a second resume of the same
+        task — pending or live — is refused here, before any side effect.
         """
         with self._lock:
             live = store.live_runners(conn)
-            if task_id is not None and (
-                task_id in self._capacity_slots or any(row["task_id"] == task_id for row in live)
-            ):
-                raise SupervisorError(
-                    f"task {task_id} already has a live execution; refusing a duplicate resume"
-                )
+            if task_id is not None:
+                if any(e.task_id == task_id for e in self._executions.values()):
+                    raise SupervisorError(
+                        f"task {task_id} already has a pending or live execution; "
+                        "refusing a duplicate resume"
+                    )
+                if any(row["task_id"] == task_id for row in live):
+                    raise SupervisorError(
+                        f"task {task_id} already has a live execution; refusing a duplicate resume"
+                    )
 
-            # A bound in-process slot and its runner row describe the same
-            # execution, so count that pair once. Extra live rows for the same task
-            # remain counted: they are still consuming provider capacity.
+            # A bound execution and its runner row describe the same process, so
+            # count that pair once. Extra live rows for the same task remain
+            # counted: they are still consuming provider capacity.
+            bound_tasks = [e.task_id for e in self._executions.values() if e.bound]
             persisted = len(live)
-            for active_task in self._capacity_slots:
+            for active_task in bound_tasks:
                 if any(row["task_id"] == active_task for row in live):
                     persisted -= 1
-            active = len(self._capacity_slots) + len(self._pending_capacity) + persisted
+            active = len(self._executions) + persisted
             if active >= limit:
                 raise SupervisorError(
                     f"worker capacity is full ({active}/{limit} active); retry after a worker exits"
                 )
-            reservation = _CapacityReservation()
-            self._pending_capacity[threading.get_ident()] = reservation
-            return reservation
+            execution = _Execution(token=uuid.uuid4().hex[:12], task_id=task_id)
+            self._executions[execution.token] = execution
+            return execution
 
-    def _bind_capacity(self, reservation: _CapacityReservation, task_id: int) -> None:
+    def _bind(self, execution: _Execution, task_id: int) -> None:
+        """Attach the runner thread's identity: from here the slot is this task's process."""
         with self._lock:
-            pending = self._pending_capacity.pop(threading.get_ident(), None)
-            if pending is not reservation:
-                raise SupervisorError("capacity reservation was lost before worker launch")
-            self._capacity_slots[task_id] = reservation
+            if self._executions.get(execution.token) is not execution:
+                raise SupervisorError("execution slot was released before worker launch")
+            execution.task_id = task_id
+            execution.bound = True
 
-    def _release_pending_capacity(self) -> None:
+    def _release(self, execution: _Execution | None) -> None:
+        """Give this execution's slot back. Idempotent; never touches another execution."""
+        if execution is None:
+            return
         with self._lock:
-            self._pending_capacity.pop(threading.get_ident(), None)
+            if self._executions.get(execution.token) is execution:
+                del self._executions[execution.token]
 
-    def _release_capacity(self, task_id: int) -> None:
+    def _active_executions(self) -> list[dict]:
         with self._lock:
-            self._capacity_slots.pop(task_id, None)
+            return [
+                {"token": e.token, "task_id": e.task_id, "bound": e.bound}
+                for e in self._executions.values()
+            ]
 
-    @_release_pending_capacity_on_error
-    def resume_task(self, task_id: int, message: str | None = None) -> dict:
-        """Resume a task's provider session (blocked-worker resume / checkpoint steer)."""
+    def resume_task(
+        self,
+        task_id: int,
+        message: str | None = None,
+        *,
+        continuation: dict | None = None,
+    ) -> dict:
+        """Resume a task's provider session (blocked-worker resume / checkpoint steer).
+
+        ``continuation`` names what this resume delivers — the queued steer
+        events, or the stored answer — and is written into the ``resumed`` event
+        before the runner thread starts. That event is the durable proof of
+        consumption (issue #71): a steer or answer counts as delivered when, and
+        only when, a launch carrying it was recorded.
+        """
         conn = init_db()
         task = store.get_task(conn, task_id)
         if task is None:
@@ -553,9 +621,37 @@ class Supervisor:
         model, reasoning = task["model"], task["reasoning"]
         if provider in ("claude", "codex"):
             model, reasoning = self._resolve_and_enforce(provider, model, reasoning)
-        capacity = self._reserve_capacity(
-            conn, limit=self._max_concurrent(provider), task_id=task_id
-        )
+        # Admission names the task: a second resume of this task is refused right
+        # here, before the worktree is rebuilt or synced, before any status write.
+        execution = self._admit(conn, limit=self._max_concurrent(provider), task_id=task_id)
+        try:
+            return self._launch_resumed(
+                conn,
+                execution,
+                task,
+                provider=provider,
+                model=model,
+                reasoning=reasoning,
+                message=message,
+                continuation=continuation,
+            )
+        except BaseException:
+            self._release(execution)
+            raise
+
+    def _launch_resumed(
+        self,
+        conn,
+        execution: _Execution,
+        task,
+        *,
+        provider: str,
+        model: str | None,
+        reasoning: str | None,
+        message: str | None,
+        continuation: dict | None = None,
+    ) -> dict:
+        task_id = int(task["id"])
         sess = conn.execute(
             "SELECT * FROM sessions WHERE task_id = ? ORDER BY id DESC LIMIT 1",
             (task_id,),
@@ -570,6 +666,12 @@ class Supervisor:
             recorded = turn_end.latest_stop_verdict(conn, task_id)
             if recorded is not None and task["status"] == turn_end.WORKER_STOPPED:
                 message = recorded.resume_message()
+        # The worktree may be gone: a failed worker's pristine lease is handed
+        # back, and a prune can take a slot. The task is still resumable, so it
+        # gets its checkout back before anything tries to run in it (issue #58).
+        rebuilt = self._ensure_worktree(conn, task)
+        if rebuilt is not None:
+            task = store.get_task(conn, task_id)
         # A cascade may have rewritten this task's branch while it was stopped.
         # Resuming a worker into a worktree that is behind its own remote ends in
         # a force-push over the cascade, so the worktree is moved onto the remote
@@ -588,10 +690,14 @@ class Supervisor:
         store.set_task_status(conn, task_id, "in_progress")
         store.update_task_fields(conn, task_id, model=model, reasoning=reasoning)
 
+        # A continuation replaces the worker's instructions for the turn. It
+        # carries the brief's Goals, Intent, In scope and Out of scope with it, so
+        # a steer or answer never silently erases a boundary (issue #77).
+        packet, scope_preserved = _self_contained(conn, task, message)
         spec = TaskSpec(
             task_id=task_id,
             title=task["title"],
-            instructions=message or "",
+            instructions=packet or "",
             worktree_path=task["worktree_path"] or "",
             base_sha=task["base_sha"] or "",
             provider=provider,
@@ -600,13 +706,15 @@ class Supervisor:
             run_id=task["run_id"],
             branch=task["branch"],
             resume_session_id=session_id,
-            steer_message=message,
+            steer_message=packet,
         )
         adapter = _adapter_for(spec.provider)
         runner = RunnerGuardian(adapter)
         with self._lock:
             self._runners[task_id] = runner
-        thread = threading.Thread(target=self._run_task, args=(runner, spec), daemon=True)
+        thread = threading.Thread(
+            target=self._run_task, args=(runner, spec), kwargs={"execution": execution}, daemon=True
+        )
         with self._lock:
             self._threads[task_id] = thread
         store.append_event(
@@ -618,30 +726,131 @@ class Supervisor:
                 "message": message,
                 "superseded_runners": superseded,
                 "status": "in_progress",
+                "scope_preserved": scope_preserved,
+                **(continuation or {}),
             },
             run_id=task["run_id"],
             task_id=task_id,
         )
-        self._bind_capacity(capacity, task_id)
-        try:
-            thread.start()
-        except Exception:
-            self._release_capacity(task_id)
-            raise
+        self._bind(execution, task_id)
+        thread.start()
         return {
             "task_id": task_id,
             "resumed_session": session_id,
             "status": "in_progress",
             "superseded_runners": superseded,
+            "worktree_rebuilt": rebuilt,
         }
 
-    def steer_task(self, task_id: int, message: str) -> dict:
+    def _ensure_worktree(self, conn, task) -> dict | None:
+        """Give a task whose checkout is gone a new one, on its own branch, at its own head.
+
+        Returns what was done, or None when the worktree was there all along. The
+        rebuilt checkout starts from the task's branch on the forge, or in the
+        base clone, or — when the branch was never pushed and the pristine
+        release deleted it — from the task's recorded base commit. Task 158
+        (2026-09-06) had no commits and lost its slot to a prune; `mm resume`
+        then crashed twice and the session had to be thrown away.
+        """
+        from pathlib import Path
+
+        task_id = int(task["id"])
+        path = task["worktree_path"]
+        if path and Path(path).is_dir():
+            return None
+        repo_row = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo_row is None:
+            raise SupervisorError(
+                f"task {task_id}: its worktree {path or '(none)'} is gone and the task has no "
+                "registered repository to rebuild one from"
+            )
+        import subprocess
+
+        from middle_manager import repos as _repos
+        from middle_manager.worktree.lease import _branch_exists
+
+        branch = task["branch"]
+        local = repo_row["local_path"]
+        # Decided before the lease exists: leasing on a branch name creates that
+        # branch when the clone lacks it, and a branch we just made is no evidence
+        # of where the task's commits are.
+        kept_locally = bool(branch) and _branch_exists(local, branch)
+        try:
+            lease = LeaseManager().acquire(
+                repo_path=local, repo_id=repo_row["id"], task_id=task_id, branch=branch
+            )
+        except LeaseError as exc:
+            raise SupervisorError(
+                f"task {task_id}: its worktree is gone and no new one could be leased: {exc}"
+            ) from exc
+
+        def git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", lease.worktree_path, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        started_from = None
+        if kept_locally:
+            head = git("rev-parse", "HEAD").stdout.strip()
+            started_from = f"branch {branch} at {head[:8]} (kept in the base clone)"
+        elif branch:
+            remote = _repos.upstream_remote(repo_row)
+            fetched = git("fetch", "--quiet", remote, branch).returncode == 0
+            if fetched and git("reset", "--hard", "--quiet", "FETCH_HEAD").returncode == 0:
+                head = git("rev-parse", "HEAD").stdout.strip()
+                started_from = f"branch {branch} at {head[:8]} (from {remote})"
+        if started_from is None:
+            base = task["base_sha"] or lease.base_sha
+            reset = git("reset", "--hard", "--quiet", base)
+            if reset.returncode != 0:
+                raise SupervisorError(
+                    f"task {task_id}: rebuilt a worktree but could not move it onto the base "
+                    f"commit {base[:8]}: {reset.stderr.strip()[:200]}"
+                )
+            started_from = f"base commit {base[:8]} (nothing of this task's was ever pushed)"
+        store.update_task_fields(
+            conn,
+            task_id,
+            worktree_path=lease.worktree_path,
+            lease_id=lease.id,
+            branch=lease.branch,
+        )
+        with self._lock:
+            self._leases[task_id] = (lease, repo_row["local_path"])
+        payload = {
+            "task_id": task_id,
+            "previous_worktree": path,
+            "worktree_path": lease.worktree_path,
+            "lease": lease.id,
+            "branch": lease.branch,
+            "started_from": started_from,
+            "summary": (
+                f"worktree {path or '(none)'} was gone; leased {lease.worktree_path} and "
+                f"started it from {started_from}"
+            ),
+        }
+        store.append_event(
+            conn, kind="worktree_rebuilt", payload=payload, run_id=task["run_id"], task_id=task_id
+        )
+        return payload
+
+    def steer_task(self, task_id: int, message: str, *, delivery: str = "append") -> dict:
         """Steer a task.
 
         Interrupt steering is offered only when the provider/version proves it
         (capability-gated). Otherwise steering is checkpoint-at-completion: the
-        message is applied by resuming the session once the current turn ends.
+        message is queued and delivered by resuming the session once the current
+        turn ends. Queued messages are additive — every one since the last
+        delivery goes into that resume, in the order sent — unless ``delivery``
+        is ``"replace"``, which makes this message supersede everything queued
+        before it. On 2026-09-07 three additive messages were queued and only the
+        last survived (issue #75); the response now says what is queued.
         """
+        if delivery not in ("append", "replace"):
+            raise SupervisorError(f"delivery must be 'append' or 'replace', not {delivery!r}")
         conn = init_db()
         task = store.get_task(conn, task_id)
         if task is None:
@@ -671,20 +880,54 @@ class Supervisor:
         if can_interrupt:
             return self._interrupt_steer(conn, task, message)
 
-        # Checkpoint steering: record the pending steer to apply at completion.
-        store.append_event(
+        # Checkpoint steering: queue the message; the checkpoint delivers the queue.
+        event_id = store.append_event(
             conn,
             kind="steer",
-            payload={"task_id": task_id, "mode": "checkpoint_pending", "message": message},
+            payload={
+                "task_id": task_id,
+                "mode": "checkpoint_pending",
+                "message": message,
+                "delivery": delivery,
+            },
             run_id=task["run_id"],
             task_id=task_id,
         )
+        pending = self._pending_checkpoint_steers(conn, task_id)
+        included, superseded = _split_replaced(pending)
+        queue = [
+            {
+                "event": eid,
+                "delivery": payload.get("delivery", "append"),
+                "preview": _preview(payload.get("message")),
+                "will_be": "delivered" if (eid, payload) in included else "superseded",
+            }
+            for eid, payload in pending
+        ]
+        if delivery == "replace":
+            what = (
+                f"queued as a replacement: it supersedes the {len(superseded)} message(s) "
+                "queued before it, which will not be delivered"
+                if superseded
+                else "queued as a replacement (nothing earlier was queued)"
+            )
+        else:
+            what = (
+                f"queued; {len(included)} message(s) will be delivered together, in the "
+                "order sent, when the current turn ends"
+                if len(included) > 1
+                else "queued; delivered when the current turn ends"
+            )
         return {
             "mode": "checkpoint_pending",
             "task_id": task_id,
+            "steer_event": event_id,
+            "delivery": delivery,
+            "queue": queue,
             "note": (
-                "provider does not support mid-flight steer; queued and applied "
-                "automatically when the current turn ends"
+                f"provider does not support mid-flight steer; {what}. If capacity or the "
+                "ceiling refuses that resume, the queue stays and is retried when a slot "
+                "frees or on reconcile"
             ),
         }
 
@@ -753,19 +996,50 @@ class Supervisor:
             if not pending:
                 break
             time.sleep(0.1)
+        conn = init_db()
+        task = store.get_task(conn, task_id)
+        run_id = task["run_id"] if task else None
+        # The interrupt has retired the worker; from here the steer is a queued
+        # message like any other, delivered by the resume that carries it.
+        queued = store.append_event(
+            conn,
+            kind="steer",
+            payload={
+                "task_id": task_id,
+                "mode": "checkpoint_pending",
+                "message": message,
+                "delivery": "append",
+                "after": "interrupt",
+            },
+            run_id=run_id,
+            task_id=task_id,
+        )
         try:
-            self.resume_task(task_id, message)
+            self.resume_task(task_id, message, continuation={"steer_events": [int(queued or 0)]})
         except Exception as exc:  # noqa: BLE001 - a failed resume is visible in events
-            conn = init_db()
-            task = store.get_task(conn, task_id)
+            # No worker is running now, and saying `in_progress` would claim one
+            # is. The message stays queued; the next free slot retries it.
+            store.set_task_status(conn, task_id, "worker_stopped")
+            self._defer_continuation(
+                conn,
+                task_id=task_id,
+                run_id=run_id,
+                kind="steer",
+                reason=str(exc),
+                steer_events=[int(queued or 0)],
+            )
             store.append_event(
                 conn,
                 kind="error",
                 payload={
                     "task_id": task_id,
-                    "summary": f"steer interrupt landed but the resume failed: {exc!r}",
+                    "summary": (
+                        f"steer interrupt landed but the resume was refused: {exc}. The task "
+                        "is worker_stopped with the steer queued; it is retried when a slot "
+                        "frees, or resume it by hand"
+                    ),
                 },
-                run_id=task["run_id"] if task else None,
+                run_id=run_id,
                 task_id=task_id,
             )
 
@@ -790,48 +1064,187 @@ class Supervisor:
         ).fetchone()
         return bool(runner) and runner["status"] in ("starting", "running")
 
-    def _apply_pending_steer(self, spec: TaskSpec) -> None:
-        """Deliver a checkpoint-queued steer now that the worker's turn has ended.
+    def _pending_checkpoint_steers(self, conn, task_id: int) -> list[tuple[int, dict]]:
+        """Queued checkpoint steers not yet carried by a launch, oldest first.
 
-        ``steer_task`` promises "applied at the checkpoint"; this is that
-        checkpoint. The newest ``checkpoint_pending`` steer not yet followed by a
-        ``steer_applied`` event is resumed into the session exactly once.
+        The boundary is the newest event that proves delivery: a ``resumed``
+        event naming ``steer_events`` (written as part of the launch itself), or
+        a ``steer_applied`` from before that record existed.
         """
-        conn = init_db()
         rows = conn.execute(
             "SELECT id, kind, payload FROM events WHERE task_id = ? "
-            "AND kind IN ('steer', 'steer_applied') ORDER BY id DESC",
-            (spec.task_id,),
+            "AND kind IN ('steer', 'steer_applied', 'resumed') ORDER BY id DESC",
+            (task_id,),
         ).fetchall()
-        pending: tuple[int, str] | None = None
+        pending: list[tuple[int, dict]] = []
         for row in rows:
-            if row["kind"] == "steer_applied":
-                break  # everything older was already delivered
             payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else {}
-            if payload.get("mode") == "checkpoint_pending":
-                pending = (int(row["id"]), str(payload.get("message") or ""))
+            if row["kind"] == "steer_applied":
                 break
-        if pending is None:
-            return
-        event_id, message = pending
-        store.append_event(
-            conn,
-            kind="steer_applied",
-            payload={"task_id": spec.task_id, "steer_event": event_id},
-            run_id=spec.run_id,
-            task_id=spec.task_id,
-        )
-        with contextlib.suppress(Exception):  # a failed resume is visible in events
-            self.resume_task(spec.task_id, message)
+            if row["kind"] == "resumed":
+                if payload.get("steer_events"):
+                    break
+                continue
+            if payload.get("mode") == "checkpoint_pending":
+                pending.append((int(row["id"]), payload))
+        pending.reverse()
+        return pending
 
-    def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
+    def _apply_pending_steer(self, spec: TaskSpec) -> None:
+        """Deliver the checkpoint-queued steers now that the worker's turn has ended.
+
+        ``steer_task`` promises delivery at the checkpoint; this is that
+        checkpoint. Every queued message since the last delivery goes into one
+        resume, in order — unless a message was queued to replace, in which case
+        it supersedes what came before it (issue #75). Consumption is the
+        launch: a refused resume leaves every message queued and records why
+        (issue #71).
+        """
+        conn = init_db()
+        self._deliver_pending_steers(conn, spec.task_id, spec.run_id)
+
+    def _deliver_pending_steers(self, conn, task_id: int, run_id: int | None) -> dict | None:
+        pending = self._pending_checkpoint_steers(conn, task_id)
+        if not pending:
+            return None
+        included, superseded = _split_replaced(pending)
+        message = _compose_checkpoint(included)
+        ids = [event_id for event_id, _ in included]
+        dropped = [event_id for event_id, _ in superseded]
+        try:
+            self.resume_task(
+                task_id,
+                message,
+                continuation={"steer_events": ids, "superseded_steer_events": dropped},
+            )
+        except Exception as exc:  # noqa: BLE001 - the refusal is recorded, not raised
+            return self._defer_continuation(
+                conn,
+                task_id=task_id,
+                run_id=run_id,
+                kind="steer",
+                reason=str(exc),
+                steer_events=ids,
+                superseded_steer_events=dropped,
+            )
+        applied = {
+            "task_id": task_id,
+            "steer_event": ids[-1],
+            "steer_events": ids,
+            "superseded_steer_events": dropped,
+            "composed": len(ids) > 1,
+        }
+        store.append_event(
+            conn, kind="steer_applied", payload=applied, run_id=run_id, task_id=task_id
+        )
+        return applied
+
+    def _defer_continuation(
+        self, conn, *, task_id: int, run_id: int | None, kind: str, reason: str, **details
+    ) -> dict:
+        """Record that a continuation could not launch and stays pending.
+
+        Recorded once per distinct reason: a retry that fails the same way
+        appends nothing, so a full pool does not fill the log, while a newly
+        lowered ceiling shows up the first time it refuses.
+        """
+        last = _latest_deferred(conn, task_id)
+        payload = {"task_id": task_id, "kind": kind, "reason": reason, **details}
+        if last is not None and last.get("kind") == kind and last.get("reason") == reason:
+            return payload
+        payload["summary"] = (
+            f"{kind} for task {task_id} could not be delivered ({reason}); it stays pending "
+            "and is retried when a worker slot frees or on reconcile"
+        )
+        store.append_event(
+            conn, kind="continuation_deferred", payload=payload, run_id=run_id, task_id=task_id
+        )
+        return payload
+
+    def retry_deferred_continuations(self) -> list[dict]:
+        """Try once, now, to launch every continuation a refusal left pending.
+
+        Called whenever a slot frees, from ``reconcile``, and on the server's
+        health tick (which is how a pending continuation survives a supervisor
+        restart). Each pending continuation is attempted at most once per call;
+        one that is refused again simply waits for the next call. Nothing here
+        bypasses admission or the ceiling — that is the point.
+        """
+        conn = init_db()
+        attempted: list[dict] = []
+        for task_id, deferred in _pending_deferred(conn):
+            task = store.get_task(conn, task_id)
+            if task is None or task["status"] in ("delivered", "closed", "cancelled"):
+                continue
+            kind = deferred.get("kind")
+            outcome: dict | None = None
+            if kind == "steer":
+                outcome = self._deliver_pending_steers(conn, task_id, task["run_id"])
+            elif kind == "answer":
+                outcome = self._deliver_stored_answer(
+                    conn,
+                    task_id=task_id,
+                    run_id=task["run_id"],
+                    question=str(deferred.get("question") or ""),
+                    answer=str(deferred.get("answer") or ""),
+                    decision_id=deferred.get("decision_id"),
+                    scope=deferred.get("scope"),
+                )
+            if outcome is not None:
+                attempted.append({"task_id": task_id, "kind": kind, **outcome})
+        return attempted
+
+    def _deliver_stored_answer(
+        self,
+        conn,
+        *,
+        task_id: int,
+        run_id: int | None,
+        question: str,
+        answer: str,
+        decision_id,
+        scope,
+    ) -> dict:
+        """Resume a blocked task with a stored decision's answer; consumed only on launch."""
+        continuation = {"answered_question": question, "decision_id": decision_id}
+        try:
+            self.resume_task(task_id, answer, continuation=continuation)
+        except Exception as exc:  # noqa: BLE001 - recorded, and retried later
+            return self._defer_continuation(
+                conn,
+                task_id=task_id,
+                run_id=run_id,
+                kind="answer",
+                reason=str(exc),
+                question=question,
+                answer=answer,
+                decision_id=decision_id,
+                scope=scope,
+            )
+        self._auto_answered.setdefault(task_id, set()).add(decisions.fingerprint(question))
+        payload = {
+            "task_id": task_id,
+            "question": question,
+            "answer": answer,
+            "decision_id": decision_id,
+            "scope": scope,
+        }
+        store.append_event(
+            conn, kind="auto_answered", payload=payload, run_id=run_id, task_id=task_id
+        )
+        return payload
+
+    def _run_task(
+        self, runner: RunnerGuardian, spec: TaskSpec, execution: _Execution | None = None
+    ) -> None:
         try:
             try:
                 result = runner.run(spec)
             finally:
                 # The slot covers the provider process only. Follow-up bookkeeping,
-                # review waits, and checkpoint auto-resume do not retain it.
-                self._release_capacity(spec.task_id)
+                # review waits, and checkpoint auto-resume do not retain it. It is
+                # released by identity: this execution's, never "the task's".
+                self._release(execution)
         except Exception as exc:  # noqa: BLE001 - record, never crash the supervisor
             conn = init_db()
             runner.interrupt()
@@ -877,6 +1290,10 @@ class Supervisor:
             ensure_due()
         except Exception:  # noqa: BLE001 - maintenance never breaks worker completion
             pass
+        # This execution's slot is free: a continuation that a full pool refused
+        # earlier gets its one try now.
+        with contextlib.suppress(Exception):
+            self.retry_deferred_continuations()
 
     def _release_lease_if_pristine(self, task_id: int) -> None:
         """Release a failed task's lease when its worktree holds no work.
@@ -962,21 +1379,18 @@ class Supervisor:
             return
         if match is None:
             return  # leave the `question` event actionable for a human
-        answered.add(fp)
-        store.append_event(
+        # The fingerprint is remembered, and `auto_answered` written, only once
+        # the resume carrying the answer has launched; a refusal leaves the
+        # question actionable and the answer pending for retry.
+        self._deliver_stored_answer(
             conn,
-            kind="auto_answered",
-            payload={
-                "task_id": spec.task_id,
-                "question": question,
-                "answer": match.answer,
-                "decision_id": match.id,
-                "scope": match.scope,
-            },
-            run_id=spec.run_id,
             task_id=spec.task_id,
+            run_id=spec.run_id,
+            question=question,
+            answer=match.answer,
+            decision_id=match.id,
+            scope=match.scope,
         )
-        self.resume_task(spec.task_id, match.answer)
 
     def answer_question(
         self,
@@ -1106,7 +1520,9 @@ class Supervisor:
                         "action": "orphaned->needs_recovery",
                     }
                 )
-        return {"reconciled": findings}
+        # Recovery may have freed slots, and a restart has no other trigger.
+        retried = self.retry_deferred_continuations()
+        return {"reconciled": findings, "continuations": retried}
 
     def release_task_lease(self, task_id: int, *, remove_branch: bool = False) -> None:
         with self._lock:
@@ -1121,6 +1537,96 @@ class Supervisor:
             runners = list(self._runners.values())
         for runner in runners:
             runner.interrupt()
+
+
+def _self_contained(conn, task, message: str | None) -> tuple[str | None, bool]:
+    """The message plus the brief's standing scope, and whether any scope was found.
+
+    A bare resume (no message) sends nothing new, so nothing is appended: the
+    session already holds the brief. A brief archived without the four sections
+    — from before they were required — is passed through unchanged.
+    """
+    if not message:
+        return message, False
+    try:
+        from middle_manager import brief_lint, pr_body
+
+        scope = brief_lint.standing_scope(pr_body.archived_brief(conn, task))
+    except Exception:  # noqa: BLE001 - a missing archive never blocks a resume
+        scope = None
+    if not scope:
+        return message, False
+    return f"{message}\n\n{scope}", True
+
+
+def _preview(message: object, width: int = 72) -> str:
+    text = " ".join(str(message or "").split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _split_replaced(pending: list[tuple[int, dict]]) -> tuple[list, list]:
+    """Everything after the last replacing message is included; the rest is superseded."""
+    cut = 0
+    for index, (_event_id, payload) in enumerate(pending):
+        if payload.get("delivery") == "replace":
+            cut = index
+    return pending[cut:], pending[:cut]
+
+
+def _compose_checkpoint(included: list[tuple[int, dict]]) -> str:
+    """One message a worker can act on from several queued ones, in the order sent."""
+    if len(included) == 1:
+        return str(included[0][1].get("message") or "")
+    parts = [
+        f"{len(included)} messages were queued while your last turn ran. They are given in "
+        "the order they were sent; each later one supplements the earlier ones unless it "
+        "says otherwise."
+    ]
+    for number, (event_id, payload) in enumerate(included, start=1):
+        parts.append(
+            f"--- message {number} of {len(included)} (steer event {event_id}) ---\n"
+            f"{payload.get('message') or ''}"
+        )
+    return "\n\n".join(parts)
+
+
+def _latest_deferred(conn, task_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT payload FROM events WHERE task_id = ? AND kind = 'continuation_deferred' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row["payload"])
+    except (ValueError, TypeError):
+        return None
+
+
+def _pending_deferred(conn) -> list[tuple[int, dict]]:
+    """Tasks whose newest deferred continuation has not been followed by a launch."""
+    rows = conn.execute(
+        "SELECT task_id, MAX(id) AS last FROM events WHERE kind = 'continuation_deferred' "
+        "GROUP BY task_id"
+    ).fetchall()
+    out: list[tuple[int, dict]] = []
+    for row in rows:
+        launched = conn.execute(
+            "SELECT 1 FROM events WHERE task_id = ? AND kind = 'resumed' AND id > ? LIMIT 1",
+            (row["task_id"], row["last"]),
+        ).fetchone()
+        if launched is not None:
+            continue
+        payload_row = conn.execute(
+            "SELECT payload FROM events WHERE id = ?", (row["last"],)
+        ).fetchone()
+        try:
+            payload = json.loads(payload_row["payload"])
+        except (ValueError, TypeError):
+            continue
+        out.append((int(row["task_id"]), payload))
+    return out
 
 
 def _task_context(conn, task_id: int) -> str | None:

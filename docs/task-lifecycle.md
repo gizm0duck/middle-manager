@@ -79,7 +79,7 @@ probe wrote one for that provider, otherwise the tracked
 | Mode | When | What happens |
 | --- | --- | --- |
 | `interrupt_resume` | The provider proved resumable mid-work interrupts (Claude) **and** a turn is live | The live runner is retired, the turn is interrupted, and the session is auto-resumed with the steer text. **The task stays `in_progress` throughout.** |
-| `checkpoint_pending` | The provider cannot take a mid-flight steer (Codex) and a turn is live | The message is queued and applied by resuming the session the moment the current turn ends. |
+| `checkpoint_pending` | The provider cannot take a mid-flight steer (Codex) and a turn is live | The message is queued and delivered by resuming the session the moment the current turn ends. Queued messages are **additive**: every message since the last delivery goes into that one resume, in the order sent, each labelled — a later message supplements the earlier ones. `mm steer --replace` queues a message that **supersedes** everything queued before it; superseded messages are named in the `steer_applied` event and never replayed. The response lists the queue and says which messages will be delivered and which superseded, so the CLI never promises delivery of a message that will not survive. |
 | `resume` | No turn is live (finished, delivered, blocked, failed, or the process is gone) | The session is resumed immediately with the steer text, because there is no checkpoint coming. |
 
 The interrupt path used to leave the task `failed`. The interrupted process exits
@@ -88,6 +88,29 @@ non-zero with no result event, which the adapter correctly reads as a failed
 **superseded** before the signal goes out; its exit is recorded as a
 `runner_superseded` event against the retired session id and never touches the
 task. A manual `mm resume` is no longer needed after a steer.
+
+## Continuations that admission refuses
+
+A worker ending releases its slot before its automatic continuation — a queued
+checkpoint steer, a stored-decision answer, the resume after a steer's interrupt
+— and a competing dispatch can take that slot, or the ceiling may have been
+lowered since the worker launched. A continuation is **consumed only by the
+launch that carries it**: the `resumed` event records the `steer_events` or the
+`answered_question` it delivered, and `steer_applied` / `auto_answered` are
+written after that launch, never before. A refused resume therefore changes
+nothing about what is pending. It writes one `continuation_deferred` event
+(actionable; repeated refusals for the same reason add nothing) and leaves the
+task in a truthful status: `worker_done` or `worker_stopped` with the steer
+still queued, `blocked` with the question still open, and — for an interrupted
+worker whose resume was refused — `worker_stopped` rather than an `in_progress`
+that no process backs.
+
+Pending continuations are retried, each at most once per pass, whenever a
+worker slot frees, at the end of `mm reconcile`, and on the supervisor's health
+tick — which is how they survive a supervisor restart. Every retry goes through
+ordinary admission and the ceiling; nothing is bypassed to make a continuation
+land. A manual `mm resume --message` in the meantime supersedes nothing: queued
+steers are still delivered at the next checkpoint.
 
 ## Superseded sessions
 

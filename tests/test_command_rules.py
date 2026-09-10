@@ -138,7 +138,9 @@ def _capture_dispatch(server, source_repo, monkeypatch, provider):
     save_config(MMConfig(worker=WorkerCeiling(provider, model, "medium")))
     added = repos.add_repo(source_repo)
     captured: list[TaskSpec] = []
-    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: captured.append(spec))
+    monkeypatch.setattr(
+        srv.supervisor, "_run_task", lambda runner, spec, **kw: captured.append(spec)
+    )
     srv.supervisor.dispatch_task(
         repo=added.name, title="do it", instructions="THE BRIEF BODY", provider=provider
     )
