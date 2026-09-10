@@ -59,9 +59,11 @@ exceptions, no "nothing to hand off" — an empty ledger still gets a prompt.
 
 When a session starts with a pickup prompt, do what it says *before speaking*:
 
-1. **Reconnect to the team.** `mm supervisor status`; if it's down, start it in the
-   background (`mm supervisor serve`) — a daemon that died with the old terminal takes
-   every in-flight worker with it. Then `mm reconcile` (dead runners →
+1. **Reconnect to the team.** `mm supervisor status`; if it's down, start it detached
+   (`mm supervisor start` — its own session, log under `.mm/run/`; never as a
+   harness-tracked background task, which the harness reclaims first under memory
+   pressure) — a daemon that died with the old terminal takes every in-flight worker
+   with it. Start the heartbeat the same way: `mm watch --detach`. Then `mm reconcile` (dead runners →
    `needs_recovery`) and `mm health` (silent workers). Resume what dropped with
    `mm resume <id>`; check a quiet worker's latest report with `mm task <id>` and steer
    or resume it.

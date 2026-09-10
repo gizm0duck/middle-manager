@@ -259,12 +259,43 @@ def _cmd_repo(args: argparse.Namespace) -> int:
 
 
 def _cmd_supervisor(args: argparse.Namespace) -> int:
+    from middle_manager import daemon
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
-    from middle_manager.supervisor.server import SupervisorServer, default_socket_path
+    from middle_manager.supervisor.server import (
+        SupervisorOwned,
+        SupervisorServer,
+        default_socket_path,
+    )
+
+    if args.supervisor_cmd == "start" or (
+        args.supervisor_cmd == "serve" and getattr(args, "detach", False)
+    ):
+        # Detached: its own session, no harness-tracked parent to be reclaimed
+        # under memory pressure (issue #80). The parent returns once the child
+        # holds the owner lock and is listening.
+        def body(ready) -> None:
+            import signal as _signal
+
+            server = SupervisorServer()
+            try:
+                server._bind()
+            except SupervisorOwned as exc:
+                ready(f"refused: {exc}")
+                return
+            _signal.signal(_signal.SIGTERM, lambda *_: server._stop.set())
+            print(f"supervisor listening on {server.socket_path} (detached)", flush=True)
+            ready("ok")
+            server._serve_loop()
+
+        try:
+            pid, log = daemon.detach("supervisor", body)
+        except daemon.DetachError as exc:
+            print(f"refusing to start: {exc}", file=sys.stderr)
+            return 1
+        print(f"supervisor started detached (pid {pid}) at {default_socket_path()}; log {log}")
+        return 0
 
     if args.supervisor_cmd == "serve":
-        from middle_manager.supervisor.server import SupervisorOwned
-
         server = SupervisorServer()
         try:
             server._bind()
@@ -283,7 +314,11 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     try:
         if args.supervisor_cmd == "status":
             resp = client.ping()
-            print(f"supervisor up (pid {resp.get('pid')}) at {default_socket_path()}")
+            detached = daemon.running_pid("supervisor")
+            how = " (detached)" if detached == resp.get("pid") else ""
+            print(f"supervisor up (pid {resp.get('pid')}){how} at {default_socket_path()}")
+            if how:
+                print(f"log: {daemon.log_path('supervisor')}")
             return 0
         if args.supervisor_cmd == "stop":
             client.shutdown()
@@ -778,7 +813,17 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         f"resuming task {args.task_id} (session {resp.get('resumed_session')}) — "
         f"status {resp.get('status', 'in_progress')}"
     )
-    return 0
+    if resp.get("worktree_rebuilt"):
+        print(f"worktree rebuilt: {resp['worktree_rebuilt'].get('summary')}")
+    if args.verify_seconds <= 0:
+        return 0
+    # Saying in_progress is not the same as a worker running (issue #80): wait
+    # for the process, and call its absence what it is.
+    from middle_manager import liveness
+
+    seen = liveness.verify(args.task_id, timeout=args.verify_seconds)
+    print(seen.describe(args.task_id), file=sys.stderr if seen.verdict == "missing" else sys.stdout)
+    return 1 if seen.verdict == "missing" else 0
 
 
 def _cmd_steer(args: argparse.Namespace) -> int:
@@ -1094,8 +1139,41 @@ def _cmd_health(args: argparse.Namespace) -> int:
 
 def _cmd_watch(args: argparse.Namespace) -> int:
     """The team heartbeat: one relayable line of state per tick, on a cadence."""
-    from middle_manager import watch
+    from middle_manager import daemon, watch
 
+    if args.stop:
+        pid = daemon.stop("watch")
+        print(f"watch stopped (pid {pid})" if pid else "no detached watch was running")
+        return 0
+    if args.detach:
+        already = daemon.running_pid("watch")
+        if already is not None:
+            print(
+                f"a detached watch is already running (pid {already}); "
+                f"log {daemon.log_path('watch')}"
+            )
+            return 0
+
+        def body(ready) -> None:
+            import signal as _signal
+
+            def _terminate(*_args) -> None:
+                raise KeyboardInterrupt
+
+            _signal.signal(_signal.SIGTERM, _terminate)
+            ready("ok")
+            with contextlib.suppress(KeyboardInterrupt):
+                watch.run(
+                    interval=args.interval, as_json=args.json, exit_when_idle=args.exit_when_idle
+                )
+
+        try:
+            pid, log = daemon.detach("watch", body)
+        except daemon.DetachError as exc:
+            print(f"watch did not start: {exc}", file=sys.stderr)
+            return 1
+        print(f"watch started detached (pid {pid}); ticks go to {log}; `mm watch --stop` ends it")
+        return 0
     try:
         return watch.run(
             interval=args.interval,
@@ -1542,6 +1620,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - status must never crash
         pass
     try:
+        from middle_manager import health
+        from middle_manager.state import init_db
+
+        entries = health.check(init_db(), quiet_after=health.quiet_threshold())
+        dead = [e for e in entries if e["verdict"] == "dead"]
+        quiet = [e for e in entries if e["verdict"] == "quiet"]
+        if dead:
+            ids = ", ".join(str(e["task_id"]) for e in dead)
+            print(
+                f"INCIDENT: {len(dead)} worker process(es) gone with no result — task(s) {ids}; "
+                "`mm reconcile` then `mm resume <id>`"
+            )
+        if quiet:
+            ids = ", ".join(str(e["task_id"]) for e in quiet)
+            print(f"health:  {len(quiet)} quiet worker(s) — task(s) {ids}; see `mm health`")
+    except Exception:  # noqa: BLE001 - status must never crash
+        pass
+    try:
         from middle_manager import assessments
         from middle_manager.state import init_db
 
@@ -1794,7 +1890,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
     ssub = supervisor.add_subparsers(dest="supervisor_cmd", required=True)
-    ssub.add_parser("serve", help="run the supervisor (blocking)")
+    serve = ssub.add_parser("serve", help="run the supervisor (blocking; --detach to daemonize)")
+    serve.add_argument(
+        "--detach",
+        action="store_true",
+        help="run in its own session with logs under .mm/run/ (same as `supervisor start`)",
+    )
+    ssub.add_parser(
+        "start",
+        help=(
+            "start the supervisor detached from this terminal and harness: own session, "
+            "pid in .mm/run/supervisor.pid, log in .mm/run/supervisor.log"
+        ),
+    )
     ssub.add_parser("status", help="ping a running supervisor")
     ssub.add_parser("stop", help="ask a running supervisor to shut down")
     supervisor.set_defaults(func=_cmd_supervisor)
@@ -2018,6 +2126,16 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="resume a task's provider session")
     resume.add_argument("task_id", type=int)
     resume.add_argument("--message", default=None, help="answer/steer message")
+    resume.add_argument(
+        "--verify-seconds",
+        dest="verify_seconds",
+        type=float,
+        default=10.0,
+        help=(
+            "after the resume, wait up to this long for a live worker process (or a recorded "
+            "result) and report it; exit 1 if none appears. 0 skips the check"
+        ),
+    )
     resume.set_defaults(func=_cmd_resume)
 
     steer = sub.add_parser("steer", help="steer a task (checkpoint or capability-gated interrupt)")
@@ -2216,6 +2334,15 @@ def build_parser() -> argparse.ArgumentParser:
             "waiting for the team to have news again"
         ),
     )
+    watch_cmd.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "run in its own session, detached from this terminal and harness, ticks appended "
+            "to .mm/run/watch.log (the harness reclaims a tracked background task first)"
+        ),
+    )
+    watch_cmd.add_argument("--stop", action="store_true", help="stop a detached watch")
     watch_cmd.set_defaults(func=_cmd_watch)
 
     watermark = sub.add_parser(

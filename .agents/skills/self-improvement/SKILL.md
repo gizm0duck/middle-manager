@@ -28,7 +28,7 @@ Prefer the reversible repair over stopping to ask.
   install`. Capability-matrix **drift** → re-probe before trusting interrupt/resume
   steering, and tell the user in one sentence.
 - **Supervisor down** when you need to dispatch or wait → start it yourself
-  (`mm supervisor serve` in the background), confirm with `mm supervisor status`.
+  (`mm supervisor start`, detached — never a harness background task), confirm with `mm supervisor status`.
 - **Half-alive runners or stuck tasks** → `mm health` to see who's dead, quiet, or
   planless; `mm reconcile` for dead runners; `mm task <id>` then steer/resume for the
   quiet ones. Then continue.

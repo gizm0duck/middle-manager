@@ -160,7 +160,7 @@ mm config claude --reset                # restore the documented worker tool pro
 mm tools install                       # download/verify pinned companions (setup does this)
 mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
-mm supervisor serve                    # per-task runners, durable state
+mm supervisor start                    # per-task runners, durable state (detached)
 mm worktree list                       # every leased slot: task, state, size
 mm worktree prune --dry-run            # what finished work is still holding disk
 mm dispatch --repo your-repo --title "add health endpoint" --provider claude
