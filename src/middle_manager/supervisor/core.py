@@ -168,6 +168,7 @@ class Supervisor:
         base: str | None = None,
         stack_on: int | None = None,
         prior_attempt: int | None = None,
+        brief_path: str | None = None,
     ) -> dict:
         # A caller that names no provider gets the configured worker provider. It
         # used to get `fake`, which on 2026-09-04 sent a real task to a stub worker
@@ -282,6 +283,7 @@ class Supervisor:
                 overlap_advisory=overlap_advisory,
                 routing=routing,
                 prior_attempt=prior_attempt,
+                brief_path=brief_path,
             )
         except BaseException:
             # Whatever failed — the lease, the branch, provisioning, the adapter's
@@ -309,6 +311,7 @@ class Supervisor:
         overlap_advisory: str | None,
         routing: dict | None = None,
         prior_attempt: int | None = None,
+        brief_path: str | None = None,
     ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -438,9 +441,15 @@ class Supervisor:
         # how the last try ended, in the block, before it plans (issue #79).
         prior = None
         with contextlib.suppress(Exception):
-            prior = prior_attempts.for_dispatch(conn, repo_row["id"], title, explicit=prior_attempt)
+            prior = prior_attempts.for_dispatch(
+                conn, repo_row["id"], title, explicit=prior_attempt, brief_path=brief_path
+            )
         if prior is not None and prior.task_id == task_id:
             prior = None
+        # Which brief file this task came from, so the next attempt at the same
+        # plan position finds this one even after the brief is retitled.
+        with contextlib.suppress(Exception):
+            prior_attempts.record_brief_path(conn, task_id, brief_path)
         prepared = environment.prepare(
             conn,
             repo_row,

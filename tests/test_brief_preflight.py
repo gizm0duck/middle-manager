@@ -305,3 +305,46 @@ def test_dispatch_lint_asks_for_a_prior_attempt_section_on_a_re_dispatch(
     )
     assert rc == 1
     assert "no Prior attempt section" in capsys.readouterr().err
+
+
+def test_a_retitled_revision_of_the_same_brief_file_is_a_prior_attempt(
+    mm_home, source_repo, tmp_path, fake_client, capsys
+) -> None:
+    """Briefs are named by plan position (b7-cli-browser-signin.md) and a re-dispatch
+    revises the file; the title changes, the file does not."""
+    added = repos.add_repo(source_repo)
+    brief = tmp_path / "b7-cli-browser-signin.md"
+    brief.write_text(BRIEF.replace("/tmp/x", "x"))
+    supervisor = Supervisor()
+    first = supervisor.dispatch_task(
+        repo=added.name,
+        title="Package the CLI",
+        instructions=brief.read_text(),
+        provider="fake",
+        brief_path=str(brief),
+    )
+    _wait_for(lambda: store.get_task(init_db(), first["task_id"])["status"] == "worker_done")
+    conn = init_db()
+    assert store.get_task_env(conn, first["task_id"], prior_attempts.BRIEF_PATH_KEY) == str(
+        brief.resolve()
+    )
+    lifecycle.close_task(first["task_id"], "wrong packaging root")
+
+    repo_id = store.get_repo(conn, added.name)["id"]
+    # Same file, new title: found by the file, not the title.
+    [found] = prior_attempts.find(conn, repo_id, "Ship the CLI as a wheel", brief_path=str(brief))
+    assert int(found["id"]) == first["task_id"]
+    # A different file with a different title is a first attempt.
+    assert (
+        prior_attempts.find(conn, repo_id, "Ship the CLI as a wheel", brief_path="/x/other.md")
+        == []
+    )
+
+    revised = brief.read_text().replace("# Package the CLI", "# Ship the CLI as a wheel")
+    brief.write_text(revised)
+    rc = cli.main(["dispatch", "--repo", added.name, "--brief", str(brief), "--provider", "codex"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no Prior attempt section" in err and "wrong packaging root" in err
+    assert fake_client["brief_path"] == str(brief.resolve())
+    assert fake_client["title"] == "Ship the CLI as a wheel"

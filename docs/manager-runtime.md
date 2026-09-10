@@ -393,9 +393,10 @@ When the user gives you an objective:
    later acceptance or test case naming the same backticked token, for evidence
    under `/tmp`, which does not survive the session, for a `Pre-authorised adjacent
    changes:` line under In scope, and — for a Claude dispatch — for literal commands
-   the worker allowlist would deny (with the substitute named). A dispatch whose
-   objective a closed, failed or cancelled task in the repo already carried (or one
-   named with `--prior-attempt <id>`) owes a `## Prior attempt` section, and the
+   the worker allowlist would deny (with the substitute named). A dispatch that retries
+   a closed, failed or cancelled task in the repo — same brief file (recorded on the
+   task at dispatch; a revised, retitled brief still matches), same title, or one named
+   with `--prior-attempt <id>` — owes a `## Prior attempt` section, and the
    worker's environment block names that task and how it ended either way. Findings
    are warnings that name the line; `--strict` refuses the dispatch instead. A cause stated as fact is how
    25 of 102 cycle-4 reflections started; a labelled hypothesis with a probe is how a

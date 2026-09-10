@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import sys
+from pathlib import Path
 
 from middle_manager import __version__
 from middle_manager.lifecycle import TASK_STATUSES
@@ -425,6 +426,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 repo_row["id"] if repo_row is not None else None,
                 guess,
                 explicit=args.prior_attempt,
+                brief_path=args.brief,
             )
             prior_note = prior.describe() if prior is not None else None
         findings += brief_lint.prior_attempt_findings(instructions, prior_note)
@@ -478,6 +480,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             base=args.base,
             stack_on=args.stack_on,
             prior_attempt=args.prior_attempt,
+            brief_path=str(Path(args.brief).expanduser().resolve()) if args.brief else None,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)

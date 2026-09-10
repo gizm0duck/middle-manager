@@ -15,11 +15,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 
 from middle_manager.state import store
 
 #: A prior task in one of these is over; the new dispatch is trying again.
 ENDED_STATUSES = ("closed", "failed", "cancelled")
+
+#: The task_env key under which dispatch records the brief file it was given.
+#: Briefs are named by their place in the plan (b7-cli-browser-signin.md) and a
+#: re-dispatch revises and reuses the file, so the path outlives a retitled brief.
+BRIEF_PATH_KEY = "brief_path"
 
 
 @dataclass(frozen=True)
@@ -41,33 +47,63 @@ def _normalise(title: str | None) -> str:
     return " ".join((title or "").split()).strip().lower()
 
 
-def find(
-    conn: sqlite3.Connection, repo_id, title: str, *, explicit: int | None = None
-) -> list[sqlite3.Row]:
-    """Ended tasks in this repository that carried this objective, newest first.
+def _resolved(path: str | None) -> str:
+    if not path:
+        return ""
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(path)
 
-    ``explicit`` names one by id regardless of title — the manager knows a
-    re-dispatch when the title changed.
+
+def record_brief_path(conn: sqlite3.Connection, task_id: int, brief_path: str | None) -> None:
+    """Remember which brief file a task was dispatched from, for the next attempt."""
+    resolved = _resolved(brief_path)
+    if resolved:
+        store.set_task_env(conn, task_id, BRIEF_PATH_KEY, resolved, source="dispatch")
+
+
+def find(
+    conn: sqlite3.Connection,
+    repo_id,
+    title: str,
+    *,
+    explicit: int | None = None,
+    brief_path: str | None = None,
+) -> list[sqlite3.Row]:
+    """Ended tasks in this repository that carried this piece of work, newest first.
+
+    Three ways to be the same piece of work, any one enough: ``explicit`` names
+    a task by id; ``brief_path`` is the file the prior task was dispatched from
+    (the plan-position name survives a retitled revision); the title matches.
     """
     rows: list[sqlite3.Row] = []
+    seen: set[int] = set()
     if explicit is not None:
         row = store.get_task(conn, explicit)
         if row is not None:
             rows.append(row)
+            seen.add(int(row["id"]))
     if not repo_id:
         return rows
-    wanted = _normalise(title)
-    if not wanted:
+    wanted_title = _normalise(title)
+    wanted_path = _resolved(brief_path)
+    if not wanted_title and not wanted_path:
         return rows
     marks = ",".join("?" for _ in ENDED_STATUSES)
     for row in conn.execute(
         f"SELECT * FROM tasks WHERE repo_id = ? AND status IN ({marks}) ORDER BY id DESC",
         (repo_id, *ENDED_STATUSES),
     ).fetchall():
-        if explicit is not None and int(row["id"]) == explicit:
+        task_id = int(row["id"])
+        if task_id in seen:
             continue
-        if _normalise(row["title"]) == wanted:
+        same_file = bool(wanted_path) and (
+            store.get_task_env(conn, task_id, BRIEF_PATH_KEY) == wanted_path
+        )
+        if same_file or (wanted_title and _normalise(row["title"]) == wanted_title):
             rows.append(row)
+            seen.add(task_id)
     return rows
 
 
@@ -106,8 +142,13 @@ def summarize(conn: sqlite3.Connection, task: sqlite3.Row) -> PriorAttempt:
 
 
 def for_dispatch(
-    conn: sqlite3.Connection, repo_id, title: str, *, explicit: int | None = None
+    conn: sqlite3.Connection,
+    repo_id,
+    title: str,
+    *,
+    explicit: int | None = None,
+    brief_path: str | None = None,
 ) -> PriorAttempt | None:
     """The newest prior attempt to tell the worker about, or None for a first try."""
-    rows = find(conn, repo_id, title, explicit=explicit)
+    rows = find(conn, repo_id, title, explicit=explicit, brief_path=brief_path)
     return summarize(conn, rows[0]) if rows else None

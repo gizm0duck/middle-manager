@@ -51,9 +51,11 @@ something speculative while the product outcome sits unfinished (issue #77).
   unrelated cleanup, additional hardening not needed for the agreed outcome. Name
   them; "nothing else" is not a boundary a worker can check against.
 
-- **Prior attempt** (re-dispatches only). When the objective was tried before — a
-  closed, failed or cancelled task with the same title in the repo, or one you name
-  with `mm dispatch --prior-attempt <id>` — the brief owes a `## Prior attempt`
+- **Prior attempt** (re-dispatches only). When this piece of work was tried before — a
+  closed, failed or cancelled task in the repo dispatched from the **same brief file**
+  (the plan-position name, `b7-cli-browser-signin.md`, survives a retitled revision)
+  or with the same title, or one you name with `mm dispatch --prior-attempt <id>` — the
+  brief owes a `## Prior attempt`
   section: what it did, why it ended, what this attempt does differently. The lint
   asks for it, and the worker's environment block names the prior task and its
   closure reason regardless, so the worker never learns mid-task from a repo note.

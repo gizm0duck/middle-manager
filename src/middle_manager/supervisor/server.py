@@ -231,6 +231,7 @@ class SupervisorServer:
                         base=request.get("base"),
                         stack_on=request.get("stack_on"),
                         prior_attempt=request.get("prior_attempt"),
+                        brief_path=request.get("brief_path"),
                     ),
                 }
             if cmd == "task_status":
