@@ -32,8 +32,16 @@ Run every applicable check before approving *anything*; never approve the search
 box today and the design fidelity tomorrow — the worker recaptures all evidence
 and re-runs all gates each round.
 
-- **Scope**: only the named section; existing files touched only where the brief
-  allowed, each touch listed under "Outside scope, required to build".
+- **Outcome**: the brief's Goals, item by item — each acceptance criterion met at
+  this head, or named as not met. Work that serves a mechanism no Goal asks for is
+  a finding even when it is good work.
+- **Scope**: inside In scope and outside Out of scope; existing files touched only
+  where the brief allowed, each touch listed under "Outside scope, required to
+  build". Anything the Out of scope section excludes that was done anyway is a
+  finding; an excluded dependency that turned out to be needed belongs under
+  "Flagged, not done" with its effect on the outcome, and the decision is yours or
+  the user's under the authority rules — not the worker's. This is one pass of the
+  same rubric, not a separate cycle.
 - **Contract / data**: wire shapes exactly as frozen; no invented fields; no
   client-side recomputation of server-owned values.
 - **Spec structure and signature devices**: compare the built thing to the named

@@ -690,10 +690,14 @@ class Supervisor:
         store.set_task_status(conn, task_id, "in_progress")
         store.update_task_fields(conn, task_id, model=model, reasoning=reasoning)
 
+        # A continuation replaces the worker's instructions for the turn. It
+        # carries the brief's Goals, Intent, In scope and Out of scope with it, so
+        # a steer or answer never silently erases a boundary (issue #77).
+        packet, scope_preserved = _self_contained(conn, task, message)
         spec = TaskSpec(
             task_id=task_id,
             title=task["title"],
-            instructions=message or "",
+            instructions=packet or "",
             worktree_path=task["worktree_path"] or "",
             base_sha=task["base_sha"] or "",
             provider=provider,
@@ -702,7 +706,7 @@ class Supervisor:
             run_id=task["run_id"],
             branch=task["branch"],
             resume_session_id=session_id,
-            steer_message=message,
+            steer_message=packet,
         )
         adapter = _adapter_for(spec.provider)
         runner = RunnerGuardian(adapter)
@@ -722,6 +726,7 @@ class Supervisor:
                 "message": message,
                 "superseded_runners": superseded,
                 "status": "in_progress",
+                "scope_preserved": scope_preserved,
                 **(continuation or {}),
             },
             run_id=task["run_id"],
@@ -1532,6 +1537,26 @@ class Supervisor:
             runners = list(self._runners.values())
         for runner in runners:
             runner.interrupt()
+
+
+def _self_contained(conn, task, message: str | None) -> tuple[str | None, bool]:
+    """The message plus the brief's standing scope, and whether any scope was found.
+
+    A bare resume (no message) sends nothing new, so nothing is appended: the
+    session already holds the brief. A brief archived without the four sections
+    — from before they were required — is passed through unchanged.
+    """
+    if not message:
+        return message, False
+    try:
+        from middle_manager import brief_lint, pr_body
+
+        scope = brief_lint.standing_scope(pr_body.archived_brief(conn, task))
+    except Exception:  # noqa: BLE001 - a missing archive never blocks a resume
+        scope = None
+    if not scope:
+        return message, False
+    return f"{message}\n\n{scope}", True
 
 
 def _preview(message: object, width: int = 72) -> str:

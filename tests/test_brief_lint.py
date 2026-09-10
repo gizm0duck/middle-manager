@@ -39,6 +39,42 @@ QA marker `qa-relevance-3` is absent on staging rev 00323; row 812 in
 ## Evidence
 
 Read `docs/evidence/task-170/score-rows.txt` inside the worktree.
+
+## Goals
+
+`qa-relevance-3` renders on staging; `make test` green. Contract: CONTRACT §4.
+
+## Intent
+
+QA cannot sign off Radar while a marker is missing; the outcome is the marker, not
+a particular scorer change.
+
+## In scope
+
+The scorer's null-thread handling and the backfill job, plus their tests.
+
+## Out of scope
+
+The Radar page, card families, and any new predicate.
+"""
+
+
+OUTCOME_SECTIONS = """
+## Goals
+
+The thing works and `make test` is green.
+
+## Intent
+
+Users need it; the outcome is what matters, not the approach.
+
+## In scope
+
+This module and its tests.
+
+## Out of scope
+
+Everything adjacent.
 """
 
 
@@ -145,7 +181,8 @@ def test_self_consistency_ignores_rules_without_a_negation_or_after_the_case() -
     ).replace("- `make test` passes.\n", "- `relationship_bucket` cases pass.\n")
     assert not any("same token" in m for m in messages(positive_rule))
 
-    case_first = """# Do it
+    case_first = (
+        """# Do it
 
 ## Tests
 
@@ -155,6 +192,8 @@ def test_self_consistency_ignores_rules_without_a_negation_or_after_the_case() -
 
 - No `foo` outside the adapter.
 """
+        + OUTCOME_SECTIONS
+    )
     assert lint_brief(case_first) == []
 
 
@@ -175,7 +214,8 @@ def test_tmp_paths_are_flagged_only_in_an_evidence_section() -> None:
 
 
 def test_a_non_defect_brief_gets_only_the_consistency_and_evidence_checks() -> None:
-    feature = """# Add the export button
+    feature = (
+        """# Add the export button
 
 ## Scope
 
@@ -189,6 +229,8 @@ def test_a_non_defect_brief_gets_only_the_consistency_and_evidence_checks() -> N
 
 Screenshots under /tmp/shots/.
 """
+        + OUTCOME_SECTIONS
+    )
     assert not is_defect_brief(feature)
     found = messages(feature)
     assert len(found) == 2
@@ -279,3 +321,108 @@ def test_dispatch_of_a_clean_brief_says_nothing_about_lint(home, fake_supervisor
     )
     assert rc == 0
     assert "brief lint" not in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# Goals, Intent, In scope, Out of scope (issue #77)
+# --------------------------------------------------------------------------- #
+
+
+def _without(text: str, heading: str) -> str:
+    return text.replace(f"## {heading}\n", f"## Notes about {heading.lower()}\n")
+
+
+def test_every_brief_owes_the_four_outcome_sections() -> None:
+    bare = "# Add the export button\n\nPut a button on the toolbar.\n"
+    found = messages(bare)
+    assert len(found) == 4
+    for name in ("Goals", "Intent", "In scope", "Out of scope"):
+        assert any(f"no {name} section — add `## {name}`" in m for m in found), name
+    # Each message says what the section is for, not just that it is missing.
+    assert any("acceptance criteria" in m for m in found)
+    assert any("who benefits" in m for m in found)
+    assert any("authorised to do" in m for m in found)
+    assert any("stopping boundaries" in m for m in found)
+
+
+def test_a_missing_or_empty_section_is_named_with_its_line() -> None:
+    missing = _without(GOOD_DEFECT, "Out of scope")
+    (finding,) = [f for f in lint_brief(missing) if "Out of scope" in f.message]
+    assert finding.line == 1 and "no Out of scope section" in finding.message
+
+    empty = GOOD_DEFECT.replace(
+        "## Out of scope\n\nThe Radar page, card families, and any new predicate.\n",
+        "## Out of scope\n\n",
+    )
+    (finding,) = [f for f in lint_brief(empty) if "Out of scope" in f.message]
+    assert finding.message.startswith("`## Out of scope` is empty — say the explicit exclusions")
+    assert finding.line == GOOD_DEFECT.splitlines().index("## Out of scope") + 1
+
+    # A heading with only a sub-heading under it is still empty.
+    hollow = GOOD_DEFECT.replace(
+        "## In scope\n\nThe scorer's null-thread handling and the backfill job, plus their "
+        "tests.\n",
+        "## In scope\n\n### Later\n",
+    )
+    assert any("`## In scope` is empty" in m for m in messages(hollow))
+
+
+def test_heading_variants_are_recognised_and_lookalikes_are_not() -> None:
+    variants = (
+        GOOD_DEFECT.replace("## Goals\n", "## Goal\n")
+        .replace("## In scope\n", "### In-scope\n")
+        .replace("## Out of scope\n", "## Not in scope\n")
+    )
+    assert not any("section" in m for m in messages(variants))
+
+    non_goals = GOOD_DEFECT.replace("## Goals\n", "## Non-goals\n")
+    assert any("no Goals section" in m for m in messages(non_goals))
+
+
+def test_outcome_sections_are_extracted_verbatim_and_carried_as_standing_scope() -> None:
+    sections = brief_lint.outcome_sections(GOOD_DEFECT)
+    assert set(sections) == {"Goals", "Intent", "In scope", "Out of scope"}
+    assert sections["Out of scope"] == "The Radar page, card families, and any new predicate."
+    assert sections["Goals"].startswith("`qa-relevance-3` renders on staging")
+
+    block = brief_lint.standing_scope(GOOD_DEFECT)
+    assert block is not None
+    assert block.startswith("--- Standing scope, carried from the brief.")
+    assert "anything it excludes stays excluded" in block
+    for name in ("## Goals", "## Intent", "## In scope", "## Out of scope"):
+        assert name in block
+    assert block.index("## Goals") < block.index("## Intent") < block.index("## In scope")
+    assert "## Symptom" not in block  # only the four sections travel
+
+    # A brief from before the rule has nothing to carry, and says so with None.
+    assert brief_lint.standing_scope("# Old brief\n\nJust do it.\n") is None
+    assert brief_lint.outcome_sections("# Old\n\n## Goals\n\n## Intent\nwhy\n") == {"Intent": "why"}
+
+
+def test_dispatch_strict_refuses_a_brief_with_no_scope_boundaries(
+    home, fake_supervisor, capsys
+) -> None:
+    brief = home / "brief.md"
+    brief.write_text(_without(GOOD_DEFECT, "Out of scope"))
+    rc = cli.main(
+        ["dispatch", "--repo", "papaya", "--brief", str(brief), "--provider", "claude", "--strict"]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no Out of scope section" in err
+    assert fake_supervisor == {}
+
+
+def test_the_documented_example_brief_lints_clean_and_carries_its_scope() -> None:
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "docs" / "brief-example.md"
+    text = example.read_text(encoding="utf-8")
+    brief_part = text.split("<!-- brief ends -->")[0]
+    assert lint_brief(brief_part) == [], brief_lint.render(lint_brief(brief_part))
+    block = brief_lint.standing_scope(brief_part)
+    assert block is not None
+    for name in ("## Goals", "## Intent", "## In scope", "## Out of scope"):
+        assert name in block
+    # The continuation packet the document shows is the one the runtime builds.
+    assert block in text.split("<!-- brief ends -->")[1]
