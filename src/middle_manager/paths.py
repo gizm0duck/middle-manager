@@ -80,6 +80,17 @@ def memory_dir() -> Path:
     return mm_home() / "memory"
 
 
+def local_capabilities_path() -> Path:
+    """Machine-local provider capability record, written by the live probe.
+
+    The tracked ``provider-capabilities.json`` at the repo root describes
+    whatever CLI versions the maintainer probed. This file describes *this*
+    machine, takes precedence per provider, and is gitignored with the rest of
+    ``.mm`` so a local probe never shows up as a repo diff.
+    """
+    return mm_home() / "provider-capabilities.json"
+
+
 def ensure_layout() -> Path:
     """Create the ``.mm`` directory tree if missing and return the root."""
     root = mm_home()

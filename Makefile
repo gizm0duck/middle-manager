@@ -9,7 +9,7 @@ help:
 	@echo "  make lint       Lint with ruff"
 	@echo "  make test       Run hermetic tests (no provider spawning)"
 	@echo "  make test-live  Run opt-in live probe tests (spawns Claude/Codex)"
-	@echo "  make probe      Run the live interrupt/resume probe matrix and write docs/provider-capabilities.md"
+	@echo "  make probe      Run the live interrupt/resume probe matrix into .mm/provider-capabilities.json (machine-local)"
 
 fmt:
 	uv run ruff format .
@@ -24,9 +24,12 @@ test-live:
 	uv run pytest -m live
 
 # Live probes: spawn real Claude/Codex CLIs in isolated temp repos and record
-# a fail-closed capability matrix. Requires authenticated harnesses.
+# a fail-closed capability matrix. Requires authenticated harnesses. Writes the
+# machine-local record only; add --publish to refresh the tracked files.
+# PYTHONPATH mirrors bin/mm: the package is not installed into the venv, it is
+# imported from src/. MM_HOME pins the machine-local record to this checkout.
 probe:
-	uv run python -m middle_manager.probes run
+	PYTHONPATH=src MM_HOME=$(CURDIR)/.mm uv run python -m middle_manager.probes run $(ARGS)
 
 clean:
 	rm -rf .venv .pytest_cache **/__pycache__

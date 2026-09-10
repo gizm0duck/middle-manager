@@ -7,7 +7,7 @@ import re
 
 from middle_manager.config import ConfigError, load_config
 from middle_manager.paths import config_path, db_path, mm_home
-from middle_manager.providers.capability import recorded_version
+from middle_manager.providers.capability import LOCAL, record_source, recorded_version
 from middle_manager.setup.discovery import discover, usable_harnesses
 
 _SEMVER = re.compile(r"\d+\.\d+\.\d+")
@@ -23,9 +23,10 @@ def _installed_version(version_str: str | None) -> str | None:
 def _capability_drift(report: dict) -> list[dict]:
     """Compare each provider's recorded probe version with the installed CLI.
 
-    A mismatch means the committed capability matrix no longer applies and the
-    provider should be re-probed (`python -m middle_manager.probes run`) before
-    trusting interrupt/resume steering.
+    A mismatch means the capability record no longer applies and the provider
+    should be re-probed (`python -m middle_manager.probes run`) before trusting
+    interrupt/resume steering. ``source`` names which record answered so the
+    reader knows whether a local probe or the tracked file is in play.
     """
     out: list[dict] = []
     for h in report["harnesses"]:
@@ -41,6 +42,7 @@ def _capability_drift(report: dict) -> list[dict]:
                 "recorded": recorded,
                 "installed": installed,
                 "drift": drift,
+                "source": record_source(provider),
             }
         )
     return out
@@ -145,13 +147,14 @@ def render_text(data: dict) -> str:
         lines.append("Provider capability matrix:")
         for d in drift:
             installed = d["installed"] or "?"
+            origin = "local probe" if d.get("source") == LOCAL else "tracked record"
             if d["drift"]:
                 lines.append(
-                    f"  {d['provider']:<8} DRIFT — recorded {d['recorded']}, "
+                    f"  {d['provider']:<8} DRIFT — {origin} says {d['recorded']}, "
                     f"installed {installed}; re-probe before trusting steering"
                 )
             else:
-                lines.append(f"  {d['provider']:<8} ok — probed at {d['recorded']}")
+                lines.append(f"  {d['provider']:<8} ok — {origin}, probed at {d['recorded']}")
     repos = data.get("repos", [])
     if repos:
         lines.append("")
