@@ -25,6 +25,11 @@ class DeliveryError(Exception):
 
 
 _SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}\Z")
+#: A pull request's web URL, wherever it sits in a tool's output. Plain ``gh``
+#: prints exactly the URL; ``gh-axi`` prints a structured record followed by
+#: help lines, so the last line of stdout was "Run `gh-axi pr checks 72 ...` to
+#: monitor CI" and that string was persisted as the PR URL of #72 (issue #73).
+_PR_URL_RE = re.compile(r"https?://[^\s`'\"<>()]+/pull/\d+")
 
 
 @dataclass
@@ -37,6 +42,38 @@ class DeliveryResult:
     note: str
     #: What tearing down the task's compose stack did, when it owned one.
     compose: dict | None = None
+    #: Whether a pull request exists for the branch after this delivery — created
+    #: now, or found already open. ``True`` with ``pr_url`` None means the PR is
+    #: real but its address could not be read back; retrying creation would only
+    #: be refused as a duplicate.
+    pr_exists: bool = False
+
+
+def extract_pr_url(text: str | None) -> str | None:
+    """The first pull-request URL anywhere in ``text``, or None."""
+    if not text:
+        return None
+    match = _PR_URL_RE.search(text)
+    return match.group(0) if match else None
+
+
+def _lookup_pr_url(tool: str, branch: str, forge_slug: str | None, cwd: str) -> str | None:
+    """A bounded follow-up: ask the forge which open PR has this head branch.
+
+    Used only when creation reported success without a readable URL. Plain
+    ``gh`` answers in JSON; ``gh-axi`` answers in its own text, which is searched
+    for a URL the same way the creation output was.
+    """
+    is_plain_gh = Path(tool).name == "gh"
+    argv = [tool, "pr", "list", "--head", branch, "--state", "open"]
+    if is_plain_gh:
+        argv += ["--json", "url", "--jq", ".[0].url"]
+    if forge_slug:
+        argv += ["--repo", forge_slug]
+    proc = _run(argv, cwd=cwd)
+    if proc.returncode != 0:
+        return None
+    return extract_pr_url(proc.stdout)
 
 
 def _run(argv: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -150,6 +187,7 @@ def deliver(
         pushed = True
 
     pr_url: str | None = None
+    pr_exists = False
     note = "pushed" if pushed else "no-op"
     if open_pr:
         tool = _pr_tool()
@@ -175,10 +213,27 @@ def deliver(
                 argv += ["--repo", forge_slug]
             proc = _run(argv, cwd=worktree)
             if proc.returncode == 0:
-                pr_url = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else None
-                note = "pushed; PR opened"
+                pr_exists = True
+                pr_url = extract_pr_url(proc.stdout) or extract_pr_url(proc.stderr)
+                if pr_url is None:
+                    pr_url = _lookup_pr_url(tool, branch, forge_slug, worktree)
+                note = (
+                    "pushed; PR opened"
+                    if pr_url
+                    else "pushed; PR opened, but its URL could not be read from the tool's "
+                    f"output or looked up by branch — find it with `{Path(tool).name} pr list "
+                    f"--head {branch}`; do not create another"
+                )
             else:
-                note = f"pushed; PR creation failed: {proc.stderr.strip()[:200]}"
+                # `gh` refuses a second PR for the same head and names the one that
+                # exists. That is the retry path: the PR is real, so record it.
+                pr_url = extract_pr_url(proc.stderr) or extract_pr_url(proc.stdout)
+                if pr_url and "already exists" in (proc.stderr + proc.stdout):
+                    pr_exists = True
+                    note = "pushed; a PR for this branch was already open"
+                else:
+                    pr_url = None
+                    note = f"pushed; PR creation failed: {proc.stderr.strip()[:200]}"
 
     store.set_task_status(conn, task_id, "delivered")
     store.append_event(
@@ -189,6 +244,7 @@ def deliver(
             "branch": branch,
             "head_sha": head,
             "pr_url": pr_url,
+            "pr_exists": pr_exists,
             "remote": remote,
             "forge": forge_slug,
             "base": base,
@@ -204,7 +260,7 @@ def deliver(
     ):
         if extra:
             note = f"{note}; {extra}"
-    return DeliveryResult(task_id, branch, head, pushed, pr_url, note)
+    return DeliveryResult(task_id, branch, head, pushed, pr_url, note, pr_exists=pr_exists)
 
 
 def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> DeliveryResult:
@@ -270,5 +326,6 @@ __all__ = [
     "DeliveryResult",
     "ReviewError",
     "deliver",
+    "extract_pr_url",
     "record_merged",
 ]
