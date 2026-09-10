@@ -744,7 +744,9 @@ def _cmd_steer(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.steer_task(args.task_id, args.message)
+        resp = client.steer_task(
+            args.task_id, args.message, delivery="replace" if args.replace else "append"
+        )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -756,6 +758,11 @@ def _cmd_steer(args: argparse.Namespace) -> int:
     if status:
         line += f" status={status}"
     print(f"{line} {resp.get('note', '')}".rstrip())
+    for item in resp.get("queue") or []:
+        print(
+            f"  steer event {item['event']} ({item['delivery']}, will be {item['will_be']}): "
+            f"{item['preview']}"
+        )
     return 0
 
 
@@ -1948,6 +1955,14 @@ def build_parser() -> argparse.ArgumentParser:
     steer = sub.add_parser("steer", help="steer a task (checkpoint or capability-gated interrupt)")
     steer.add_argument("task_id", type=int)
     steer.add_argument("--message", required=True, help="steer message")
+    steer.add_argument(
+        "--replace",
+        action="store_true",
+        help=(
+            "when queued for a checkpoint, this message supersedes every message queued "
+            "before it (default: queued messages are all delivered together, in order)"
+        ),
+    )
     steer.set_defaults(func=_cmd_steer)
 
     answer = sub.add_parser("answer", help="answer a blocked task and record a durable decision")

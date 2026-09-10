@@ -79,7 +79,7 @@ probe wrote one for that provider, otherwise the tracked
 | Mode | When | What happens |
 | --- | --- | --- |
 | `interrupt_resume` | The provider proved resumable mid-work interrupts (Claude) **and** a turn is live | The live runner is retired, the turn is interrupted, and the session is auto-resumed with the steer text. **The task stays `in_progress` throughout.** |
-| `checkpoint_pending` | The provider cannot take a mid-flight steer (Codex) and a turn is live | The message is queued and applied by resuming the session the moment the current turn ends. |
+| `checkpoint_pending` | The provider cannot take a mid-flight steer (Codex) and a turn is live | The message is queued and delivered by resuming the session the moment the current turn ends. Queued messages are **additive**: every message since the last delivery goes into that one resume, in the order sent, each labelled — a later message supplements the earlier ones. `mm steer --replace` queues a message that **supersedes** everything queued before it; superseded messages are named in the `steer_applied` event and never replayed. The response lists the queue and says which messages will be delivered and which superseded, so the CLI never promises delivery of a message that will not survive. |
 | `resume` | No turn is live (finished, delivered, blocked, failed, or the process is gone) | The session is resumed immediately with the steer text, because there is no checkpoint coming. |
 
 The interrupt path used to leave the task `failed`. The interrupted process exits

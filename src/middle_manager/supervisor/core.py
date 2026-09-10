@@ -832,13 +832,20 @@ class Supervisor:
         )
         return payload
 
-    def steer_task(self, task_id: int, message: str) -> dict:
+    def steer_task(self, task_id: int, message: str, *, delivery: str = "append") -> dict:
         """Steer a task.
 
         Interrupt steering is offered only when the provider/version proves it
         (capability-gated). Otherwise steering is checkpoint-at-completion: the
-        message is applied by resuming the session once the current turn ends.
+        message is queued and delivered by resuming the session once the current
+        turn ends. Queued messages are additive — every one since the last
+        delivery goes into that resume, in the order sent — unless ``delivery``
+        is ``"replace"``, which makes this message supersede everything queued
+        before it. On 2026-09-07 three additive messages were queued and only the
+        last survived (issue #75); the response now says what is queued.
         """
+        if delivery not in ("append", "replace"):
+            raise SupervisorError(f"delivery must be 'append' or 'replace', not {delivery!r}")
         conn = init_db()
         task = store.get_task(conn, task_id)
         if task is None:
@@ -868,22 +875,54 @@ class Supervisor:
         if can_interrupt:
             return self._interrupt_steer(conn, task, message)
 
-        # Checkpoint steering: record the pending steer to apply at completion.
-        store.append_event(
+        # Checkpoint steering: queue the message; the checkpoint delivers the queue.
+        event_id = store.append_event(
             conn,
             kind="steer",
-            payload={"task_id": task_id, "mode": "checkpoint_pending", "message": message},
+            payload={
+                "task_id": task_id,
+                "mode": "checkpoint_pending",
+                "message": message,
+                "delivery": delivery,
+            },
             run_id=task["run_id"],
             task_id=task_id,
         )
+        pending = self._pending_checkpoint_steers(conn, task_id)
+        included, superseded = _split_replaced(pending)
+        queue = [
+            {
+                "event": eid,
+                "delivery": payload.get("delivery", "append"),
+                "preview": _preview(payload.get("message")),
+                "will_be": "delivered" if (eid, payload) in included else "superseded",
+            }
+            for eid, payload in pending
+        ]
+        if delivery == "replace":
+            what = (
+                f"queued as a replacement: it supersedes the {len(superseded)} message(s) "
+                "queued before it, which will not be delivered"
+                if superseded
+                else "queued as a replacement (nothing earlier was queued)"
+            )
+        else:
+            what = (
+                f"queued; {len(included)} message(s) will be delivered together, in the "
+                "order sent, when the current turn ends"
+                if len(included) > 1
+                else "queued; delivered when the current turn ends"
+            )
         return {
             "mode": "checkpoint_pending",
             "task_id": task_id,
+            "steer_event": event_id,
+            "delivery": delivery,
+            "queue": queue,
             "note": (
-                "provider does not support mid-flight steer; queued, and delivered by "
-                "resuming the session when the current turn ends (if capacity or the "
-                "ceiling refuses that resume, it stays queued and is retried when a "
-                "slot frees or on reconcile)"
+                f"provider does not support mid-flight steer; {what}. If capacity or the "
+                "ceiling refuses that resume, the queue stays and is retried when a slot "
+                "frees or on reconcile"
             ),
         }
 
@@ -1493,6 +1532,11 @@ class Supervisor:
             runners = list(self._runners.values())
         for runner in runners:
             runner.interrupt()
+
+
+def _preview(message: object, width: int = 72) -> str:
+    text = " ".join(str(message or "").split())
+    return text if len(text) <= width else text[: width - 1] + "…"
 
 
 def _split_replaced(pending: list[tuple[int, dict]]) -> tuple[list, list]:

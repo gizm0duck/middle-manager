@@ -251,7 +251,14 @@ class SupervisorServer:
                     **sup.resume_task(int(request["task_id"]), request.get("message")),
                 }
             if cmd == "steer_task":
-                return {"ok": True, **sup.steer_task(int(request["task_id"]), request["message"])}
+                return {
+                    "ok": True,
+                    **sup.steer_task(
+                        int(request["task_id"]),
+                        request["message"],
+                        delivery=request.get("delivery") or "append",
+                    ),
+                }
             if cmd == "answer_question":
                 return {
                     "ok": True,
