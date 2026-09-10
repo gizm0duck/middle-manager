@@ -83,7 +83,9 @@ def test_queued_checkpoint_steer_is_applied_when_the_turn_ends(server, source_re
     )
     delivered: list[tuple[int, str | None]] = []
     core = srv.supervisor
-    monkeypatch.setattr(core, "resume_task", lambda tid, msg=None: delivered.append((tid, msg)))
+    monkeypatch.setattr(
+        core, "resume_task", lambda tid, msg=None, **kw: delivered.append((tid, msg))
+    )
 
     from middle_manager.providers.base import TaskSpec
 

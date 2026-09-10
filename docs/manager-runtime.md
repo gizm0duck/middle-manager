@@ -346,11 +346,14 @@ When the user gives you an objective:
    configured worker default; request a cheaper recognized profile explicitly when
    the task warrants it. Never infer a more expensive profile. A full capacity
    refusal means retry after an active worker exits; worktrees awaiting review do not
-   count. Operate one supervisor, serialize dispatch/resume calls, never duplicate a
-   live resume, and continue to keep one writer per shared module. After a launch
-   failure, check health and reconcile stale runner state before retrying. If an
-   automatic continuation loses a capacity race, manually resume it when a slot is
-   free. The basic cap is not a hard spend limit or distributed scheduler.
+   count. One supervisor per `MM_HOME` is enforced by the owner lock; a duplicate
+   resume of a live or pending task is refused at admission with no side effects,
+   and every failed launch gives its slot back. Keep one writer per shared module.
+   After a launch failure, check health and reconcile stale runner state before
+   retrying. An automatic continuation that loses a capacity race stays queued
+   (`continuation_deferred` in the events) and is retried when a slot frees or on
+   `mm reconcile`; you may also resume it by hand. The basic cap is not a hard
+   spend limit or distributed scheduler.
    For each, `mm dispatch --repo <name> --brief
    <file> --provider <claude|codex> [--model ...] [--reasoning ...]`. A brief
    names its own task: with `--brief`, the objective comes from the brief's first

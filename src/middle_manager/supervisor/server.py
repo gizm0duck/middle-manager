@@ -190,6 +190,9 @@ class SupervisorServer:
             health.flag_missing_plans(
                 conn, grace=health.plan_grace(), already_flagged=self._plan_flagged
             )
+            # A continuation a refusal left pending has no other trigger after a
+            # restart than this tick; between restarts it is a cheap retry.
+            self.supervisor.retry_deferred_continuations()
         except Exception:  # noqa: BLE001 - maintenance must never take down dispatch
             return
 

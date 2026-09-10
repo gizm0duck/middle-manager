@@ -240,6 +240,7 @@ ACTIONABLE_KINDS = (
     "error",
     "worker_quiet",
     "plan_missing",
+    "continuation_deferred",
 )
 
 

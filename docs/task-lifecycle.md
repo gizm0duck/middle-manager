@@ -89,6 +89,29 @@ non-zero with no result event, which the adapter correctly reads as a failed
 `runner_superseded` event against the retired session id and never touches the
 task. A manual `mm resume` is no longer needed after a steer.
 
+## Continuations that admission refuses
+
+A worker ending releases its slot before its automatic continuation — a queued
+checkpoint steer, a stored-decision answer, the resume after a steer's interrupt
+— and a competing dispatch can take that slot, or the ceiling may have been
+lowered since the worker launched. A continuation is **consumed only by the
+launch that carries it**: the `resumed` event records the `steer_events` or the
+`answered_question` it delivered, and `steer_applied` / `auto_answered` are
+written after that launch, never before. A refused resume therefore changes
+nothing about what is pending. It writes one `continuation_deferred` event
+(actionable; repeated refusals for the same reason add nothing) and leaves the
+task in a truthful status: `worker_done` or `worker_stopped` with the steer
+still queued, `blocked` with the question still open, and — for an interrupted
+worker whose resume was refused — `worker_stopped` rather than an `in_progress`
+that no process backs.
+
+Pending continuations are retried, each at most once per pass, whenever a
+worker slot frees, at the end of `mm reconcile`, and on the supervisor's health
+tick — which is how they survive a supervisor restart. Every retry goes through
+ordinary admission and the ceiling; nothing is bypassed to make a continuation
+land. A manual `mm resume --message` in the meantime supersedes nothing: queued
+steers are still delivered at the next checkpoint.
+
 ## Superseded sessions
 
 Every resume — an explicit `mm resume`, an auto-answer, a queued steer landing at
