@@ -58,6 +58,82 @@ _DEFECT_WORDS = re.compile(r"\bdefect\b|\bsymptom\b", re.IGNORECASE)
 _FAIL_WORD = re.compile(r"\bFAIL\b")
 
 _CAUSE_WORDS = ("hypothes", "cause", "mechanism", "diagnos")
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_PRIOR_ATTEMPT = re.compile(r"^prior[ -]attempts?\b")
+_PRE_AUTHORISED = re.compile(r"pre[ -]?authori[sz]ed adjacent changes?", re.IGNORECASE)
+
+#: Words that open a shell command when they start a code span. Inline code
+#: mostly holds identifiers, so only a span whose first word is one of these
+#: (or that sits in a fenced block) is read as a command the worker will run.
+_SHELL_COMMANDS = frozenset(
+    [
+        "alembic",
+        "awk",
+        "bash",
+        "brew",
+        "cat",
+        "cd",
+        "chmod",
+        "chown",
+        "cp",
+        "curl",
+        "docker",
+        "echo",
+        "export",
+        "find",
+        "git",
+        "jq",
+        "kill",
+        "ls",
+        "make",
+        "mkdir",
+        "mm",
+        "mv",
+        "node",
+        "npm",
+        "npx",
+        "open",
+        "pip",
+        "pip3",
+        "pnpm",
+        "psql",
+        "pytest",
+        "python",
+        "python3",
+        "rm",
+        "ruff",
+        "scp",
+        "sed",
+        "sh",
+        "source",
+        "ssh",
+        "sudo",
+        "tar",
+        "touch",
+        "unzip",
+        "uv",
+        "wget",
+        "xargs",
+        "zip",
+    ]
+)
+
+#: What to run instead, for the commands the allowlist most often denies.
+ALLOWLIST_SUBSTITUTES: dict[str, str] = {
+    "chmod": "`git update-index --chmod=+x <file>` then `git checkout-index -f -- <file>`",
+    "unzip": "`python3 -m zipfile -e <archive> <dir>`",
+    "tar": "`python3 -m tarfile -e <archive> <dir>`",
+    "rm": "`git rm <file>` for tracked files, `git clean -f -- <path>` for untracked ones",
+    "touch": "the file-writing tool",
+    "echo": "the file-writing tool (a shell redirect is denied anyway)",
+    "cp": "`git mv`/`git checkout -- <path>` for tracked files, else the file-writing tool",
+    "mv": "`git mv <from> <to>`",
+    "curl": "ask the manager to fetch it, or `python3 -c` with urllib",
+    "wget": "ask the manager to fetch it, or `python3 -c` with urllib",
+    "export": "nothing — say in the report which variable the command needed",
+    "sudo": "nothing — the worker has no privilege escalation; flag it",
+}
 
 #: The outcome sections every brief carries, with what each one is for. The
 #: patterns anchor at the start of the heading so "Non-goals" is not "Goals".
@@ -385,6 +461,141 @@ def standing_scope(text: str) -> str | None:
     return "\n\n".join(parts)
 
 
+def literal_commands(text: str) -> list[tuple[int, str]]:
+    """(line, command) for every shell command the brief tells the worker to run.
+
+    Fenced blocks are read line by line; a ``$`` prompt is stripped. Inline code
+    counts only when its first word is a shell command, so identifiers and file
+    names never register. Compound lines are split on ``&&``, ``||``, ``;`` and
+    ``|`` and each piece is a command — the allowlist matches one at a time.
+    """
+    found: list[tuple[int, str]] = []
+    in_fence = False
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if _FENCE.match(raw):
+            in_fence = not in_fence
+            continue
+        pieces = [raw] if in_fence else _INLINE_CODE.findall(raw)
+        for piece in pieces:
+            for part in re.split(r"&&|\|\||[;|]", piece):
+                words = part.strip().lstrip("$").split()
+                if not words:
+                    continue
+                head = words[0]
+                base = head.rsplit("/", 1)[-1]
+                looks_like_command = base in _SHELL_COMMANDS or (
+                    in_fence and head.startswith(("./", "/"))
+                )
+                if looks_like_command:
+                    found.append((number, " ".join(words)))
+    return found
+
+
+def _allowed_prefixes(allowed: list[str]) -> tuple[bool, list[str]]:
+    """(everything allowed, command prefixes) from Claude tool patterns like ``Bash(git:*)``."""
+    prefixes: list[str] = []
+    for pattern in allowed:
+        pattern = pattern.strip()
+        if pattern == "Bash":
+            return True, []
+        match = re.fullmatch(r"Bash\((.+?)(?::\*)?\)", pattern)
+        if match:
+            prefixes.append(match.group(1).strip())
+    return False, prefixes
+
+
+def _covered(command: str, prefixes: list[str]) -> bool:
+    head = command.split()[0]
+    base = head.rsplit("/", 1)[-1]
+    for prefix in prefixes:
+        first = prefix.split()[0]
+        if command == prefix or command.startswith(prefix + " "):
+            return True
+        if head == first or base == first.rsplit("/", 1)[-1]:
+            return True
+    return False
+
+
+def allowlist_findings(text: str, allowed: list[str]) -> list[Finding]:
+    """Commands the brief names that a Claude worker's allowlist will deny.
+
+    Two "Flagged, not done" entries on the first delivered connected-agent task
+    were pure environment friction: ``unzip`` and ``chmod`` appeared as literal
+    commands in the brief and are not on the allowlist (issue #79). Each finding
+    names the allowed substitute when one is known.
+    """
+    everything, prefixes = _allowed_prefixes(allowed)
+    if everything:
+        return []
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    for number, command in literal_commands(text):
+        head = command.split()[0].rsplit("/", 1)[-1]
+        if _covered(command, prefixes) or head in seen:
+            continue
+        seen.add(head)
+        substitute = ALLOWLIST_SUBSTITUTES.get(head)
+        advice = (
+            f"; use {substitute} instead"
+            if substitute
+            else "; name what it was for and let the manager do it, or drop it"
+        )
+        findings.append(
+            Finding(
+                number,
+                f"claude allowlist: `{command}` — `{head}` is not covered by the worker's "
+                f"allowed tools ({', '.join(f'`{p}`' for p in prefixes) or 'none'}), so the "
+                f'worker gets a denial and a "Flagged, not done" entry{advice}',
+            )
+        )
+    return findings
+
+
+def has_prior_attempt_section(text: str) -> bool:
+    lines = _classified_lines(text)
+    return any(
+        (heading := _own_heading(ln)) is not None and _PRIOR_ATTEMPT.match(heading) for ln in lines
+    )
+
+
+def prior_attempt_findings(text: str, prior: str | None) -> list[Finding]:
+    """A re-dispatch owes the worker a ``## Prior attempt`` section.
+
+    ``prior`` describes the earlier task (id, how it ended, why); None means a
+    first attempt and no finding.
+    """
+    if not prior or has_prior_attempt_section(text):
+        return []
+    return [
+        Finding(
+            1,
+            f"no Prior attempt section — this objective was tried before ({prior}). Add "
+            "`## Prior attempt`: what it did, why it ended, and what this attempt does "
+            "differently, so the worker is not told mid-task by a repo note",
+        )
+    ]
+
+
+def _check_pre_authorised(lines: list[_Line]) -> list[Finding]:
+    if any(_PRE_AUTHORISED.search(ln.text) for ln in lines):
+        return []
+    in_scope = None
+    for line in lines:
+        heading = _own_heading(line)
+        if heading is not None and re.match(r"^in[ -]scope\b", heading):
+            in_scope = line
+            break
+    return [
+        Finding(
+            in_scope.number if in_scope is not None else 1,
+            "no pre-authorised adjacent changes line — under `## In scope`, add "
+            "`Pre-authorised adjacent changes:` naming the small packaging or config edits "
+            "this scope implies (a pyproject entry, a lockfile, a generated file) or `none`, "
+            'so they do not land under "Outside scope, required to build"',
+        )
+    ]
+
+
 def _check_outcome_sections(lines: list[_Line]) -> list[Finding]:
     findings: list[Finding] = []
     headings = _outcome_headings(lines)
@@ -424,6 +635,7 @@ def lint_brief(text: str) -> list[Finding]:
         if hypotheses:
             findings += _check_discrepancies(lines, hypotheses)
     findings += _check_outcome_sections(lines)
+    findings += _check_pre_authorised(lines)
     findings += _check_self_consistency(lines)
     findings += _check_evidence_paths(lines)
     return sorted(findings, key=lambda f: f.line)

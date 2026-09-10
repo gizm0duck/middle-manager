@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_id TEXT,
     stacked_on TEXT,
     stacked_on_task INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    prior_attempt_task INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     merged_sha TEXT,
     merged_at TEXT,
     created_at TEXT NOT NULL,
@@ -298,6 +299,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # The task this one is stacked on. A stack is a chain of tasks, not a
         # chain of branch names the manager has to remember.
         conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on_task INTEGER")
+    if "prior_attempt_task" not in task_cols:
+        # The ended task this one retries (issue #79): the worker is told how it
+        # ended, and the assessment can count re-dispatches that carried it.
+        conn.execute("ALTER TABLE tasks ADD COLUMN prior_attempt_task INTEGER")
     for col in ("merged_sha", "merged_at"):
         # Where the work landed. Set once, terminal: the heartbeat stops asking
         # the forge about a branch whose merge is already on the record.

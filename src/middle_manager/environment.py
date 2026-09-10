@@ -285,6 +285,7 @@ def prepare(
     task_id: int,
     worktree: str,
     branch: str | None,
+    prior_attempt=None,
 ) -> PreparedEnvironment:
     """Settle the environment for a task at dispatch and render its block.
 
@@ -312,6 +313,7 @@ def prepare(
         compose_project=project,
         db_port=port,
         branch=branch,
+        prior_attempt=prior_attempt,
     )
     return PreparedEnvironment(
         block=block, evidence_path=evidence_path, compose_project=project, db_port=port
@@ -331,9 +333,21 @@ def render(
     compose_project: str | None = None,
     db_port: int | None = None,
     branch: str | None = None,
+    prior_attempt=None,
 ) -> str:
     """The block itself. Markdown, one bullet per fact, no prose to drift."""
     lines = [f"## {HEADING}", ""]
+    if prior_attempt is not None:
+        # A re-dispatch: the worker hears how the last try ended before it starts,
+        # not from a repo note mid-task (issue #79).
+        where = (
+            f" Its brief is at `{prior_attempt.brief_path}`." if prior_attempt.brief_path else ""
+        )
+        lines.append(
+            f"- **Prior attempt: {prior_attempt.describe()}.**{where} Read why it ended before "
+            "planning; do not repeat an approach that reason rules out, and say in your plan "
+            "note what this attempt does differently."
+        )
     lines.append(
         f"- **Evidence directory: `{evidence_path}/`** — inside your worktree and excluded "
         "from git. Create it with your own commands and write every receipt there (gate "

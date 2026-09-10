@@ -28,6 +28,8 @@ done" rather than inventing a second source.
 - `web/orders/page.py`, `web/orders/templates/order.html`, and their tests.
 - A read of `delivery_events` through the existing repository class.
 - The copy file's three new strings, added verbatim from `docs/copy/orders.md`.
+- Pre-authorised adjacent changes: the copy file's index entry and the snapshot
+  fixture it regenerates. Nothing else outside the files above.
 
 ## Out of scope
 
@@ -120,6 +122,8 @@ done" rather than inventing a second source.
 - `web/orders/page.py`, `web/orders/templates/order.html`, and their tests.
 - A read of `delivery_events` through the existing repository class.
 - The copy file's three new strings, added verbatim from `docs/copy/orders.md`.
+- Pre-authorised adjacent changes: the copy file's index entry and the snapshot
+  fixture it regenerates. Nothing else outside the files above.
 
 ## Out of scope
 - No courier-tool integration, polling, or webhook — the table is the source.

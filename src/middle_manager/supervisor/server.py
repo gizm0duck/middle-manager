@@ -230,6 +230,7 @@ class SupervisorServer:
                         reasoning=request.get("reasoning"),
                         base=request.get("base"),
                         stack_on=request.get("stack_on"),
+                        prior_attempt=request.get("prior_attempt"),
                     ),
                 }
             if cmd == "task_status":

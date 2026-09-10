@@ -167,6 +167,7 @@ class Supervisor:
         reasoning: str | None = None,
         base: str | None = None,
         stack_on: int | None = None,
+        prior_attempt: int | None = None,
     ) -> dict:
         # A caller that names no provider gets the configured worker provider. It
         # used to get `fake`, which on 2026-09-04 sent a real task to a stub worker
@@ -280,6 +281,7 @@ class Supervisor:
                 migration_advisory=migration_advisory,
                 overlap_advisory=overlap_advisory,
                 routing=routing,
+                prior_attempt=prior_attempt,
             )
         except BaseException:
             # Whatever failed — the lease, the branch, provisioning, the adapter's
@@ -306,6 +308,7 @@ class Supervisor:
         migration_advisory: str | None,
         overlap_advisory: str | None,
         routing: dict | None = None,
+        prior_attempt: int | None = None,
     ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -428,15 +431,39 @@ class Supervisor:
         # inside the worktree, the local gate versus CI's full suite, a private
         # database stack assigned to this task, and the push-hook policy. Settled
         # here, recorded on the task, and rendered into the worker's prompt.
-        from middle_manager import environment
+        from middle_manager import environment, prior_attempts
 
+        # A re-dispatch — the same objective a closed or failed task in this
+        # repository carried, or one named by --prior-attempt — tells the worker
+        # how the last try ended, in the block, before it plans (issue #79).
+        prior = None
+        with contextlib.suppress(Exception):
+            prior = prior_attempts.for_dispatch(conn, repo_row["id"], title, explicit=prior_attempt)
+        if prior is not None and prior.task_id == task_id:
+            prior = None
         prepared = environment.prepare(
             conn,
             repo_row,
             task_id=task_id,
             worktree=lease.worktree_path,
             branch=lease.branch,
+            prior_attempt=prior,
         )
+        if prior is not None:
+            store.update_task_fields(conn, task_id, prior_attempt_task=prior.task_id)
+            store.append_event(
+                conn,
+                kind="prior_attempt_noted",
+                payload={
+                    "task_id": task_id,
+                    "prior_task": prior.task_id,
+                    "prior_status": prior.status,
+                    "reason": prior.reason,
+                    "summary": f"task {task_id} retries {prior.describe()}",
+                },
+                run_id=run_id,
+                task_id=task_id,
+            )
         if prepared.compose_project:
             store.append_event(
                 conn,
@@ -497,6 +524,7 @@ class Supervisor:
             "evidence_path": prepared.evidence_path,
             "overlap_advisory": overlap_advisory,
             "routing": routing,
+            "prior_attempt": prior.task_id if prior is not None else None,
         }
 
     def _route_and_enforce(

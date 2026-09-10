@@ -8,6 +8,7 @@ as milestones land. M1 provides: setup, config, doctor, repo, status, version.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -324,6 +325,14 @@ def _cmd_brief(args: argparse.Namespace) -> int:
         print(f"brief lint: {exc}", file=sys.stderr)
         return 1
     findings = brief_lint.lint_brief(text)
+    if args.provider == "claude":
+        from middle_manager.providers.claude import effective_allowed_tools
+
+        allowed, _source = effective_allowed_tools()
+        findings += brief_lint.allowlist_findings(text, allowed)
+    if args.prior_attempt is not None:
+        findings += brief_lint.prior_attempt_findings(text, args.prior_attempt)
+    findings.sort(key=lambda f: f.line)
     kind = "defect brief" if brief_lint.is_defect_brief(text) else "brief"
     if not findings:
         print(f"{args.file}: {kind}, no findings")
@@ -355,8 +364,36 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
+    # An omitted --provider means "whatever this instance runs workers as", never
+    # the stub provider: defaulting to `fake` sent a real task to a fake worker on
+    # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
+    provider = args.provider or default_worker_provider()
     if args.brief:
         findings = brief_lint.lint_brief(instructions)
+        # The worker's actual command surface, and the history of the objective
+        # (issue #79): friction a brief can avoid before the worker is out the door.
+        if provider == "claude":
+            from middle_manager.providers.claude import effective_allowed_tools
+
+            allowed, _source = effective_allowed_tools()
+            findings += brief_lint.allowlist_findings(instructions, allowed)
+        prior_note = None
+        with contextlib.suppress(Exception):
+            from middle_manager import prior_attempts
+            from middle_manager.state import init_db, store
+
+            conn = init_db()
+            repo_row = store.get_repo(conn, args.repo)
+            guess = args.title or preflight.title_from_brief(instructions) or ""
+            prior = prior_attempts.for_dispatch(
+                conn,
+                repo_row["id"] if repo_row is not None else None,
+                guess,
+                explicit=args.prior_attempt,
+            )
+            prior_note = prior.describe() if prior is not None else None
+        findings += brief_lint.prior_attempt_findings(instructions, prior_note)
+        findings.sort(key=lambda f: f.line)
         if findings:
             # Wrong premises and self-contradicting scope cost 25 and 13 reflections
             # in cycle 4 (issue #59); say so before the worker is out the door.
@@ -382,10 +419,6 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             return 1
         print(f'objective taken from the brief\'s first heading: "{title}"')
 
-    # An omitted --provider means "whatever this instance runs workers as", never
-    # the stub provider: defaulting to `fake` sent a real task to a fake worker on
-    # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
-    provider = args.provider or default_worker_provider()
     if provider == "fake":
         from middle_manager import repos
 
@@ -409,6 +442,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             base=args.base,
             stack_on=args.stack_on,
+            prior_attempt=args.prior_attempt,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -417,6 +451,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if resp.get("prior_attempt"):
+        print(
+            f"prior attempt: task {resp['prior_attempt']} carried this objective before; the "
+            "worker's environment block says how it ended"
+        )
     if resp.get("routing"):
         r = resp["routing"]
         print(f"routing: {r['tier']} ({r['model']}/{r['reasoning']}) — {r['rule']}")
@@ -1793,6 +1832,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["fake", "claude", "codex"],
         help="worker provider (default: the configured one); `fake` only when asked for by name",
     )
+    dispatch.add_argument(
+        "--prior-attempt",
+        dest="prior_attempt",
+        type=int,
+        default=None,
+        help=(
+            "the ended task this dispatch retries, when its title does not match (a closed, "
+            "failed or cancelled task with the same title is found on its own); the brief "
+            "then owes a `## Prior attempt` section and the worker's block names how it ended"
+        ),
+    )
     dispatch.add_argument("--model", default=None, help="worker model (clamped to ceiling)")
     dispatch.add_argument("--reasoning", default=None, help="worker reasoning (clamped to ceiling)")
     dispatch.add_argument(
@@ -1833,6 +1883,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     blint.add_argument("file", help="the brief (Markdown)")
+    blint.add_argument(
+        "--provider",
+        default="claude",
+        choices=["claude", "codex"],
+        help=(
+            "check literal commands against this provider's command surface (default claude: "
+            "the worker allowlist; codex has a real shell and skips the check)"
+        ),
+    )
+    blint.add_argument(
+        "--prior-attempt",
+        dest="prior_attempt",
+        default=None,
+        help="describe the earlier attempt to require a `## Prior attempt` section",
+    )
     brief.set_defaults(func=_cmd_brief)
 
     worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
