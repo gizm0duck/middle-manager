@@ -29,7 +29,7 @@ _SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}\Z")
 #: prints exactly the URL; ``gh-axi`` prints a structured record followed by
 #: help lines, so the last line of stdout was "Run `gh-axi pr checks 72 ...` to
 #: monitor CI" and that string was persisted as the PR URL of #72 (issue #73).
-_PR_URL_RE = re.compile(r"https?://[^\s`'\"<>()]+/pull/\d+")
+_PR_URL_RE = re.compile(r"https?://[^\s`'\"<>()]+/(?:pull|pulls|pr|merge_requests)/\d+")
 
 
 @dataclass

@@ -374,7 +374,9 @@ def test_a_dispatched_claude_brief_carries_the_block_for_this_task(
         local_gate="make test-backend",
     )
     captured: list[TaskSpec] = []
-    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: captured.append(spec))
+    monkeypatch.setattr(
+        srv.supervisor, "_run_task", lambda runner, spec, **kw: captured.append(spec)
+    )
     result = srv.supervisor.dispatch_task(
         repo=added.name, title="do it", instructions="THE BRIEF BODY", provider="claude"
     )
@@ -403,7 +405,7 @@ def test_two_dispatches_to_one_repo_get_different_stacks(server, source_repo, mo
     save_config(MMConfig(worker=WorkerCeiling("claude", "sonnet", "medium")))
     added = repos.add_repo(source_repo)
     repos.set_settings(added.name, compose_stack="yes", db_port_base="54000")
-    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: None)
+    monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec, **kw: None)
     first = srv.supervisor.dispatch_task(repo=added.name, title="a", provider="claude")
     second = srv.supervisor.dispatch_task(repo=added.name, title="b", provider="claude")
     assert first["compose_project"] != second["compose_project"]

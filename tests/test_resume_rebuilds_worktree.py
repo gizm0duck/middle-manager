@@ -108,6 +108,7 @@ def test_resume_refuses_plainly_when_nothing_can_be_rebuilt(mm_home, source_repo
     )
     task_id = task["task_id"]
     _wait_for(lambda: _status(task_id) == "failed")
+    _wait_for(lambda: not Path(task["worktree_path"]).exists())
     conn = init_db()
     conn.execute("UPDATE tasks SET repo_id = NULL WHERE id = ?", (task_id,))
     conn.commit()
