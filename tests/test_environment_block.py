@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from middle_manager import cli, compose, environment, progress, repos, review
-from middle_manager.config import MMConfig, save_config
+from middle_manager.config import MMConfig, WorkerCeiling, save_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter
 from middle_manager.providers.codex import CodexAdapter
@@ -364,7 +364,7 @@ def test_a_dispatched_claude_brief_carries_the_block_for_this_task(
     server, source_repo, monkeypatch
 ) -> None:
     srv, _client = server
-    save_config(MMConfig())
+    save_config(MMConfig(worker=WorkerCeiling("claude", "sonnet", "medium")))
     added = repos.add_repo(source_repo)
     repos.set_settings(
         added.name,
@@ -400,7 +400,7 @@ def test_a_dispatched_claude_brief_carries_the_block_for_this_task(
 
 def test_two_dispatches_to_one_repo_get_different_stacks(server, source_repo, monkeypatch) -> None:
     srv, _client = server
-    save_config(MMConfig())
+    save_config(MMConfig(worker=WorkerCeiling("claude", "sonnet", "medium")))
     added = repos.add_repo(source_repo)
     repos.set_settings(added.name, compose_stack="yes", db_port_base="54000")
     monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: None)

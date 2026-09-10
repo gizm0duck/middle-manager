@@ -9,6 +9,7 @@ supervisor restart.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import threading
@@ -29,6 +30,26 @@ from middle_manager.worktree import Lease, LeaseError, LeaseManager
 
 class SupervisorError(Exception):
     pass
+
+
+class _CapacityReservation:
+    """One not-yet-bound execution slot; identity is the reservation token."""
+
+    pass
+
+
+def _release_pending_capacity_on_error(method):
+    """Make pre-launch admission rollback deterministic for public starts."""
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException:
+            self._release_pending_capacity()
+            raise
+
+    return wrapped
 
 
 def _adapter_for(provider: str):
@@ -123,6 +144,8 @@ class Supervisor:
         self._threads: dict[int, threading.Thread] = {}
         self._runners: dict[int, RunnerGuardian] = {}
         self._leases: dict[int, object] = {}
+        self._pending_capacity: dict[int, _CapacityReservation] = {}
+        self._capacity_slots: dict[int, _CapacityReservation] = {}
         # Question fingerprints already auto-answered per task; a fingerprint that
         # reappears after its stored answer is escalated instead of looping.
         self._auto_answered: dict[int, set[str]] = {}
@@ -130,6 +153,7 @@ class Supervisor:
     # ------------------------------------------------------------------ #
     # Dispatch
     # ------------------------------------------------------------------ #
+    @_release_pending_capacity_on_error
     def dispatch_task(
         self,
         *,
@@ -231,6 +255,8 @@ class Supervisor:
                     "`mm config claude --reset`, or set one with "
                     "`mm config claude --allowed-tools 'Read,Edit,Bash(git:*),...'`."
                 )
+
+        capacity = self._reserve_capacity(conn, limit=self._max_concurrent(provider), task_id=None)
 
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -404,7 +430,12 @@ class Supervisor:
         thread = threading.Thread(target=self._run_task, args=(runner, spec), daemon=True)
         with self._lock:
             self._threads[task_id] = thread
-        thread.start()
+        self._bind_capacity(capacity, task_id)
+        try:
+            thread.start()
+        except Exception:
+            self._release_capacity(task_id)
+            raise
 
         return {
             "run_id": run_id,
@@ -421,42 +452,110 @@ class Supervisor:
 
     def _resolve_and_enforce(
         self, provider: str, model: str | None, reasoning: str | None
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str, str]:
         """Resolve worker profile and enforce the ceiling (runtime, not prompt).
 
-        ``model=None`` means "use the provider account default": we never fabricate
-        a model name, because an unsupported explicit model makes the CLI error
-        (e.g. Codex on a ChatGPT account rejects an explicit gpt-5-codex). For a
-        provider with a known-valid cheap tier (claude) we pick the smallest
-        eligible model when none is given; otherwise we keep None.
+        Omitted choices use the configured worker defaults. Every real execution
+        therefore reaches the provider with a concrete, persisted profile rather
+        than inheriting an account or CLI default.
         """
         try:
             config = load_config()
         except ConfigError as exc:
             raise SupervisorError(f"run `mm setup` first: {exc}") from exc
 
-        if model is None and provider == "claude":
-            model = choose_worker(config).model
+        default = choose_worker(config)
+        model = model or default.model
+        reasoning = reasoning or default.reasoning
 
         try:
-            if model is not None:
-                enforce_ceiling(config, WorkerProfile(provider, model, reasoning or "low"))
-            elif reasoning is not None:
-                # Enforce only the reasoning ceiling when the model is a default.
-                enforce_ceiling(
-                    config,
-                    WorkerProfile(config.worker.provider, config.worker.max_model, reasoning),
-                )
+            enforce_ceiling(config, WorkerProfile(provider, model, reasoning))
         except CeilingError as exc:
             raise SupervisorError(f"worker ceiling: {exc}") from exc
         return model, reasoning
 
+    def _max_concurrent(self, provider: str) -> int:
+        """Read the configured active-execution bound.
+
+        Hermetic fake-provider tests historically require no config; they receive
+        the schema default. Real providers remain fail-closed in profile resolution.
+        """
+        try:
+            return load_config().worker.max_concurrent
+        except ConfigError as exc:
+            from middle_manager.paths import config_path
+
+            if provider == "fake" and not config_path().exists():
+                from middle_manager.config import WorkerCeiling
+
+                return WorkerCeiling().max_concurrent
+            raise SupervisorError(f"run `mm setup` first: {exc}") from exc
+
+    def _reserve_capacity(self, conn, *, limit: int, task_id: int | None) -> _CapacityReservation:
+        """Atomically reserve a short-lived supervisor-local execution slot.
+
+        Normal operation uses one manager-owned :class:`Supervisor` per ``MM_HOME``.
+        Its short mutex protects admission inside that process; this is not a
+        cross-process or distributed scheduler. Persisted starting/running rows from
+        an earlier supervisor are counted conservatively until reconciliation marks
+        them otherwise.
+        """
+        with self._lock:
+            live = store.live_runners(conn)
+            if task_id is not None and (
+                task_id in self._capacity_slots or any(row["task_id"] == task_id for row in live)
+            ):
+                raise SupervisorError(
+                    f"task {task_id} already has a live execution; refusing a duplicate resume"
+                )
+
+            # A bound in-process slot and its runner row describe the same
+            # execution, so count that pair once. Extra live rows for the same task
+            # remain counted: they are still consuming provider capacity.
+            persisted = len(live)
+            for active_task in self._capacity_slots:
+                if any(row["task_id"] == active_task for row in live):
+                    persisted -= 1
+            active = len(self._capacity_slots) + len(self._pending_capacity) + persisted
+            if active >= limit:
+                raise SupervisorError(
+                    f"worker capacity is full ({active}/{limit} active); retry after a worker exits"
+                )
+            reservation = _CapacityReservation()
+            self._pending_capacity[threading.get_ident()] = reservation
+            return reservation
+
+    def _bind_capacity(self, reservation: _CapacityReservation, task_id: int) -> None:
+        with self._lock:
+            pending = self._pending_capacity.pop(threading.get_ident(), None)
+            if pending is not reservation:
+                raise SupervisorError("capacity reservation was lost before worker launch")
+            self._capacity_slots[task_id] = reservation
+
+    def _release_pending_capacity(self) -> None:
+        with self._lock:
+            self._pending_capacity.pop(threading.get_ident(), None)
+
+    def _release_capacity(self, task_id: int) -> None:
+        with self._lock:
+            self._capacity_slots.pop(task_id, None)
+
+    @_release_pending_capacity_on_error
     def resume_task(self, task_id: int, message: str | None = None) -> dict:
         """Resume a task's provider session (blocked-worker resume / checkpoint steer)."""
         conn = init_db()
         task = store.get_task(conn, task_id)
         if task is None:
             raise SupervisorError(f"task {task_id} not found")
+        from middle_manager.config import default_worker_provider
+
+        provider = task["provider"] or default_worker_provider()
+        model, reasoning = task["model"], task["reasoning"]
+        if provider in ("claude", "codex"):
+            model, reasoning = self._resolve_and_enforce(provider, model, reasoning)
+        capacity = self._reserve_capacity(
+            conn, limit=self._max_concurrent(provider), task_id=task_id
+        )
         sess = conn.execute(
             "SELECT * FROM sessions WHERE task_id = ? ORDER BY id DESC LIMIT 1",
             (task_id,),
@@ -487,7 +586,7 @@ class Supervisor:
         # it is being worked again, not `failed` from the session we just replaced.
         superseded = store.supersede_runners(conn, task_id, reason="resume")
         store.set_task_status(conn, task_id, "in_progress")
-        from middle_manager.config import default_worker_provider
+        store.update_task_fields(conn, task_id, model=model, reasoning=reasoning)
 
         spec = TaskSpec(
             task_id=task_id,
@@ -495,9 +594,9 @@ class Supervisor:
             instructions=message or "",
             worktree_path=task["worktree_path"] or "",
             base_sha=task["base_sha"] or "",
-            provider=task["provider"] or default_worker_provider(),
-            model=task["model"],
-            reasoning=task["reasoning"],
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
             run_id=task["run_id"],
             branch=task["branch"],
             resume_session_id=session_id,
@@ -523,7 +622,12 @@ class Supervisor:
             run_id=task["run_id"],
             task_id=task_id,
         )
-        thread.start()
+        self._bind_capacity(capacity, task_id)
+        try:
+            thread.start()
+        except Exception:
+            self._release_capacity(task_id)
+            raise
         return {
             "task_id": task_id,
             "resumed_session": session_id,
@@ -543,6 +647,11 @@ class Supervisor:
         if task is None:
             raise SupervisorError(f"task {task_id} not found")
         provider = task["provider"] or "fake"
+        if provider in ("claude", "codex"):
+            # A steer that interrupts a turn promises to resume it. Revalidate
+            # first so lowering the ceiling cannot destroy a currently running
+            # allowed-at-launch session and only then discover it may not resume.
+            self._resolve_and_enforce(provider, task["model"], task["reasoning"])
         adapter = _adapter_for(provider)
         can_interrupt = getattr(adapter, "supports_interrupt_steer", lambda: False)()
 
@@ -717,9 +826,25 @@ class Supervisor:
 
     def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
         try:
-            result = runner.run(spec)
+            try:
+                result = runner.run(spec)
+            finally:
+                # The slot covers the provider process only. Follow-up bookkeeping,
+                # review waits, and checkpoint auto-resume do not retain it.
+                self._release_capacity(spec.task_id)
         except Exception as exc:  # noqa: BLE001 - record, never crash the supervisor
             conn = init_db()
+            runner.interrupt()
+            if runner.runner_id is not None:
+                row = store.get_runner(conn, runner.runner_id)
+                if row is not None and row["status"] in ("starting", "running"):
+                    store.update_runner(
+                        conn,
+                        runner.runner_id,
+                        status="failed",
+                        exit_code=-1,
+                        result_recorded=1,
+                    )
             # Only stamp the task when this runner is still the task's session; a
             # crash in a session that a resume already replaced says nothing about
             # the worker now running.

@@ -322,7 +322,8 @@ in-character greeting.
 After preflight, on your first reply:
 
 1. If **no config exists**, don't dump flags. Have a short, human conversation —
-   who should run the show (manager), what the hard worker ceiling is, how
+   who should run the show (manager), the deterministic worker default, what the
+   hard worker ceiling and active-worker limit are, how
    cost-conscious to be — then write it yourself with `mm setup` (plus
    `mm config models` / `mm config authority` for refinements). Confirm in one
    plain, in-character line, not a settings readout.
@@ -341,7 +342,16 @@ When the user gives you an objective:
    is the *only* place a repo can live. Never look elsewhere on the machine or
    guess a path. If the named repo isn't registered, ask the user for its URL (or
    an explicit path they give you) and `mm repo add` it before proceeding.
-3. Decompose into bounded tasks. For each, `mm dispatch --repo <name> --brief
+3. Decompose into bounded tasks. Omitted model/reasoning choices resolve to the
+   configured worker default; request a cheaper recognized profile explicitly when
+   the task warrants it. Never infer a more expensive profile. A full capacity
+   refusal means retry after an active worker exits; worktrees awaiting review do not
+   count. Operate one supervisor, serialize dispatch/resume calls, never duplicate a
+   live resume, and continue to keep one writer per shared module. After a launch
+   failure, check health and reconcile stale runner state before retrying. If an
+   automatic continuation loses a capacity race, manually resume it when a slot is
+   free. The basic cap is not a hard spend limit or distributed scheduler.
+   For each, `mm dispatch --repo <name> --brief
    <file> --provider <claude|codex> [--model ...] [--reasoning ...]`. A brief
    names its own task: with `--brief`, the objective comes from the brief's first
    Markdown heading, so `--title` is only for overriding it (and is still required

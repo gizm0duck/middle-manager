@@ -14,8 +14,6 @@ Three runtime lies this pins shut:
 from __future__ import annotations
 
 import json
-import os
-import signal
 import time
 
 import pytest
@@ -126,36 +124,26 @@ def test_steer_records_the_interrupt_mode_and_not_a_bare_interrupt(
 
 
 # --------------------------------------------------------------------------- #
-# (b) A superseded session's late exit never overwrites the live task
+# (b) A duplicate resume never replaces a live execution
 # --------------------------------------------------------------------------- #
 
 
-def test_superseded_session_exit_does_not_overwrite_the_resumed_task(server, source_repo):
+def test_duplicate_resume_does_not_replace_a_live_task(server, source_repo):
     srv, client = server
     added = repos.add_repo(source_repo)
     task_id = client.dispatch_task(repo=added.name, title="hold", instructions="HOLD:30")["task_id"]
     old = _wait_live_runner(task_id)
-    old_pid, old_runner_id = old["pid"], old["id"]
+    old_runner_id = old["id"]
 
-    # Resume supersedes the live session and starts a new one that finishes.
+    # A repeated resume used to supersede the current process and briefly run two
+    # provider calls for one task. Admission now refuses before session or task
+    # state changes.
     resp = client.resume_task(task_id, "carry on")
-    assert resp["status"] == "in_progress"
-    assert [r["runner"] for r in resp["superseded_runners"]] == [old_runner_id]
-    _wait_status(client, task_id, {"worker_done"})
-
-    # Now the superseded runner dies non-zero — the late exit=1 that used to
-    # rewrite a live task as `failed`.
-    os.killpg(os.getpgid(old_pid), signal.SIGINT)
-    _wait_for(
-        lambda: any(e["runner"] == old_runner_id for e in _events(task_id, "runner_superseded")),
-        what="the superseded runner to record its exit",
-    )
-    time.sleep(0.3)  # give a wrong implementation time to stamp the task
-
-    assert client.task_status(task_id)["task"]["status"] == "worker_done"
-    assert not _events(task_id, "error")
-    conn = init_db()
-    assert store.get_runner(conn, old_runner_id)["status"] == "superseded"
+    assert not resp["ok"]
+    assert "already has a live execution" in resp["error"]
+    assert client.task_status(task_id)["task"]["status"] == "in_progress"
+    assert not _events(task_id, "resumed")
+    assert [row["id"] for row in store.live_runners_for_task(init_db(), task_id)] == [old_runner_id]
 
 
 def test_terminal_events_carry_the_session_they_came_from(server, source_repo):

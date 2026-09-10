@@ -13,7 +13,7 @@ import time
 import pytest
 
 from middle_manager import repos
-from middle_manager.config import MMConfig, save_config
+from middle_manager.config import MMConfig, WorkerCeiling, save_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter
 from middle_manager.providers.codex import CodexAdapter
@@ -134,7 +134,8 @@ def server(mm_home):
 
 def _capture_dispatch(server, source_repo, monkeypatch, provider):
     srv, _client = server
-    save_config(MMConfig())
+    model = "sonnet" if provider == "claude" else "gpt-5-codex"
+    save_config(MMConfig(worker=WorkerCeiling(provider, model, "medium")))
     added = repos.add_repo(source_repo)
     captured: list[TaskSpec] = []
     monkeypatch.setattr(srv.supervisor, "_run_task", lambda runner, spec: captured.append(spec))

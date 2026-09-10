@@ -52,7 +52,20 @@ class SupervisorServer:
 
     def _bind(self) -> None:
         if os.path.exists(self.socket_path):
-            os.unlink(self.socket_path)
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(0.2)
+            try:
+                probe.connect(self.socket_path)
+            except OSError:
+                # A crashed supervisor can leave the filesystem entry behind.
+                os.unlink(self.socket_path)
+            else:
+                raise RuntimeError(
+                    f"a supervisor is already listening at {self.socket_path}; "
+                    "one supervisor per MM_HOME is supported"
+                )
+            finally:
+                probe.close()
         os.makedirs(os.path.dirname(self.socket_path), exist_ok=True)
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._sock.bind(self.socket_path)

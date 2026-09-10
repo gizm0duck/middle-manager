@@ -41,7 +41,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print(
         f"configured manager {cfg.manager.provider}/{cfg.manager.model}"
         f"@{cfg.manager.reasoning}; worker ceiling {cfg.worker.provider}/"
-        f"{cfg.worker.max_model}@{cfg.worker.max_reasoning}; posture "
+        f"{cfg.worker.max_model}@{cfg.worker.max_reasoning}, default "
+        f"{cfg.worker.default_model}@{cfg.worker.default_reasoning}, "
+        f"concurrency {cfg.worker.max_concurrent}; posture "
         f"{cfg.cost_posture}"
     )
     if not args.skip_tools:
@@ -97,7 +99,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
             cfg = config_models(_collect_overrides(args))
             print(
                 f"updated models: manager {cfg.manager.model}, "
-                f"worker ceiling {cfg.worker.max_model}"
+                f"worker default {cfg.worker.default_model}@{cfg.worker.default_reasoning}, "
+                f"ceiling {cfg.worker.max_model}@{cfg.worker.max_reasoning}, "
+                f"concurrency {cfg.worker.max_concurrent}"
             )
             return 0
         if args.config_cmd == "authority":
@@ -1501,6 +1505,9 @@ def _collect_overrides(args: argparse.Namespace) -> dict:
         "worker_provider",
         "worker_max_model",
         "worker_max_reasoning",
+        "worker_default_model",
+        "worker_default_reasoning",
+        "worker_max_concurrent",
         "cost_posture",
     )
     return {k: getattr(args, k) for k in keys if getattr(args, k, None) is not None}
@@ -1513,6 +1520,9 @@ def _add_profile_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--worker-provider", dest="worker_provider")
     parser.add_argument("--worker-max-model", dest="worker_max_model")
     parser.add_argument("--worker-max-reasoning", dest="worker_max_reasoning")
+    parser.add_argument("--worker-default-model", dest="worker_default_model")
+    parser.add_argument("--worker-default-reasoning", dest="worker_default_reasoning")
+    parser.add_argument("--worker-max-concurrent", dest="worker_max_concurrent", type=int)
     parser.add_argument("--cost-posture", dest="cost_posture")
 
 

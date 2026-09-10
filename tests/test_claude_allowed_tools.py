@@ -17,6 +17,7 @@ from middle_manager.cli import main
 from middle_manager.config import (
     ConfigError,
     MMConfig,
+    WorkerCeiling,
     default_claude_allowed_tools,
     load_config,
     save_config,
@@ -185,7 +186,7 @@ def server(mm_home):
 
 def test_dispatch_refuses_a_claude_worker_with_no_tools(server, source_repo, monkeypatch):
     srv, client = server
-    save_config(MMConfig())
+    save_config(MMConfig(worker=WorkerCeiling("claude", "sonnet", "medium")))
     added = repos.add_repo(source_repo)
     monkeypatch.setenv(ALLOWED_TOOLS_ENV, "")
 

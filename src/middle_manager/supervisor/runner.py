@@ -104,6 +104,7 @@ class RunnerGuardian:
     def __init__(self, adapter: ProviderAdapter) -> None:
         self.adapter = adapter
         self._proc: subprocess.Popen | None = None
+        self.runner_id: str | None = None
         self._interrupt = threading.Event()
         # Set when this runner's session was retired mid-flight (a resume or a
         # steer's interrupt started a newer session for the same task).
@@ -125,6 +126,7 @@ class RunnerGuardian:
     ) -> WorkerResult:
         conn = init_db()
         runner_id = uuid.uuid4().hex[:12]
+        self.runner_id = runner_id
         store.register_runner(
             conn, runner_id=runner_id, task_id=spec.task_id, provider=self.adapter.name
         )
