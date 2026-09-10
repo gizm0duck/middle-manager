@@ -262,10 +262,17 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.server import SupervisorServer, default_socket_path
 
     if args.supervisor_cmd == "serve":
+        from middle_manager.supervisor.server import SupervisorOwned
+
         server = SupervisorServer()
+        try:
+            server._bind()
+        except SupervisorOwned as exc:
+            print(f"refusing to start: {exc}", file=sys.stderr)
+            return 1
         print(f"supervisor listening on {server.socket_path} (Ctrl-C to stop)")
         try:
-            server.serve_forever()
+            server._serve_loop()
         except KeyboardInterrupt:
             server.stop()
             print("supervisor stopped")

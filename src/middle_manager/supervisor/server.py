@@ -3,11 +3,25 @@
 A thin request/response server around :class:`Supervisor`. Each connection is
 handled in its own thread so a blocking ``wait_actionable`` never stalls other
 control requests. Startable in a background thread (tests) or blocking (CLI).
+
+One supervisor per ``MM_HOME`` is enforced with an exclusive OS lock, not with
+a probe. The probe — connect to the socket, refuse if something answers — was
+the only guard until issue #69, and it protects nothing during a simultaneous
+start: two processes can both find no listener, both unlink the entry, both
+bind, and the second one's ``unlink`` takes the first one's socket with it.
+Two live supervisors then admit workers independently, and whichever stops
+first deletes the other's socket and pid file. So :meth:`_bind` first takes
+``flock(LOCK_EX | LOCK_NB)`` on ``<MM_HOME>/run/supervisor.lock`` and holds it
+until the server stops. The loser sees ``EWOULDBLOCK`` and refuses without
+having touched the socket or the pid file. A crashed owner's lock dies with
+its process, so its stale files are replaceable by the next start — which is
+also the only start allowed to remove them.
 """
 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import os
 import socket
@@ -18,6 +32,15 @@ import time
 from middle_manager.paths import ensure_layout, mm_home, run_dir
 from middle_manager.supervisor.core import Supervisor, SupervisorError
 from middle_manager.supervisor.protocol import encode, read_request
+
+
+class SupervisorOwned(RuntimeError):
+    """Another process owns this ``MM_HOME``'s supervisor; nothing was changed."""
+
+
+def owner_lock_path() -> str:
+    """Where the owner lock for this ``MM_HOME`` lives — one per canonical home."""
+    return str(mm_home().resolve() / "run" / "supervisor.lock")
 
 
 def default_socket_path() -> str:
@@ -36,6 +59,8 @@ class SupervisorServer:
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        #: The open owner lock; held from a successful :meth:`_bind` to cleanup.
+        self._lock_fd: int | None = None
         self._last_assessment_tick = 0.0
         self._last_health_tick = 0.0
         self._quiet_flagged: set[int] = set()
@@ -50,17 +75,55 @@ class SupervisorServer:
         self._bind()
         self._serve_loop()
 
+    def _acquire_owner_lock(self) -> None:
+        """Become the one supervisor for this ``MM_HOME``, or refuse having touched nothing."""
+        path = owner_lock_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            owner = self._recorded_owner_pid()
+            os.close(fd)
+            raise SupervisorOwned(
+                f"a supervisor already owns {mm_home()}"
+                + (f" (pid {owner})" if owner else "")
+                + "; one supervisor per MM_HOME is supported — stop that one first"
+            ) from exc
+        # The lock is ours; the pid inside is advisory, for the loser's message.
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        self._lock_fd = fd
+
+    @staticmethod
+    def _recorded_owner_pid() -> int | None:
+        try:
+            with open(owner_lock_path(), encoding="utf-8") as fh:
+                return int(fh.read().strip() or 0) or None
+        except (OSError, ValueError):
+            return None
+
     def _bind(self) -> None:
+        self._acquire_owner_lock()
+        try:
+            self._bind_socket()
+        except BaseException:
+            self._release_owner_lock()
+            raise
+
+    def _bind_socket(self) -> None:
         if os.path.exists(self.socket_path):
+            # Holding the lock, an existing entry is a crashed owner's — unless a
+            # supervisor from before the lock existed is still serving on it, in
+            # which case refuse rather than pull its socket out from under it.
             probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             probe.settimeout(0.2)
             try:
                 probe.connect(self.socket_path)
             except OSError:
-                # A crashed supervisor can leave the filesystem entry behind.
                 os.unlink(self.socket_path)
             else:
-                raise RuntimeError(
+                raise SupervisorOwned(
                     f"a supervisor is already listening at {self.socket_path}; "
                     "one supervisor per MM_HOME is supported"
                 )
@@ -74,6 +137,12 @@ class SupervisorServer:
         # Persist the listening pid for `mm supervisor status` / reconcile.
         with open(run_dir() / "supervisor.pid", "w", encoding="utf-8") as fh:
             fh.write(str(os.getpid()))
+
+    def _release_owner_lock(self) -> None:
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)  # closing drops the flock
 
     def _serve_loop(self) -> None:
         assert self._sock is not None
@@ -211,7 +280,11 @@ class SupervisorServer:
             with contextlib.suppress(OSError):
                 self._sock.close()
             self._sock = None
-        for path in (self.socket_path, str(run_dir() / "supervisor.pid")):
-            if os.path.exists(path):
-                with contextlib.suppress(OSError):
-                    os.unlink(path)
+        # Only the owner removes the socket and pid file, and only while it still
+        # holds the lock — a stop that lost the race must not delete the winner's.
+        if self._lock_fd is not None:
+            for path in (self.socket_path, str(run_dir() / "supervisor.pid")):
+                if os.path.exists(path):
+                    with contextlib.suppress(OSError):
+                        os.unlink(path)
+        self._release_owner_lock()
