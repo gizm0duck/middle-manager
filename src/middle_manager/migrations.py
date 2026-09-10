@@ -18,17 +18,41 @@ The harness can see it earlier, at two moments and from two angles:
 
 Neither one refuses anything. Alembic is never run, nothing is rebased: the
 manager decides what to do with what it is told.
+
+What counts as a task's migration is decided by its *commits*, never by whatever
+happens to be on disk at its recorded worktree path. Pool slots are recycled:
+on 2026-09-07 three finished tasks still pointed at slot 3, which by then held
+task 170's checkout, and the review flag reported task 170's own migration as
+three phantom competitors (issue #74). So a task's inventory is read from its
+lease worktree only while an active lease of *that task* owns the path and the
+checkout is on the task's branch; otherwise from the task's branch in the base
+clone; and a task whose branch exists nowhere contributes nothing and is named
+as unverifiable rather than silently passed.
 """
 
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath
 
-from middle_manager.lifecycle import TERMINAL_STATUSES
+#: A task in one of these may still put a migration on the graph: a worker is
+#: writing it, or it is written and waiting for review or delivery. ``failed``
+#: and ``needs_recovery`` are deliberately absent — that work is not about to
+#: merge, so it must not push a new dispatch onto its branch (issue #56). Note
+#: this is a narrower question than "may the worktree be reclaimed": a failed
+#: task keeps its worktree for ``mm resume`` (issue #58) while contributing
+#: nothing here.
+IN_FLIGHT_STATUSES = ("in_progress", "worker_done", "worker_stopped", "blocked")
+
+#: A task in an in-flight status that nothing has touched for this long, and
+#: that has no live runner, is treated as abandoned rather than in flight. Tasks
+#: 2–5 in the 2026-09-05 false positive were a month old.
+IN_FLIGHT_WINDOW = timedelta(days=7)
 
 # Where Alembic revisions live in a repository laid out the ordinary way. A repo
 # that keeps them somewhere else sets its own with
@@ -140,28 +164,108 @@ def parse_down_revision(source: str) -> str | None:
     return str(value)
 
 
-def _down_revision_at_head(worktree: str, path: str) -> str | None:
-    """Read the revision file as the worktree's head has it, not as the disk has it."""
-    rc, out = _git(worktree, "show", f"HEAD:{path}")
+def _down_revision_at(git_dir: str, ref: str, path: str) -> str | None:
+    """Read the revision file as the task's commit has it, not as the disk has it."""
+    rc, out = _git(git_dir, "show", f"{ref}:{path}")
     return parse_down_revision(out) if rc == 0 else None
 
 
+@dataclass(frozen=True)
+class Unverifiable:
+    """A task whose migrations could not be inventoried, and why."""
+
+    task_id: int
+    title: str
+    status: str
+    branch: str | None
+    reason: str
+
+    def describe(self) -> str:
+        branch = f"branch {self.branch}" if self.branch else "no branch"
+        return f'task {self.task_id} "{self.title}" ({self.status}, {branch}): {self.reason}'
+
+
+def _active_lease_owns(conn, task) -> bool:
+    """Is the task's recorded worktree path held, right now, by a lease of this task?"""
+    lease_id, path = task["lease_id"], task["worktree_path"]
+    if not path:
+        return False
+    row = conn.execute(
+        "SELECT id FROM leases WHERE task_id = ? AND worktree_path = ? AND status = 'active'",
+        (int(task["id"]), path),
+    ).fetchone()
+    if row is None:
+        return False
+    return not lease_id or row["id"] == lease_id
+
+
+def task_commits(conn, task) -> tuple[str, str] | str:
+    """Where this task's own commits can be read: ``(git_dir, ref)``, or the reason not.
+
+    Two places are trusted, in order. The lease worktree, while an active lease
+    of this task owns the path and the checkout is on the task's branch — that
+    is the one moment a path proves ownership. Failing that, the task's branch
+    as a ref of the base clone, which every lease worktree shares refs with and
+    which outlives the slot. A recorded path that fails the first test is never
+    read: it is somebody else's checkout now, or nobody's.
+    """
+    branch = task["branch"]
+    if not branch:
+        return "no branch was ever leased"
+    worktree = task["worktree_path"]
+    if worktree and _active_lease_owns(conn, task) and Path(worktree).is_dir():
+        rc, out = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+        if rc == 0 and out.strip() == branch:
+            return worktree, "HEAD"
+    repo = conn.execute("SELECT local_path FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+    local = repo["local_path"] if repo is not None else None
+    if local and os.path.isdir(local):
+        rc, _ = _git(local, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+        if rc == 0:
+            return local, f"refs/heads/{branch}"
+    return f"branch {branch} exists neither in an owned worktree nor in the base clone"
+
+
 def added_migrations(conn, task, *, glob: str | None = None) -> list[AddedMigration]:
-    """The migration files this task's worktree adds, relative to its own base.
+    """The migration files this task's commits add, relative to its own base.
 
     Added files only (``--diff-filter=A``): editing an existing revision is not
-    what puts a second head on the graph. A task with no worktree, no base, or a
-    worktree that has since been reclaimed contributes nothing rather than raising
-    — this is an advisory, and it never gets to be the reason a dispatch failed.
+    what puts a second head on the graph. A task with no base, or whose commits
+    cannot be located (see :func:`task_commits`), contributes nothing rather than
+    raising — this is an advisory, and it never gets to be the reason a dispatch
+    failed. Callers that must say so use :func:`inventory` instead.
     """
-    worktree, base = task["worktree_path"], task["base_sha"]
-    if not worktree or not base:
-        return []
+    found, _unverifiable = inventory(conn, task, glob=glob)
+    return found
+
+
+def inventory(
+    conn, task, *, glob: str | None = None
+) -> tuple[list[AddedMigration], Unverifiable | None]:
+    """This task's added migrations, or the reason they could not be read."""
+    base = task["base_sha"]
+    located = task_commits(conn, task)
+    if isinstance(located, str) or not base:
+        reason = located if isinstance(located, str) else "no base commit recorded"
+        return [], Unverifiable(
+            task_id=int(task["id"]),
+            title=task["title"],
+            status=task["status"],
+            branch=task["branch"],
+            reason=reason,
+        )
+    git_dir, ref = located
     if glob is None:
         glob = glob_for_repo_id(conn, task["repo_id"])
-    rc, out = _git(worktree, "diff", "--name-only", "--diff-filter=A", f"{base}..HEAD")
+    rc, out = _git(git_dir, "diff", "--name-only", "--diff-filter=A", f"{base}..{ref}")
     if rc != 0:
-        return []
+        return [], Unverifiable(
+            task_id=int(task["id"]),
+            title=task["title"],
+            status=task["status"],
+            branch=task["branch"],
+            reason=f"git diff {base[:8]}..{ref} failed",
+        )
     found: list[AddedMigration] = []
     for line in out.splitlines():
         path = line.strip()
@@ -174,33 +278,58 @@ def added_migrations(conn, task, *, glob: str | None = None) -> list[AddedMigrat
                 status=task["status"],
                 branch=task["branch"],
                 path=path,
-                down_revision=_down_revision_at_head(worktree, path),
+                down_revision=_down_revision_at(git_dir, ref, path),
             )
         )
-    return found
+    return found, None
+
+
+def _touched_recently(task, *, now: datetime) -> bool:
+    stamp = task["updated_at"] or task["created_at"]
+    try:
+        touched = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return False
+    if touched.tzinfo is None:
+        touched = touched.replace(tzinfo=UTC)
+    return now - touched <= IN_FLIGHT_WINDOW
+
+
+def _has_live_runner(conn, task_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM runners WHERE task_id = ? AND status IN ('starting', 'running') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is not None
 
 
 def _sibling_tasks(conn, repo_id, *, exclude: set[int], include_delivered: bool) -> list:
     """Other tasks in this repository whose migration could still collide.
 
-    In flight means any non-terminal status. ``include_delivered`` adds a task
-    that is delivered but not merged: its pull request is open, its migration has
-    not landed, and it is exactly as able to produce a second head as one still
-    being written.
+    In flight means a status in :data:`IN_FLIGHT_STATUSES` and either a live
+    runner or a touch within :data:`IN_FLIGHT_WINDOW`. ``include_delivered`` adds
+    a task that is delivered but not merged, with no window: its pull request is
+    open, its migration has not landed, and it is exactly as able to produce a
+    second head as one still being written.
     """
     if not repo_id:
         return []
     rows = conn.execute("SELECT * FROM tasks WHERE repo_id = ? ORDER BY id", (repo_id,)).fetchall()
+    now = datetime.now(UTC)
     kept = []
     for row in rows:
-        if int(row["id"]) in exclude:
+        task_id = int(row["id"])
+        if task_id in exclude:
             continue
         status = row["status"]
-        if status in TERMINAL_STATUSES and not (
-            include_delivered and status == "delivered" and not row["merged_at"]
-        ):
+        if status == "delivered":
+            if include_delivered and not row["merged_at"]:
+                kept.append(row)
             continue
-        kept.append(row)
+        if status not in IN_FLIGHT_STATUSES:
+            continue
+        if _touched_recently(row, now=now) or _has_live_runner(conn, task_id):
+            kept.append(row)
     return kept
 
 
@@ -208,13 +337,27 @@ def in_flight_migrations(
     conn, repo_id, *, exclude: set[int] | None = None, include_delivered: bool = False
 ) -> list[AddedMigration]:
     """Every migration the other live tasks in this repository already add."""
+    found, _unverifiable = in_flight_inventory(
+        conn, repo_id, exclude=exclude, include_delivered=include_delivered
+    )
+    return found
+
+
+def in_flight_inventory(
+    conn, repo_id, *, exclude: set[int] | None = None, include_delivered: bool = False
+) -> tuple[list[AddedMigration], list[Unverifiable]]:
+    """The in-flight migrations, and the in-flight tasks whose commits could not be read."""
     glob = glob_for_repo_id(conn, repo_id)
     found: list[AddedMigration] = []
+    unverifiable: list[Unverifiable] = []
     for row in _sibling_tasks(
         conn, repo_id, exclude=exclude or set(), include_delivered=include_delivered
     ):
-        found.extend(added_migrations(conn, row, glob=glob))
-    return found
+        added, missing = inventory(conn, row, glob=glob)
+        found.extend(added)
+        if missing is not None:
+            unverifiable.append(missing)
+    return found, unverifiable
 
 
 def dispatch_advisory(conn, repo_row, *, stack_on: int | None = None) -> str | None:
@@ -261,33 +404,58 @@ def review_conflicts(conn, task) -> list[tuple[AddedMigration, AddedMigration]]:
     This is the two-heads condition itself, not a guess about one: both diffs
     exist, both name a ``down_revision``, and the two are the same string.
     """
+    conflicts, _unverifiable = review_findings(conn, task)
+    return conflicts
+
+
+def review_findings(
+    conn, task
+) -> tuple[list[tuple[AddedMigration, AddedMigration]], list[Unverifiable]]:
+    """The collisions, and the in-flight tasks that could not be checked against.
+
+    An unverifiable sibling is reported only when this task adds a migration at
+    all: with nothing on this side, there is nothing for the other side to
+    collide with, whatever it holds.
+    """
     glob = glob_for_repo_id(conn, task["repo_id"])
     mine = [m for m in added_migrations(conn, task, glob=glob) if m.down_revision]
     if not mine:
-        return []
-    others = in_flight_migrations(
+        return [], []
+    others, unverifiable = in_flight_inventory(
         conn, task["repo_id"], exclude={int(task["id"])}, include_delivered=True
     )
-    return [(m, other) for m in mine for other in others if other.down_revision == m.down_revision]
+    conflicts = [
+        (m, other) for m in mine for other in others if other.down_revision == m.down_revision
+    ]
+    return conflicts, unverifiable
 
 
 def review_flag(conn, task) -> str | None:
     """The lines `mm review show` prints above the diffstat, or None when clear."""
-    conflicts = review_conflicts(conn, task)
-    if not conflicts:
+    conflicts, unverifiable = review_findings(conn, task)
+    if not conflicts and not unverifiable:
         return None
-    lines = [
-        "MIGRATION COLLISION: this change adds a migration off a revision another "
-        "unmerged task in this repository also builds on. Both merging leaves two "
-        "Alembic heads."
-    ]
-    for mine, other in conflicts:
+    lines: list[str] = []
+    if conflicts:
         lines.append(
-            f"  {mine.path} here and {other.path} on {other.task_label} both declare "
-            f"down_revision {mine.down_revision!r}."
+            "MIGRATION COLLISION: this change adds a migration off a revision another "
+            "unmerged task in this repository also builds on. Both merging leaves two "
+            "Alembic heads."
         )
-    lines.append(
-        "  Sequence them before delivering — rebase one onto the other, or give the "
-        "later one the earlier revision as its parent."
-    )
+        for mine, other in conflicts:
+            lines.append(
+                f"  {mine.path} here and {other.path} on {other.task_label} both declare "
+                f"down_revision {mine.down_revision!r}."
+            )
+        lines.append(
+            "  Sequence them before delivering — rebase one onto the other, or give the "
+            "later one the earlier revision as its parent."
+        )
+    if unverifiable:
+        lines.append(
+            "MIGRATION CHECK INCOMPLETE: this change adds a migration, and the commits of "
+            "these in-flight tasks could not be read, so they were not checked against it."
+        )
+        for item in unverifiable:
+            lines.append(f"  {item.describe()}")
     return "\n".join(lines)
