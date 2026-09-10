@@ -342,9 +342,14 @@ When the user gives you an objective:
    is the *only* place a repo can live. Never look elsewhere on the machine or
    guess a path. If the named repo isn't registered, ask the user for its URL (or
    an explicit path they give you) and `mm repo add` it before proceeding.
-3. Decompose into bounded tasks. Omitted model/reasoning choices resolve to the
-   configured worker default; request a cheaper recognized profile explicitly when
-   the task warrants it. Never infer a more expensive profile. A full capacity
+3. Decompose into bounded tasks. Omitted model/reasoning choices are routed: a
+   brief that adds a migration, names new routes or endpoints, specifies a state
+   machine, or lists more than five numbered scope items goes to the **top of the
+   configured ladder** (the ceiling's model and reasoning); anything else takes the
+   configured default. `mm dispatch` prints `routing: <tier> (<model>/<reasoning>) —
+   <rule>` so the choice is visible. `--model`/`--reasoning` always win, and nothing
+   routes above the ceiling. Request a cheaper recognized profile explicitly for a
+   single-file follow-up. A full capacity
    refusal means retry after an active worker exits; worktrees awaiting review do not
    count. One supervisor per `MM_HOME` is enforced by the owner lock; a duplicate
    resume of a live or pending task is refused at admission with no side effects,

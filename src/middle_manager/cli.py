@@ -417,6 +417,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if resp.get("routing"):
+        r = resp["routing"]
+        print(f"routing: {r['tier']} ({r['model']}/{r['reasoning']}) — {r['rule']}")
     for advisory in ("migration_advisory", "overlap_advisory"):
         if resp.get(advisory):
             print(resp[advisory])
