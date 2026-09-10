@@ -570,6 +570,12 @@ class Supervisor:
             recorded = turn_end.latest_stop_verdict(conn, task_id)
             if recorded is not None and task["status"] == turn_end.WORKER_STOPPED:
                 message = recorded.resume_message()
+        # The worktree may be gone: a failed worker's pristine lease is handed
+        # back, and a prune can take a slot. The task is still resumable, so it
+        # gets its checkout back before anything tries to run in it (issue #58).
+        rebuilt = self._ensure_worktree(conn, task)
+        if rebuilt is not None:
+            task = store.get_task(conn, task_id)
         # A cascade may have rewritten this task's branch while it was stopped.
         # Resuming a worker into a worktree that is behind its own remote ends in
         # a force-push over the cascade, so the worktree is moved onto the remote
@@ -633,7 +639,103 @@ class Supervisor:
             "resumed_session": session_id,
             "status": "in_progress",
             "superseded_runners": superseded,
+            "worktree_rebuilt": rebuilt,
         }
+
+    def _ensure_worktree(self, conn, task) -> dict | None:
+        """Give a task whose checkout is gone a new one, on its own branch, at its own head.
+
+        Returns what was done, or None when the worktree was there all along. The
+        rebuilt checkout starts from the task's branch on the forge, or in the
+        base clone, or — when the branch was never pushed and the pristine
+        release deleted it — from the task's recorded base commit. Task 158
+        (2026-09-06) had no commits and lost its slot to a prune; `mm resume`
+        then crashed twice and the session had to be thrown away.
+        """
+        from pathlib import Path
+
+        task_id = int(task["id"])
+        path = task["worktree_path"]
+        if path and Path(path).is_dir():
+            return None
+        repo_row = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo_row is None:
+            raise SupervisorError(
+                f"task {task_id}: its worktree {path or '(none)'} is gone and the task has no "
+                "registered repository to rebuild one from"
+            )
+        import subprocess
+
+        from middle_manager import repos as _repos
+        from middle_manager.worktree.lease import _branch_exists
+
+        branch = task["branch"]
+        local = repo_row["local_path"]
+        # Decided before the lease exists: leasing on a branch name creates that
+        # branch when the clone lacks it, and a branch we just made is no evidence
+        # of where the task's commits are.
+        kept_locally = bool(branch) and _branch_exists(local, branch)
+        try:
+            lease = LeaseManager().acquire(
+                repo_path=local, repo_id=repo_row["id"], task_id=task_id, branch=branch
+            )
+        except LeaseError as exc:
+            raise SupervisorError(
+                f"task {task_id}: its worktree is gone and no new one could be leased: {exc}"
+            ) from exc
+
+        def git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", lease.worktree_path, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        started_from = None
+        if kept_locally:
+            head = git("rev-parse", "HEAD").stdout.strip()
+            started_from = f"branch {branch} at {head[:8]} (kept in the base clone)"
+        elif branch:
+            remote = _repos.upstream_remote(repo_row)
+            fetched = git("fetch", "--quiet", remote, branch).returncode == 0
+            if fetched and git("reset", "--hard", "--quiet", "FETCH_HEAD").returncode == 0:
+                head = git("rev-parse", "HEAD").stdout.strip()
+                started_from = f"branch {branch} at {head[:8]} (from {remote})"
+        if started_from is None:
+            base = task["base_sha"] or lease.base_sha
+            reset = git("reset", "--hard", "--quiet", base)
+            if reset.returncode != 0:
+                raise SupervisorError(
+                    f"task {task_id}: rebuilt a worktree but could not move it onto the base "
+                    f"commit {base[:8]}: {reset.stderr.strip()[:200]}"
+                )
+            started_from = f"base commit {base[:8]} (nothing of this task's was ever pushed)"
+        store.update_task_fields(
+            conn,
+            task_id,
+            worktree_path=lease.worktree_path,
+            lease_id=lease.id,
+            branch=lease.branch,
+        )
+        with self._lock:
+            self._leases[task_id] = (lease, repo_row["local_path"])
+        payload = {
+            "task_id": task_id,
+            "previous_worktree": path,
+            "worktree_path": lease.worktree_path,
+            "lease": lease.id,
+            "branch": lease.branch,
+            "started_from": started_from,
+            "summary": (
+                f"worktree {path or '(none)'} was gone; leased {lease.worktree_path} and "
+                f"started it from {started_from}"
+            ),
+        }
+        store.append_event(
+            conn, kind="worktree_rebuilt", payload=payload, run_id=task["run_id"], task_id=task_id
+        )
+        return payload
 
     def steer_task(self, task_id: int, message: str) -> dict:
         """Steer a task.
