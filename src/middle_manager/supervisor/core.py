@@ -9,11 +9,12 @@ supervisor restart.
 from __future__ import annotations
 
 import contextlib
-import functools
 import json
 import os
 import threading
 import time
+import uuid
+from dataclasses import dataclass
 
 from middle_manager import decisions
 from middle_manager.config import ConfigError, load_config
@@ -32,24 +33,25 @@ class SupervisorError(Exception):
     pass
 
 
-class _CapacityReservation:
-    """One not-yet-bound execution slot; identity is the reservation token."""
+@dataclass
+class _Execution:
+    """One admitted worker execution, from admission to the provider process's exit.
 
-    pass
+    The token is the whole identity. A reservation used to be keyed by the
+    calling thread and a bound slot by the task (issue #70): two resumes of one
+    stopped task could both reserve before either bound, the second binding
+    overwrote the first, and a finalizer for an old session released whatever
+    slot the task held *now*. Every path that gives a slot back names the
+    execution it is giving back, so an old finalizer can never release a newer
+    execution's slot, and an execution knows its task from admission — before
+    any branch sync, status write, or runner creation — so a duplicate resume
+    is refused with no side effects at all.
+    """
 
-
-def _release_pending_capacity_on_error(method):
-    """Make pre-launch admission rollback deterministic for public starts."""
-
-    @functools.wraps(method)
-    def wrapped(self, *args, **kwargs):
-        try:
-            return method(self, *args, **kwargs)
-        except BaseException:
-            self._release_pending_capacity()
-            raise
-
-    return wrapped
+    token: str
+    task_id: int | None
+    #: Set once the execution has a runner thread; until then it is pending.
+    bound: bool = False
 
 
 def _adapter_for(provider: str):
@@ -144,8 +146,8 @@ class Supervisor:
         self._threads: dict[int, threading.Thread] = {}
         self._runners: dict[int, RunnerGuardian] = {}
         self._leases: dict[int, object] = {}
-        self._pending_capacity: dict[int, _CapacityReservation] = {}
-        self._capacity_slots: dict[int, _CapacityReservation] = {}
+        #: Every admitted execution, pending or bound, by token.
+        self._executions: dict[str, _Execution] = {}
         # Question fingerprints already auto-answered per task; a fingerprint that
         # reappears after its stored answer is escalated instead of looping.
         self._auto_answered: dict[int, set[str]] = {}
@@ -153,7 +155,6 @@ class Supervisor:
     # ------------------------------------------------------------------ #
     # Dispatch
     # ------------------------------------------------------------------ #
-    @_release_pending_capacity_on_error
     def dispatch_task(
         self,
         *,
@@ -256,8 +257,50 @@ class Supervisor:
                     "`mm config claude --allowed-tools 'Read,Edit,Bash(git:*),...'`."
                 )
 
-        capacity = self._reserve_capacity(conn, limit=self._max_concurrent(provider), task_id=None)
+        execution = self._admit(conn, limit=self._max_concurrent(provider), task_id=None)
+        try:
+            return self._launch_dispatched(
+                conn,
+                execution,
+                repo_row=repo_row,
+                repo=repo,
+                title=title,
+                instructions=instructions,
+                provider=provider,
+                run_id=run_id,
+                model=model,
+                reasoning=reasoning,
+                base=base,
+                stack_on=stack_on,
+                touched=touched,
+                migration_advisory=migration_advisory,
+                overlap_advisory=overlap_advisory,
+            )
+        except BaseException:
+            # Whatever failed — the lease, the branch, provisioning, the adapter's
+            # argv, the thread — this execution is over and its slot goes back.
+            self._release(execution)
+            raise
 
+    def _launch_dispatched(
+        self,
+        conn,
+        execution: _Execution,
+        *,
+        repo_row,
+        repo: str,
+        title: str,
+        instructions: str,
+        provider: str,
+        run_id: int | None,
+        model: str | None,
+        reasoning: str | None,
+        base: str | None,
+        stack_on: int | None,
+        touched: list[str],
+        migration_advisory: str | None,
+        overlap_advisory: str | None,
+    ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
             store.set_run_status(conn, run_id, "running")
@@ -427,15 +470,13 @@ class Supervisor:
             self._runners[task_id] = runner
             self._leases[task_id] = (lease, repo_row["local_path"])
 
-        thread = threading.Thread(target=self._run_task, args=(runner, spec), daemon=True)
+        thread = threading.Thread(
+            target=self._run_task, args=(runner, spec), kwargs={"execution": execution}, daemon=True
+        )
         with self._lock:
             self._threads[task_id] = thread
-        self._bind_capacity(capacity, task_id)
-        try:
-            thread.start()
-        except Exception:
-            self._release_capacity(task_id)
-            raise
+        self._bind(execution, task_id)
+        thread.start()
 
         return {
             "run_id": run_id,
@@ -491,56 +532,70 @@ class Supervisor:
                 return WorkerCeiling().max_concurrent
             raise SupervisorError(f"run `mm setup` first: {exc}") from exc
 
-    def _reserve_capacity(self, conn, *, limit: int, task_id: int | None) -> _CapacityReservation:
-        """Atomically reserve a short-lived supervisor-local execution slot.
+    def _admit(self, conn, *, limit: int, task_id: int | None) -> _Execution:
+        """Atomically admit one execution, or refuse with nothing changed.
 
-        Normal operation uses one manager-owned :class:`Supervisor` per ``MM_HOME``.
-        Its short mutex protects admission inside that process; this is not a
-        cross-process or distributed scheduler. Persisted starting/running rows from
-        an earlier supervisor are counted conservatively until reconciliation marks
-        them otherwise.
+        Normal operation uses one manager-owned :class:`Supervisor` per
+        ``MM_HOME`` (enforced by the server's owner lock). The short mutex here
+        protects admission inside that process; this is not a distributed
+        scheduler. Persisted starting/running rows from an earlier supervisor
+        are counted conservatively until reconciliation marks them otherwise.
+        A resume names its task at admission, so a second resume of the same
+        task — pending or live — is refused here, before any side effect.
         """
         with self._lock:
             live = store.live_runners(conn)
-            if task_id is not None and (
-                task_id in self._capacity_slots or any(row["task_id"] == task_id for row in live)
-            ):
-                raise SupervisorError(
-                    f"task {task_id} already has a live execution; refusing a duplicate resume"
-                )
+            if task_id is not None:
+                if any(e.task_id == task_id for e in self._executions.values()):
+                    raise SupervisorError(
+                        f"task {task_id} already has a pending or live execution; "
+                        "refusing a duplicate resume"
+                    )
+                if any(row["task_id"] == task_id for row in live):
+                    raise SupervisorError(
+                        f"task {task_id} already has a live execution; refusing a duplicate resume"
+                    )
 
-            # A bound in-process slot and its runner row describe the same
-            # execution, so count that pair once. Extra live rows for the same task
-            # remain counted: they are still consuming provider capacity.
+            # A bound execution and its runner row describe the same process, so
+            # count that pair once. Extra live rows for the same task remain
+            # counted: they are still consuming provider capacity.
+            bound_tasks = [e.task_id for e in self._executions.values() if e.bound]
             persisted = len(live)
-            for active_task in self._capacity_slots:
+            for active_task in bound_tasks:
                 if any(row["task_id"] == active_task for row in live):
                     persisted -= 1
-            active = len(self._capacity_slots) + len(self._pending_capacity) + persisted
+            active = len(self._executions) + persisted
             if active >= limit:
                 raise SupervisorError(
                     f"worker capacity is full ({active}/{limit} active); retry after a worker exits"
                 )
-            reservation = _CapacityReservation()
-            self._pending_capacity[threading.get_ident()] = reservation
-            return reservation
+            execution = _Execution(token=uuid.uuid4().hex[:12], task_id=task_id)
+            self._executions[execution.token] = execution
+            return execution
 
-    def _bind_capacity(self, reservation: _CapacityReservation, task_id: int) -> None:
+    def _bind(self, execution: _Execution, task_id: int) -> None:
+        """Attach the runner thread's identity: from here the slot is this task's process."""
         with self._lock:
-            pending = self._pending_capacity.pop(threading.get_ident(), None)
-            if pending is not reservation:
-                raise SupervisorError("capacity reservation was lost before worker launch")
-            self._capacity_slots[task_id] = reservation
+            if self._executions.get(execution.token) is not execution:
+                raise SupervisorError("execution slot was released before worker launch")
+            execution.task_id = task_id
+            execution.bound = True
 
-    def _release_pending_capacity(self) -> None:
+    def _release(self, execution: _Execution | None) -> None:
+        """Give this execution's slot back. Idempotent; never touches another execution."""
+        if execution is None:
+            return
         with self._lock:
-            self._pending_capacity.pop(threading.get_ident(), None)
+            if self._executions.get(execution.token) is execution:
+                del self._executions[execution.token]
 
-    def _release_capacity(self, task_id: int) -> None:
+    def _active_executions(self) -> list[dict]:
         with self._lock:
-            self._capacity_slots.pop(task_id, None)
+            return [
+                {"token": e.token, "task_id": e.task_id, "bound": e.bound}
+                for e in self._executions.values()
+            ]
 
-    @_release_pending_capacity_on_error
     def resume_task(self, task_id: int, message: str | None = None) -> dict:
         """Resume a task's provider session (blocked-worker resume / checkpoint steer)."""
         conn = init_db()
@@ -553,9 +608,35 @@ class Supervisor:
         model, reasoning = task["model"], task["reasoning"]
         if provider in ("claude", "codex"):
             model, reasoning = self._resolve_and_enforce(provider, model, reasoning)
-        capacity = self._reserve_capacity(
-            conn, limit=self._max_concurrent(provider), task_id=task_id
-        )
+        # Admission names the task: a second resume of this task is refused right
+        # here, before the worktree is rebuilt or synced, before any status write.
+        execution = self._admit(conn, limit=self._max_concurrent(provider), task_id=task_id)
+        try:
+            return self._launch_resumed(
+                conn,
+                execution,
+                task,
+                provider=provider,
+                model=model,
+                reasoning=reasoning,
+                message=message,
+            )
+        except BaseException:
+            self._release(execution)
+            raise
+
+    def _launch_resumed(
+        self,
+        conn,
+        execution: _Execution,
+        task,
+        *,
+        provider: str,
+        model: str | None,
+        reasoning: str | None,
+        message: str | None,
+    ) -> dict:
+        task_id = int(task["id"])
         sess = conn.execute(
             "SELECT * FROM sessions WHERE task_id = ? ORDER BY id DESC LIMIT 1",
             (task_id,),
@@ -612,7 +693,9 @@ class Supervisor:
         runner = RunnerGuardian(adapter)
         with self._lock:
             self._runners[task_id] = runner
-        thread = threading.Thread(target=self._run_task, args=(runner, spec), daemon=True)
+        thread = threading.Thread(
+            target=self._run_task, args=(runner, spec), kwargs={"execution": execution}, daemon=True
+        )
         with self._lock:
             self._threads[task_id] = thread
         store.append_event(
@@ -628,12 +711,8 @@ class Supervisor:
             run_id=task["run_id"],
             task_id=task_id,
         )
-        self._bind_capacity(capacity, task_id)
-        try:
-            thread.start()
-        except Exception:
-            self._release_capacity(task_id)
-            raise
+        self._bind(execution, task_id)
+        thread.start()
         return {
             "task_id": task_id,
             "resumed_session": session_id,
@@ -926,14 +1005,17 @@ class Supervisor:
         with contextlib.suppress(Exception):  # a failed resume is visible in events
             self.resume_task(spec.task_id, message)
 
-    def _run_task(self, runner: RunnerGuardian, spec: TaskSpec) -> None:
+    def _run_task(
+        self, runner: RunnerGuardian, spec: TaskSpec, execution: _Execution | None = None
+    ) -> None:
         try:
             try:
                 result = runner.run(spec)
             finally:
                 # The slot covers the provider process only. Follow-up bookkeeping,
-                # review waits, and checkpoint auto-resume do not retain it.
-                self._release_capacity(spec.task_id)
+                # review waits, and checkpoint auto-resume do not retain it. It is
+                # released by identity: this execution's, never "the task's".
+                self._release(execution)
         except Exception as exc:  # noqa: BLE001 - record, never crash the supervisor
             conn = init_db()
             runner.interrupt()
