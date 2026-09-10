@@ -70,6 +70,11 @@ follow it** instead of improvising from memory. Available skills:
   first, review the exact head, run one consolidated rubric before approving
   anything, verify a spec claim before requesting a change, and treat a gate that
   fails twice as the user's decision. Use at every `mm review` and CI failure.
+- **`update-middle-manager`** — bring the harness itself up to date without losing
+  the team's work: settle in-flight work, save durable state (`handoff`), stop the
+  daemons, pull main, run `./bin/install`, `mm doctor`, `mm tools install`, restart
+  detached, and pick back up from the pickup prompt. Use when asked to update or
+  upgrade `mm`, or after you merge a Middle Manager change.
 - **`self-improvement`** — heal and optimize yourself as you work: repair breakage
   proactively (drift, dead supervisor, missing companions, stuck runners) and find
   cheaper/faster/cleaner ways to do the job, all within your authority. It also owns
