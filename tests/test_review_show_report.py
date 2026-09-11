@@ -10,6 +10,7 @@ import pytest
 
 from conftest import make_git_repo
 from middle_manager import cli, migrations, progress
+from middle_manager.config import MMConfig, save_config
 from middle_manager.state import init_db, store
 
 
@@ -126,6 +127,36 @@ def test_review_show_prints_the_full_latest_report_first(home, monkeypatch, caps
     assert out.index("worker report (done, 2 report(s)") < out.index("2 files")
     assert "- check 39: PASS" in out  # the whole note, not a truncated line
     assert f"mm progress {task_id}" in out
+
+
+def test_review_show_prints_the_task_usage_advisory(home, monkeypatch, capsys) -> None:
+    cfg = MMConfig()
+    cfg.usage.input_ceiling_per_task = 10
+    save_config(cfg)
+    conn = home
+    run_id = store.create_run(conn, "ship it")
+    task_id = store.add_task(conn, run_id=run_id, title="expensive task")
+    store.record_usage(
+        conn,
+        run_id=run_id,
+        task_id=task_id,
+        provider="codex",
+        model="m",
+        reasoning="low",
+        input_tokens=11,
+        output_tokens=1,
+    )
+    import middle_manager.review as review_mod
+
+    monkeypatch.setattr(
+        review_mod,
+        "build_bundle",
+        lambda tid: SimpleNamespace(
+            task_id=tid, base_sha="a" * 40, head_sha="b" * 40, files_changed=0, diffstat=""
+        ),
+    )
+    assert cli.main(["review", "show", str(task_id)]) == 0
+    assert "usage advisory" in capsys.readouterr().out
 
 
 def test_review_show_flags_two_unmerged_migrations_off_the_same_parent(

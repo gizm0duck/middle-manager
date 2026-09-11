@@ -13,6 +13,7 @@ Everything works from the DB, so none of it needs a running supervisor.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from middle_manager import compose
 from middle_manager.state import init_db, store
@@ -39,6 +40,49 @@ TERMINAL_STATUSES = ("delivered", "closed", "cancelled")
 
 class LifecycleError(Exception):
     """A lifecycle command was refused; the state is unchanged."""
+
+
+def require_live_lease(
+    conn: sqlite3.Connection,
+    task_id: int,
+    *,
+    error_type: type[Exception] = LifecycleError,
+) -> sqlite3.Row:
+    """Return the task's current active lease, or refuse with its release record.
+
+    The task row is authoritative about lease identity. Falling back to any lease
+    attached to the task is unsafe: a returned pool slot can already belong to a
+    different task even though the old task still names its path and branch.
+    """
+    task = store.get_task(conn, task_id)
+    if task is None:
+        raise error_type(f"task {task_id} not found")
+    lease_id = task["lease_id"]
+    lease = (
+        conn.execute("SELECT * FROM leases WHERE id = ?", (lease_id,)).fetchone()
+        if lease_id
+        else None
+    )
+    if (
+        lease is not None
+        and lease["status"] == "active"
+        and lease["task_id"] == task_id
+        and isinstance(lease["worktree_path"], str)
+        and lease["worktree_path"] == task["worktree_path"]
+        and lease["branch"] == task["branch"]
+        and Path(lease["worktree_path"]).is_dir()
+    ):
+        return lease
+    released = conn.execute(
+        "SELECT id, payload FROM events WHERE task_id = ? AND kind = 'lease_released' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    event = f"lease_released event {released['id']}" if released else "no active lease record"
+    raise error_type(
+        f"task {task_id} has no live worktree lease ({event}); a released lease is never "
+        "resumed because its pool slot may now belong to another task"
+    )
 
 
 def _task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:

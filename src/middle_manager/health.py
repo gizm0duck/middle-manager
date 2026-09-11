@@ -18,16 +18,185 @@ it like any other actionable moment. ``mm health`` prints the same view on deman
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from middle_manager import compose
+from middle_manager.companions import companion_bin
 from middle_manager.state import init_db, store
 
 IN_FLIGHT = ("requested", "in_progress")
 DEFAULT_QUIET_MINUTES = 15
 DEFAULT_PLAN_MINUTES = 10
+
+
+class DispatchHealthError(Exception):
+    """A dispatch was refused before a task or lease was created."""
+
+
+def _health_policy():
+    from middle_manager.config import HealthPolicy, load_config
+
+    try:
+        return load_config().health
+    except Exception:  # noqa: BLE001 - health also runs before setup
+        return HealthPolicy()
+
+
+def _usage_policy():
+    from middle_manager.config import UsagePolicy, load_config
+
+    try:
+        return load_config().usage
+    except Exception:  # noqa: BLE001 - advisories also run before setup
+        return UsagePolicy()
+
+
+def _run_treehouse_status(cwd: str | None) -> tuple[int, str]:
+    tool = companion_bin("treehouse")
+    if tool is None:
+        return 127, ""
+    try:
+        proc = subprocess.run(
+            [tool, "status", "--json"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    return proc.returncode, proc.stdout
+
+
+def pool_capacity(repo: str | None = None, *, conn: sqlite3.Connection | None = None) -> dict:
+    """The selected Treehouse pool's free slots, or an explicit unknown result.
+
+    The git backend creates worktrees on demand and therefore has no fixed slot
+    ceiling. Treehouse reports every slot and its state; only literal idle/free
+    states count as capacity, so malformed scalar lookalikes cannot open the gate.
+    """
+    from middle_manager.worktree.lease import resolve_backend
+
+    backend = resolve_backend(None)
+    if backend != "treehouse":
+        return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
+    conn = conn or init_db()
+    cwd = None
+    if repo:
+        row = store.get_repo(conn, repo)
+        cwd = row["local_path"] if row is not None else None
+    code, output = _run_treehouse_status(cwd)
+    try:
+        slots = json.loads(output)
+    except (TypeError, ValueError):
+        slots = None
+    if code != 0 or not isinstance(slots, list):
+        return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
+    if any(not isinstance(slot, dict) for slot in slots):
+        return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
+    states = [slot.get("status") for slot in slots]
+    if any(not isinstance(state, str) for state in states):
+        return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
+    free = sum(state.lower() in {"idle", "free", "available"} for state in states)
+    return {
+        "backend": backend,
+        "known": True,
+        "free_slots": free,
+        "total_slots": len(states),
+    }
+
+
+def _repo_uses_compose(conn: sqlite3.Connection, repo: str | None) -> bool | None:
+    if repo is None:
+        return None
+    row = store.get_repo(conn, repo)
+    if row is None:
+        return False
+    return bool(row["compose_stack"])
+
+
+def dispatch_snapshot(
+    repo: str | None = None, *, conn: sqlite3.Connection | None = None
+) -> dict[str, Any]:
+    """Capacity facts used by both ``mm health`` and the dispatch refusal."""
+    conn = conn or init_db()
+    uses_compose = _repo_uses_compose(conn, repo)
+    stale = None if uses_compose is False else len(compose.prunable_stacks(conn))
+    return {
+        "pool": pool_capacity(repo, conn=conn),
+        "stale_stacks": stale,
+        "max_stale_stacks": _health_policy().max_stale_stacks,
+    }
+
+
+def require_dispatch_capacity(repo: str | None = None) -> dict[str, Any]:
+    """Refuse a dispatch before it creates state when a recoverable resource is full."""
+    snapshot = dispatch_snapshot(repo)
+    pool = snapshot["pool"]
+    if pool["known"] and pool["free_slots"] == 0:
+        raise DispatchHealthError(
+            "the worktree pool has no free slot; run `mm worktree prune` to reclaim finished "
+            "or orphaned worktrees before dispatching"
+        )
+    stale = snapshot["stale_stacks"]
+    ceiling = snapshot["max_stale_stacks"]
+    if stale is not None and stale > ceiling:
+        raise DispatchHealthError(
+            f"{stale} stale compose stacks exceed health.max_stale_stacks={ceiling}; run "
+            "`mm task close` for abandoned tasks or `mm worktree prune` to tear finished "
+            "task stacks down"
+        )
+    return snapshot
+
+
+def usage_advisories(
+    conn: sqlite3.Connection | None = None, *, task_id: int | None = None
+) -> list[dict[str, Any]]:
+    """Tasks above the configured task/reviewer input ceiling."""
+    conn = conn or init_db()
+    where = "WHERE t.id = ?" if task_id is not None else ""
+    params = (task_id,) if task_id is not None else ()
+    rows = conn.execute(
+        f"""
+        SELECT t.id, t.title, t.role, COALESCE(SUM(u.input_tokens), 0) AS input_tokens
+        FROM tasks t LEFT JOIN usage u ON u.task_id = t.id
+        {where}
+        GROUP BY t.id, t.title, t.role ORDER BY t.id
+        """,
+        params,
+    ).fetchall()
+    policy = _usage_policy()
+    out = []
+    for row in rows:
+        review = row["role"] == "reviewer"
+        ceiling = policy.input_ceiling_per_review if review else policy.input_ceiling_per_task
+        used = int(row["input_tokens"])
+        if used > ceiling:
+            out.append(
+                {
+                    "task_id": int(row["id"]),
+                    "title": row["title"],
+                    "role": row["role"],
+                    "input_tokens": used,
+                    "ceiling": ceiling,
+                    "kind": "review" if review else "task",
+                }
+            )
+    return out
+
+
+def describe_usage_advisory(entry: dict[str, Any]) -> str:
+    return (
+        f'usage advisory: task {entry["task_id"]} "{entry["title"]}" used '
+        f"{entry['input_tokens']:,} input tokens, above the {entry['kind']} ceiling of "
+        f"{entry['ceiling']:,}"
+    )
 
 
 def _pid_alive(pid: int | None) -> bool:

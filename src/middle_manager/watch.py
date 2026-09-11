@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -53,6 +54,7 @@ GH_TIMEOUT_SECONDS = 30.0
 
 # The `gh pr checks --json bucket` values that mean the run is not green.
 CI_BAD_BUCKETS = ("fail", "cancel")
+_SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}\Z")
 
 
 def _latest_phase(conn: sqlite3.Connection, task_id: int) -> str | None:
@@ -145,7 +147,7 @@ def _lookup_pr(branch: str, cwd: str | None) -> dict[str, Any]:
             "--state",
             "all",
             "--json",
-            "number,state,mergeable,mergeStateStatus,baseRefName",
+            "number,state,mergeable,mergeStateStatus,baseRefName,mergedAt,mergeCommit",
         ],
         cwd=cwd,
     )
@@ -155,15 +157,30 @@ def _lookup_pr(branch: str, cwd: str | None) -> dict[str, Any]:
     if not rows:
         return {"known": True, "pr": None, "ci": "none", "failing": []}
     row = rows[0]
+    if not isinstance(row, dict):
+        return unknown
+    merge_commit = row.get("mergeCommit")
+    merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+    state = str(row.get("state") or "").upper()
     found = {
         "known": True,
         "pr": row.get("number"),
         "base": row.get("baseRefName"),
-        "state": str(row.get("state") or "").upper(),
+        "state": state,
         "mergeable": str(row.get("mergeable") or "UNKNOWN").upper(),
         "merge_state": str(row.get("mergeStateStatus") or "UNKNOWN").upper(),
         "ci": "unknown",
         "failing": [],
+        # Keep this an actual bool. Reconciliation below uses ``is True`` so a
+        # fake or malformed forge payload such as "true"/1 cannot record a merge.
+        "merged": bool(
+            state == "MERGED"
+            and isinstance(row.get("mergedAt"), str)
+            and row.get("mergedAt")
+            and isinstance(merge_oid, str)
+            and _SHA_RE.fullmatch(merge_oid)
+        ),
+        "merge_commit": merge_oid if isinstance(merge_oid, str) else None,
     }
     if found["state"] != "OPEN":
         return found  # a merged or closed pull request has nothing left to run
@@ -324,6 +341,33 @@ def tick(
     in_flight = health.check(conn, now=now)
     for entry in in_flight:
         entry["phase"] = _latest_phase(conn, entry["task_id"])
+    prs = pr_states(conn, settled=settled_prs)
+    recorded_merges: list[dict[str, Any]] = []
+    for entry in prs:
+        if entry.get("state") != "MERGED" or entry.get("merged") is not True:
+            continue
+        merged_sha = entry.get("merge_commit")
+        if not isinstance(merged_sha, str) or not _SHA_RE.fullmatch(merged_sha):
+            continue
+        from middle_manager.delivery import DeliveryError, record_merged
+
+        try:
+            result = record_merged(
+                int(entry["task_id"]),
+                merged_sha,
+                note=f"mm watch observed pull request #{entry.get('pr')} merged",
+            )
+        except DeliveryError:
+            continue
+        recorded_merges.append(
+            {
+                "task_id": result.task_id,
+                "pr": entry.get("pr"),
+                "merge_commit": result.head_sha,
+                "compose": result.compose,
+                "note": result.note,
+            }
+        )
     marks = ",".join("?" for _ in NEEDS_ME)
     needs_me = [
         dict(r)
@@ -342,7 +386,6 @@ def tick(
         if kind.startswith(NOISE_PREFIXES):
             continue
         new_events[kind] = new_events.get(kind, 0) + 1
-    prs = pr_states(conn, settled=settled_prs)
     snapshot = {
         "at": now.isoformat(timespec="seconds"),
         "in_flight": in_flight,
@@ -351,6 +394,8 @@ def tick(
         "last_event_id": last_id,
         "open_todos": len(board.open_todos(conn)),
         "prs": prs,
+        "recorded_merges": recorded_merges,
+        "usage_advisories": health.usage_advisories(conn),
         "pr_changes": pr_changes(previous_prs, pr_index(prs)),
     }
     snapshot["idle"] = is_idle(snapshot)
@@ -372,7 +417,7 @@ def is_idle(snapshot: dict[str, Any]) -> bool:
     """
     if snapshot["in_flight"] or snapshot["needs_me"]:
         return False
-    if snapshot["new_events"] or snapshot["pr_changes"]:
+    if snapshot["new_events"] or snapshot["pr_changes"] or snapshot.get("recorded_merges"):
         return False
     return not any(entry.get("ci") in ("pending", "fail") for entry in snapshot["prs"])
 
@@ -403,6 +448,16 @@ def render(snapshot: dict[str, Any]) -> str:
     line += f" | new since last tick: {new}"
     if snapshot.get("pr_changes"):
         line += " | changed: " + "; ".join(snapshot["pr_changes"])
+    if snapshot.get("recorded_merges"):
+        landed = "; ".join(
+            f"task {m['task_id']} PR #{m['pr']} recorded merged at {m['merge_commit'][:8]}"
+            for m in snapshot["recorded_merges"]
+        )
+        line += " | merged: " + landed
+    if snapshot.get("usage_advisories"):
+        line += " | " + "; ".join(
+            health.describe_usage_advisory(item) for item in snapshot["usage_advisories"]
+        )
     return line + f" | open todos: {snapshot['open_todos']}"
 
 

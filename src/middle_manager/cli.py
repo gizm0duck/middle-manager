@@ -134,10 +134,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
                 cfg.health.quiet_minutes = args.quiet_minutes
             if args.plan_minutes is not None:
                 cfg.health.plan_minutes = args.plan_minutes
+            if args.max_stale_stacks is not None:
+                cfg.health.max_stale_stacks = args.max_stale_stacks
             save_config(cfg)
             print(
                 f"worker health: flag a worker after {cfg.health.quiet_minutes}m of silence, "
-                f"or {cfg.health.plan_minutes}m without a plan"
+                f"or {cfg.health.plan_minutes}m without a plan; refuse dispatch above "
+                f"{cfg.health.max_stale_stacks} stale compose stack(s)"
             )
             return 0
         if args.config_cmd == "assessments":
@@ -334,9 +337,15 @@ def _cmd_brief(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    from middle_manager import brief_lint, preflight
+    from middle_manager import brief_lint, health, preflight
     from middle_manager.config import default_worker_provider
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    try:
+        health.require_dispatch_capacity(args.repo)
+    except health.DispatchHealthError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 1
 
     # Preflight first: refuse before any task state exists, and say why plainly.
     if args.brief and args.instructions:
@@ -694,11 +703,47 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_stack(args: argparse.Namespace) -> int:
-    """Render a stack bottom-up: the order it has to be merged in."""
-    from middle_manager.stacks import StackError, render_stack, stack_layers
+    """Render, merge, or rebuild a native pull-request stack."""
+    from middle_manager.stacks import (
+        StackError,
+        merge_stack,
+        rebuild_layer,
+        render_stack,
+        stack_layers,
+    )
 
     try:
-        layers = stack_layers(args.id)
+        if args.command_or_id == "merge":
+            if args.id is None:
+                raise StackError("merge needs a task id")
+            result = merge_stack(args.id, all_layers=args.all)
+            for merged in result.merged:
+                print(
+                    f"task {merged['task_id']}: PR #{merged['pr']} merged at "
+                    f"{merged['merge_commit'][:8]} and recorded"
+                )
+            for changed in result.retargeted:
+                print(
+                    f"task {changed['task_id']}: PR #{changed['pr']} retargeted to "
+                    f"{changed['base']}"
+                )
+            if result.stopped:
+                print(f"stack merge stopped: {result.stopped}", file=sys.stderr)
+                return 1
+            return 0
+        if args.command_or_id == "rebuild":
+            if args.id is None:
+                raise StackError("rebuild needs a task id")
+            rebuilt = rebuild_layer(args.id)
+            print(f"task {args.id}: {rebuilt['note']}")
+            return 0
+        if args.id is not None:
+            raise StackError("view takes one task or run id")
+        try:
+            identifier = int(args.command_or_id)
+        except ValueError as exc:
+            raise StackError("expected a task/run id, `merge <task>`, or `rebuild <task>`") from exc
+        layers = stack_layers(identifier)
     except StackError as exc:
         print(f"stack: {exc}", file=sys.stderr)
         return 1
@@ -820,6 +865,11 @@ def _cmd_review(args: argparse.Namespace) -> int:
             task = store.get_task(conn, args.task_id)
             paths = captures.capture_paths(r["note"] for r in reports)
             if task is not None:
+                from middle_manager import health
+
+                for advisory in health.usage_advisories(conn, task_id=args.task_id):
+                    print(health.describe_usage_advisory(advisory))
+                    print()
                 # The evidence directory the environment block pinned is listed
                 # whether or not the worker's report named it: a receipt filed
                 # where the block said is never invisible to the reviewer.
@@ -1032,15 +1082,26 @@ def _cmd_health(args: argparse.Namespace) -> int:
     entries = health.check(quiet_after=quiet_after)
     tools = health.claude_tool_profile()
     stacks = compose.prunable_stacks()
+    dispatch = health.dispatch_snapshot()
     if args.json:
         print(
             json.dumps(
-                {"workers": entries, "claude_tools": tools, "prunable_compose_stacks": stacks},
+                {
+                    "workers": entries,
+                    "claude_tools": tools,
+                    "prunable_compose_stacks": stacks,
+                    "dispatch": dispatch,
+                },
                 indent=2,
             )
         )
         return 0
     print(health.describe_claude_tools(tools))
+    pool = dispatch["pool"]
+    if pool["known"]:
+        print(f"worktree pool: {pool['free_slots']} of {pool['total_slots']} slot(s) free")
+    else:
+        print(f"worktree pool: no fixed capacity ({pool['backend']} backend)")
     print(compose.describe_prunable(stacks))
     if not entries:
         print("no workers in flight")
@@ -1494,7 +1555,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - status must never crash
         print("repos:   (state not initialized)")
     try:
-        from middle_manager import board
+        from middle_manager import board, health
         from middle_manager.state import init_db, store
 
         conn = init_db()
@@ -1513,6 +1574,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"todos:   {len(nxt)} next, {len(blocked)} waiting")
         for t in nxt[:3]:
             print(f"  next:  #{t['id']} {t['text']}")
+        for advisory in health.usage_advisories(conn):
+            print(health.describe_usage_advisory(advisory))
         _ = store
     except Exception:  # noqa: BLE001 - status must never crash
         pass
@@ -1627,6 +1690,7 @@ def build_parser() -> argparse.ArgumentParser:
     health_cfg = csub.add_parser("health", help="change the worker quiet threshold")
     health_cfg.add_argument("--quiet-minutes", dest="quiet_minutes", type=int, default=None)
     health_cfg.add_argument("--plan-minutes", dest="plan_minutes", type=int, default=None)
+    health_cfg.add_argument("--max-stale-stacks", dest="max_stale_stacks", type=int, default=None)
     config.set_defaults(func=_cmd_config)
 
     repo = sub.add_parser("repo", help="register and sync repositories")
@@ -1981,12 +2045,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     stack = sub.add_parser(
         "stack",
-        help="render a stack bottom-up: layer, branch, PR and base, review, cascade state",
+        help="render, merge, or rebuild a native pull-request stack",
     )
     stack.add_argument(
-        "id",
-        type=int,
-        help="a task in the stack, or a run id to render every stacked task in the run",
+        "command_or_id",
+        help="a task/run id to view, or `merge` / `rebuild`",
+    )
+    stack.add_argument("id", nargs="?", type=int, help="task id for merge/rebuild")
+    stack.add_argument(
+        "--all",
+        action="store_true",
+        help="with merge, continue upward until the stack is done or a required check is red",
     )
     stack.add_argument("--json", action="store_true", help="machine-readable output")
     stack.set_defaults(func=_cmd_stack)

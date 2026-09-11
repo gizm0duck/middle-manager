@@ -7,7 +7,7 @@ from collections import namedtuple
 
 import pytest
 
-from middle_manager import cli, preflight
+from middle_manager import cli, health, preflight
 
 Usage = namedtuple("Usage", "total used free")
 
@@ -83,6 +83,30 @@ def test_cli_dispatch_refuses_a_full_disk(home, monkeypatch, capsys) -> None:
     rc = cli.main(["dispatch", "--repo", "r", "--title", "t", "--instructions", "go"])
     assert rc == 1
     assert "GB free" in capsys.readouterr().err
+
+
+def test_cli_dispatch_runs_the_capacity_gate_before_contacting_the_supervisor(
+    home, monkeypatch, capsys
+) -> None:
+    class Untouchable:
+        def __init__(self, *a, **k):
+            raise AssertionError("no dispatch when the worktree pool is full")
+
+    import middle_manager.supervisor.client as client_mod
+
+    monkeypatch.setattr(client_mod, "SupervisorClient", Untouchable)
+    monkeypatch.setattr(
+        health,
+        "require_dispatch_capacity",
+        lambda repo: (_ for _ in ()).throw(
+            health.DispatchHealthError(
+                "the worktree pool has no free slot; run `mm worktree prune`"
+            )
+        ),
+    )
+    rc = cli.main(["dispatch", "--repo", "r", "--title", "t", "--instructions", "go"])
+    assert rc == 1
+    assert "mm worktree prune" in capsys.readouterr().err
 
 
 def test_cli_dispatch_archives_the_brief_it_sent(home, monkeypatch, capsys) -> None:

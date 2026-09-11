@@ -219,11 +219,27 @@ def push_lease_branch(conn, task_id: int) -> PushResult:
     commits survive. A rejected push is not raised: it comes back as a result
     carrying the remote's own words, which is what the manager needs to read.
     """
-    from middle_manager import stacks
+    from middle_manager import lifecycle, stacks
 
     task = store.get_task(conn, task_id)
     if task is None:
         return PushResult(task_id=task_id, pushed=False, stderr="there is no such task")
+    try:
+        lifecycle.require_live_lease(conn, task_id)
+    except lifecycle.LifecycleError as exc:
+        reason = str(exc)
+        store.append_event(
+            conn,
+            kind="push_skipped_no_live_lease",
+            payload={
+                "task_id": task_id,
+                "summary": f"post-turn push skipped: {reason}",
+                "reason": reason,
+            },
+            run_id=task["run_id"],
+            task_id=task_id,
+        )
+        return PushResult(task_id=task_id, pushed=False, stderr=reason)
     worktree, branch = task["worktree_path"], task["branch"]
     if not worktree or not branch:
         return PushResult(

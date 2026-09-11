@@ -73,6 +73,10 @@ what is true afterwards, and only then lands on `worker_done`. A turn that stopp
 *before* `done` is missing more than a push, so nothing is pushed and it stays
 `worker_stopped` exactly as before.
 
+That post-turn push first proves the task's recorded lease is still active. If a
+`lease_released` event returned the slot, the push is skipped and a
+`push_skipped_no_live_lease` event records why; the stale task path is never used.
+
 If the remote refuses the push, the task stays `worker_stopped` and the reason
 carries the last 20 lines of the push's stderr, so `mm task <id>` shows the hook's
 own words rather than a guess. `mm task push <id>` is the same push run by hand —
@@ -145,6 +149,11 @@ is attributable rather than anonymous.
 resumed process is started, so a task that was `failed`, `blocked`, or
 `needs_recovery` stops reading as stalled the moment work resumes rather than
 whenever the new worker happens to emit its first event.
+
+The exception is a released lease: resume refuses before admission, status change,
+branch synchronization, or worker launch, and names the task's `lease_released`
+event. A released pool slot may already belong to another task and is never rebuilt
+or resumed under the former task identity.
 
 ## Cascade: a worktree whose branch was rewritten upstream
 

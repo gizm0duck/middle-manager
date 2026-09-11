@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from dataclasses import dataclass, field
 
 from middle_manager.state import init_db, store
 
 
 class StackError(Exception):
-    """A stack operation was refused; nothing was changed."""
+    """A stack operation was refused at its current layer."""
 
 
 # --------------------------------------------------------------------------- #
@@ -246,11 +247,13 @@ def sync_worktree_with_remote(task_id: int) -> dict:
 def _pr_tool() -> str | None:
     from middle_manager.companions import companion_bin
 
-    for tool in ("gh-axi", "gh"):
-        resolved = companion_bin(tool)
-        if resolved:
-            return resolved
-    return None
+    # This module consumes gh's JSON field contract. gh-axi deliberately has a
+    # different surface, so using it with --json makes every PR look absent.
+    return companion_bin("gh")
+
+
+def _run_forge(argv: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
 
 
 def pull_request_for(
@@ -270,18 +273,29 @@ def pull_request_for(
         "view",
         branch,
         "--json",
-        "number,baseRefName,state,isDraft,title,url,mergedAt",
+        "number,baseRefName,state,isDraft,title,url,mergedAt,mergeCommit",
     ]
     if slug:
         argv += ["--repo", slug]
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    proc = _run_forge(argv, cwd=cwd)
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     try:
         data = json.loads(proc.stdout)
     except ValueError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    merge_commit = data.get("mergeCommit")
+    merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+    data["merged"] = bool(
+        str(data.get("state") or "").upper() == "MERGED"
+        and isinstance(data.get("mergedAt"), str)
+        and data.get("mergedAt")
+        and isinstance(merge_oid, str)
+    )
+    data["merge_commit"] = merge_oid if isinstance(merge_oid, str) else None
+    return data
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +319,8 @@ class Layer:
     pr_state: str | None = None
     pr_url: str | None = None
     cascade_pending: bool | None = None
+    recorded_merged: bool = False
+    next_action: str | None = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -400,6 +416,7 @@ def stack_layers(identifier: int) -> list[Layer]:
             ),
             parent_branch=task["stacked_on"],
             review=_review_state(int(task["id"])),
+            recorded_merged=bool(task["merged_at"]),
         )
         pr = (
             pull_request_for(task["branch"], cwd=task["worktree_path"], slug=slug)
@@ -411,7 +428,9 @@ def stack_layers(identifier: int) -> list[Layer]:
         else:
             layer.pr_number = pr.get("number")
             layer.pr_base = pr.get("baseRefName")
-            layer.pr_state = "merged" if pr.get("mergedAt") else pr.get("state")
+            layer.pr_state = (
+                "merged" if pr.get("mergedAt") or task["merged_at"] else pr.get("state")
+            )
             layer.pr_url = pr.get("url")
             if expected_base:
                 layer.cascade_pending = layer.pr_base != expected_base
@@ -422,6 +441,18 @@ def stack_layers(identifier: int) -> list[Layer]:
                         "it was opened against the wrong branch"
                     )
         layers.append(layer)
+    first_pending = next((layer for layer in layers if not layer.recorded_merged), None)
+    for layer in layers:
+        if layer.recorded_merged:
+            layer.next_action = "merged and recorded"
+        elif layer is first_pending:
+            layer.next_action = (
+                f"deliver task {layer.task_id} first"
+                if layer.pr_number is None
+                else f"mm stack merge {layer.task_id}"
+            )
+        else:
+            layer.next_action = f"wait for task {first_pending.task_id} to merge"
     return layers
 
 
@@ -443,7 +474,223 @@ def render_stack(layers: list[Layer]) -> str:
         for note in layer.notes:
             out.append(f"     note: {note}")
         out.append(f"     review: {layer.review}")
+        out.append(f"     next: {layer.next_action}")
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Native bottom-up merge
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class StackMergeResult:
+    identifier: int
+    merged: list[dict] = field(default_factory=list)
+    retargeted: list[dict] = field(default_factory=list)
+    stopped: str | None = None
+
+
+def _repo_context(conn, task) -> tuple[str | None, str, str | None]:
+    """Forge slug, default branch, and a usable command cwd for one layer."""
+    from middle_manager import repos
+
+    default_branch = "main"
+    slug = None
+    cwd = task["worktree_path"]
+    if task["repo_id"]:
+        repo = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo is not None:
+            default_branch = repo["default_branch"] or "main"
+            slug = repos.forge_slug(repo["forge_url"])
+            cwd = cwd or repo["local_path"]
+    return slug, default_branch, cwd
+
+
+def _require_merge_authority() -> None:
+    from middle_manager.config import ConfigError, load_config
+
+    try:
+        allowed = load_config().authority.merge
+    except ConfigError as exc:
+        raise StackError(f"cannot merge without a valid config: {exc}") from exc
+    if not allowed:
+        raise StackError(
+            "merge authority is off; a human must enable it with "
+            "`mm config authority --allow-merge` before running `mm stack merge`"
+        )
+
+
+def required_checks(pr_number: int, *, cwd: str | None, slug: str | None = None) -> list[dict]:
+    """Required check rows for a PR. An unreadable forge is a refusal, not green."""
+    tool = _pr_tool()
+    if tool is None:
+        raise StackError("cannot read required checks because plain `gh` is unavailable")
+    argv = [tool, "pr", "checks", str(pr_number), "--required", "--json", "name,bucket"]
+    if slug:
+        argv += ["--repo", slug]
+    proc = _run_forge(argv, cwd=cwd)
+    try:
+        rows = json.loads(proc.stdout)
+    except (TypeError, ValueError) as exc:
+        raise StackError(f"could not read required checks for PR #{pr_number}") from exc
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise StackError(f"could not read required checks for PR #{pr_number}")
+    return rows
+
+
+def _red_checks(checks: list[dict]) -> list[str]:
+    red = []
+    for check in checks:
+        bucket = check.get("bucket")
+        if not isinstance(bucket, str):
+            continue
+        if bucket.lower() in {"fail", "cancel"}:
+            name = check.get("name")
+            red.append(name if isinstance(name, str) and name else "a required check")
+    return sorted(red)
+
+
+def _merge_sha(pr: dict | None) -> str | None:
+    """A strictly typed merge confirmation from the normalized forge payload."""
+    if not isinstance(pr, dict) or pr.get("merged") is not True:
+        return None
+    value = pr.get("merge_commit")
+    if not isinstance(value, str):
+        commit = pr.get("mergeCommit")
+        value = commit.get("oid") if isinstance(commit, dict) else None
+    if not isinstance(value, str):
+        return None
+    from middle_manager.delivery import _SHA_RE
+
+    return value if _SHA_RE.fullmatch(value) else None
+
+
+def _retarget_children(conn, task, *, new_base: str) -> list[dict]:
+    tool = _pr_tool()
+    if tool is None:
+        raise StackError("cannot retarget child pull requests because plain `gh` is unavailable")
+    slug, _default, parent_cwd = _repo_context(conn, task)
+    changed = []
+    children = conn.execute(
+        "SELECT * FROM tasks WHERE stacked_on_task = ? "
+        "AND (merged_sha IS NULL OR merged_sha = '') ORDER BY id",
+        (task["id"],),
+    ).fetchall()
+    for child in children:
+        if not child["branch"]:
+            continue
+        cwd = child["worktree_path"] or parent_cwd
+        pr = pull_request_for(child["branch"], cwd=cwd, slug=slug)
+        if pr is None or pr.get("state") != "OPEN" or pr.get("baseRefName") == new_base:
+            continue
+        number = pr.get("number")
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise StackError(f"task {child['id']} has a pull request with no numeric id")
+        argv = [tool, "pr", "edit", str(number), "--base", new_base]
+        if slug:
+            argv += ["--repo", slug]
+        proc = _run_forge(argv, cwd=cwd)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "forge refused").strip()[:240]
+            raise StackError(f"PR #{number} merged below it, but retarget failed: {detail}")
+        changed.append({"task_id": int(child["id"]), "pr": number, "base": new_base})
+    return changed
+
+
+def merge_stack(
+    identifier: int,
+    *,
+    all_layers: bool = False,
+    sleep=time.sleep,
+    confirm_attempts: int = 10,
+) -> StackMergeResult:
+    """Merge the lowest unmerged layer natively; optionally repeat upward."""
+    _require_merge_authority()
+    result = StackMergeResult(identifier)
+    while True:
+        layers = stack_layers(identifier)
+        layer = next((item for item in layers if not item.recorded_merged), None)
+        if layer is None:
+            return result
+        if layer.pr_number is None:
+            result.stopped = f"task {layer.task_id} has no pull request; deliver that layer first"
+            return result
+        if str(layer.pr_state or "").upper() != "OPEN":
+            result.stopped = (
+                f"task {layer.task_id} PR #{layer.pr_number} is {layer.pr_state or 'unknown'}, "
+                "not open"
+            )
+            return result
+        conn = init_db()
+        task = store.get_task(conn, layer.task_id)
+        if task is None:
+            result.stopped = f"task {layer.task_id} disappeared before merge"
+            return result
+        slug, default_branch, cwd = _repo_context(conn, task)
+        try:
+            red = _red_checks(required_checks(layer.pr_number, cwd=cwd, slug=slug))
+        except StackError as exc:
+            result.stopped = str(exc)
+            return result
+        if red:
+            result.stopped = (
+                f"task {layer.task_id} PR #{layer.pr_number} has red required check(s): "
+                + ", ".join(red)
+            )
+            return result
+        tool = _pr_tool()
+        if tool is None:
+            result.stopped = "cannot merge because plain `gh` is unavailable"
+            return result
+        argv = [tool, "pr", "merge", str(layer.pr_number), "--merge"]
+        if slug:
+            argv += ["--repo", slug]
+        proc = _run_forge(argv, cwd=cwd)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "forge refused").strip()[:240]
+            result.stopped = f"forge refused PR #{layer.pr_number}: {detail}"
+            return result
+        merged_sha = None
+        for attempt in range(confirm_attempts):
+            confirmed = pull_request_for(layer.branch or "", cwd=cwd, slug=slug)
+            merged_sha = _merge_sha(confirmed)
+            if merged_sha:
+                break
+            if attempt + 1 < confirm_attempts:
+                sleep(0.5)
+        if not merged_sha:
+            result.stopped = (
+                f"PR #{layer.pr_number} accepted the merge command but the forge did not "
+                "return a typed merge commit"
+            )
+            return result
+        from middle_manager.delivery import DeliveryError, record_merged
+
+        try:
+            record_merged(
+                layer.task_id,
+                merged_sha,
+                note=f"mm stack merge merged pull request #{layer.pr_number}",
+            )
+        except DeliveryError as exc:
+            result.stopped = str(exc)
+            return result
+        result.merged.append(
+            {"task_id": layer.task_id, "pr": layer.pr_number, "merge_commit": merged_sha}
+        )
+        try:
+            result.retargeted.extend(_retarget_children(conn, task, new_base=default_branch))
+        except StackError as exc:
+            result.stopped = str(exc)
+            return result
+        if not all_layers:
+            return result
+
+
+def rebuild_layer(task_id: int) -> dict:
+    """Apply the same cascade-safe branch synchronization used before resume."""
+    return sync_worktree_with_remote(task_id)
 
 
 # --------------------------------------------------------------------------- #

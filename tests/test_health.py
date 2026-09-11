@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from middle_manager import health
+from middle_manager import health, repos
 from middle_manager.cli import main
 from middle_manager.config import MMConfig, save_config
 from middle_manager.state import init_db, store
@@ -123,3 +123,87 @@ def test_health_with_no_workers(mm_home, capsys) -> None:
     init_db()
     assert main(["health"]) == 0
     assert "no workers in flight" in capsys.readouterr().out
+
+
+def test_dispatch_capacity_boundaries_name_the_remedies(mm_home, monkeypatch) -> None:
+    cfg = MMConfig()
+    cfg.health.max_stale_stacks = 4
+    save_config(cfg)
+    monkeypatch.setattr(
+        health,
+        "pool_capacity",
+        lambda repo=None, conn=None: {
+            "backend": "treehouse",
+            "known": True,
+            "free_slots": 0,
+            "total_slots": 16,
+        },
+    )
+    monkeypatch.setattr(health.compose, "prunable_stacks", lambda conn=None: [])
+    with pytest.raises(health.DispatchHealthError, match="mm worktree prune"):
+        health.require_dispatch_capacity()
+
+    monkeypatch.setattr(
+        health,
+        "pool_capacity",
+        lambda repo=None, conn=None: {
+            "backend": "treehouse",
+            "known": True,
+            "free_slots": 1,
+            "total_slots": 16,
+        },
+    )
+    monkeypatch.setattr(health.compose, "prunable_stacks", lambda conn=None: [{}] * 4)
+    assert health.require_dispatch_capacity()["stale_stacks"] == 4
+
+    monkeypatch.setattr(health.compose, "prunable_stacks", lambda conn=None: [{}] * 5)
+    with pytest.raises(health.DispatchHealthError, match="mm task close"):
+        health.require_dispatch_capacity()
+
+
+def test_repo_without_compose_has_no_stale_stack_count(mm_home, source_repo, monkeypatch) -> None:
+    added = repos.add_repo(source_repo)
+    monkeypatch.setattr(
+        health,
+        "pool_capacity",
+        lambda repo=None, conn=None: {
+            "backend": "git",
+            "known": False,
+            "free_slots": None,
+            "total_slots": None,
+        },
+    )
+    monkeypatch.setattr(
+        health.compose,
+        "prunable_stacks",
+        lambda conn=None: (_ for _ in ()).throw(AssertionError("no compose probe")),
+    )
+    assert health.dispatch_snapshot(added.name)["stale_stacks"] is None
+
+
+def test_status_prints_usage_only_above_the_task_and_review_ceilings(mm_home, capsys) -> None:
+    cfg = MMConfig()
+    cfg.usage.input_ceiling_per_task = 100
+    cfg.usage.input_ceiling_per_review = 30
+    save_config(cfg)
+    conn = init_db()
+    run_id = store.create_run(conn, "usage")
+    under = store.add_task(conn, run_id=run_id, title="under")
+    over = store.add_task(conn, run_id=run_id, title="over")
+    review = store.add_task(conn, run_id=run_id, title="review round", role="reviewer")
+    for task_id, tokens in ((under, 100), (over, 101), (review, 31)):
+        store.record_usage(
+            conn,
+            run_id=run_id,
+            task_id=task_id,
+            provider="codex",
+            model="m",
+            reasoning="low",
+            input_tokens=tokens,
+            output_tokens=1,
+        )
+    assert main(["status"]) == 0
+    output = capsys.readouterr().out
+    assert f"task {under}" not in output
+    assert f"task {over}" in output and "task ceiling of 100" in output
+    assert f"task {review}" in output and "review ceiling of 30" in output

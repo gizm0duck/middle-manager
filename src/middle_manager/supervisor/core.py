@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from middle_manager import decisions
+from middle_manager import decisions, lifecycle
 from middle_manager.config import ConfigError, load_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter, effective_allowed_tools
