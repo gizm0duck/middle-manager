@@ -51,8 +51,12 @@ class SupervisorClient:
             timeout=timeout + 10,
         )
 
-    def resume_task(self, task_id: int, message: str | None = None) -> dict:
-        return self._call({"cmd": "resume_task", "task_id": task_id, "message": message})
+    def resume_task(
+        self, task_id: int, message: str | None = None, ends_at: str | None = None
+    ) -> dict:
+        return self._call(
+            {"cmd": "resume_task", "task_id": task_id, "message": message, "ends_at": ends_at}
+        )
 
     def steer_task(self, task_id: int, message: str, delivery: str = "append") -> dict:
         return self._call(

@@ -101,16 +101,17 @@ def add_task(
     provider: str | None = None,
     model: str | None = None,
     reasoning: str | None = None,
+    ends_at: str = "done",
 ) -> int:
     now = _now()
     cur = conn.execute(
         """
         INSERT INTO tasks
-            (run_id, repo_id, role, title, status, provider, model, reasoning,
+            (run_id, repo_id, role, title, status, provider, model, reasoning, ends_at,
              created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?)
         """,
-        (run_id, repo_id, role, title, provider, model, reasoning, now, now),
+        (run_id, repo_id, role, title, provider, model, reasoning, ends_at, now, now),
     )
     conn.commit()
     return int(cur.lastrowid)

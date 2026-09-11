@@ -41,6 +41,12 @@ def record(
     task = store.get_task(conn, task_id)
     if task is None:
         raise ProgressError(f"task {task_id} not found")
+    ends_at = task["ends_at"] if "ends_at" in task.keys() else "done"  # noqa: SIM118
+    if phase == "done" and ends_at == "review":
+        raise ProgressError(
+            f"task {task_id} was dispatched with --ends-at review; --phase done is refused. "
+            "Stop at --phase review so the manager can review and deliver it"
+        )
     if phase == "plan" and not note.strip():
         raise ProgressError("a plan report needs a note describing the approach")
     # A worker that says COMPOSE_PROJECT_NAME=... has just told us which stack to

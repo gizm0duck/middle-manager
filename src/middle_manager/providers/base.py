@@ -31,6 +31,8 @@ class TaskSpec:
     # private database stack, push-hook policy). Rendered by the supervisor at
     # dispatch from repo config; the adapters place it with the command rules.
     environment: str | None = None
+    # Resolved task-scoped values overlaid on the child process environment.
+    process_env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

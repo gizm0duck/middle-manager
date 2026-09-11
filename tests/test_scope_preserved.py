@@ -131,7 +131,9 @@ def test_a_queued_checkpoint_steer_is_delivered_with_the_scope(mm_home, source_r
     assert "## Out of scope\nNo courier integration; no schema change." in packet
 
 
-def test_a_bare_resume_and_an_unarchived_brief_add_nothing(mm_home, source_repo, monkeypatch):
+def test_a_bare_resume_and_an_unarchived_brief_only_add_the_terminal_instruction(
+    mm_home, source_repo, monkeypatch
+):
     added = repos.add_repo(source_repo)
     supervisor = Supervisor()
     resp = supervisor.dispatch_task(
@@ -143,14 +145,22 @@ def test_a_bare_resume_and_an_unarchived_brief_add_nothing(mm_home, source_repo,
 
     supervisor.resume_task(task_id, "use the events table")
     _wait_for(lambda: len(specs) == 1)
-    assert specs[0].steer_message == "use the events table"  # nothing archived to carry
+    assert specs[0].steer_message == (
+        f"use the events table\n\nTerminal instruction: finish with "
+        f'`mm progress {task_id} --phase done --note "..."`.'
+    )
     assert _resumed(task_id)[-1]["scope_preserved"] is False
 
     preflight.archive_brief(added.name, task_id, "# Old brief\n\nJust do it.\n")
     supervisor.resume_task(task_id, "and again")
     _wait_for(lambda: len(specs) == 2)
-    assert specs[1].steer_message == "and again"  # a brief without the sections passes through
+    assert specs[1].steer_message == (
+        f"and again\n\nTerminal instruction: finish with "
+        f'`mm progress {task_id} --phase done --note "..."`.'
+    )
 
     supervisor.resume_task(task_id, None)
     _wait_for(lambda: len(specs) == 3)
-    assert specs[2].steer_message is None  # a bare resume sends nothing new
+    assert specs[2].steer_message == (
+        f'Terminal instruction: finish with `mm progress {task_id} --phase done --note "..."`.'
+    )
