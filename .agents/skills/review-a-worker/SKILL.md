@@ -28,6 +28,13 @@ one checkpoint written from memory of the spec. This is the order.
 
 ## 2. One consolidated rubric, then one verdict
 
+One independent review round per delivery, at review-ready, consolidated, with the
+reviewer at high reasoning (never xhigh). If a second round is needed, the brief was
+missing a matrix row: name it, add it to the brief template, then request the change.
+A task past 12M input tokens gets no further independent round without the user's
+word. (Assessment cycle 5: 29 of 89 reviews requested changes, each round costing a
+worker stop, a resume and a full gate; 36M input tokens per delivered task.)
+
 Run every applicable check before approving *anything*; never approve the search
 box today and the design fidelity tomorrow — the worker recaptures all evidence
 and re-runs all gates each round.
