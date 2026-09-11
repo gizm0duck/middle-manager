@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS repos (
     local_gate TEXT,
     full_suite_owner TEXT,
     evidence_dir TEXT,
+    db_url_template TEXT,
+    test_db_url_template TEXT,
+    source_line_ceiling INTEGER,
+    needs_elevated_localhost INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -74,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     stacked_on_task INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     merged_sha TEXT,
     merged_at TEXT,
+    ends_at TEXT NOT NULL DEFAULT 'done',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -298,6 +303,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # The task this one is stacked on. A stack is a chain of tasks, not a
         # chain of branch names the manager has to remember.
         conn.execute("ALTER TABLE tasks ADD COLUMN stacked_on_task INTEGER")
+    if "ends_at" not in task_cols:
+        # The phase at which the worker hands control back. Existing tasks retain
+        # the historical behaviour: workers finish with a done report.
+        conn.execute("ALTER TABLE tasks ADD COLUMN ends_at TEXT NOT NULL DEFAULT 'done'")
     for col in ("merged_sha", "merged_at"):
         # Where the work landed. Set once, terminal: the heartbeat stops asking
         # the forge about a branch whose merge is already on the record.
@@ -326,6 +335,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("local_gate", "TEXT"),
         ("full_suite_owner", "TEXT"),
         ("evidence_dir", "TEXT"),
+        ("db_url_template", "TEXT"),
+        ("test_db_url_template", "TEXT"),
+        ("source_line_ceiling", "INTEGER"),
+        ("needs_elevated_localhost", "INTEGER"),
     ):
         # The per-repo environment block (issue #60). Unset means the default, so
         # every already-registered repo gets the evidence-directory and local/CI

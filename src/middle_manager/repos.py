@@ -347,7 +347,8 @@ def set_settings(
 
     ``environment_fields`` are the environment-block columns (``compose_stack``,
     ``db_port_base``, ``db_port_variable``, ``push_hook_runs_full_suite``, ``local_gate``,
-    ``full_suite_owner``, ``evidence_dir``); a refused value raises ``RepoError``.
+    ``full_suite_owner``, ``evidence_dir``, URL templates, source ceiling and localhost
+    sandbox fact); a refused value raises ``RepoError``.
     """
     from middle_manager import environment
 

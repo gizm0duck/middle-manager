@@ -167,6 +167,7 @@ class Supervisor:
         reasoning: str | None = None,
         base: str | None = None,
         stack_on: int | None = None,
+        ends_at: str = "done",
     ) -> dict:
         # A caller that names no provider gets the configured worker provider. It
         # used to get `fake`, which on 2026-09-04 sent a real task to a stub worker
@@ -179,6 +180,12 @@ class Supervisor:
         repo_row = store.get_repo(conn, repo)
         if repo_row is None:
             raise SupervisorError(f"repo {repo!r} is not registered (mm repo add)")
+        from middle_manager import environment
+
+        try:
+            ends_at = environment.validate_ends_at(ends_at)
+        except environment.RepoEnvironmentError as exc:
+            raise SupervisorError(str(exc)) from exc
 
         # A stack is a chain of tasks. Naming the task this one builds on derives
         # the starting branch from its lease, so the manager never has to look up
@@ -275,6 +282,7 @@ class Supervisor:
                 touched=touched,
                 migration_advisory=migration_advisory,
                 overlap_advisory=overlap_advisory,
+                ends_at=ends_at,
             )
         except BaseException:
             # Whatever failed — the lease, the branch, provisioning, the adapter's
@@ -300,6 +308,7 @@ class Supervisor:
         touched: list[str],
         migration_advisory: str | None,
         overlap_advisory: str | None,
+        ends_at: str,
     ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -313,6 +322,7 @@ class Supervisor:
             provider=provider,
             model=model,
             reasoning=reasoning,
+            ends_at=ends_at,
         )
 
         # The task row exists first because the lease's branch name carries the
@@ -369,6 +379,7 @@ class Supervisor:
             task_id,
             base_sha=base_sha,
             branch=lease.branch,
+            ends_at=ends_at,
             worktree_path=lease.worktree_path,
             lease_id=lease.id,
             stacked_on=base,
@@ -429,6 +440,7 @@ class Supervisor:
             task_id=task_id,
             worktree=lease.worktree_path,
             branch=lease.branch,
+            ends_at=ends_at,
         )
         if prepared.compose_project:
             store.append_event(
@@ -460,8 +472,9 @@ class Supervisor:
             reasoning=reasoning,
             run_id=run_id,
             branch=lease.branch,
-            memory_preamble=memory.worker_context(repo, task_id=task_id),
+            memory_preamble=memory.worker_context(repo, task_id=task_id, ends_at=ends_at),
             environment=prepared.block,
+            process_env=prepared.process_env or {},
         )
         adapter = _adapter_for(provider)
         runner = RunnerGuardian(adapter)
@@ -489,6 +502,7 @@ class Supervisor:
             "db_port": prepared.db_port,
             "evidence_path": prepared.evidence_path,
             "overlap_advisory": overlap_advisory,
+            "ends_at": ends_at,
         }
 
     def _resolve_and_enforce(
@@ -602,6 +616,7 @@ class Supervisor:
         message: str | None = None,
         *,
         continuation: dict | None = None,
+        ends_at: str | None = None,
     ) -> dict:
         """Resume a task's provider session (blocked-worker resume / checkpoint steer).
 
@@ -615,6 +630,15 @@ class Supervisor:
         task = store.get_task(conn, task_id)
         if task is None:
             raise SupervisorError(f"task {task_id} not found")
+        from middle_manager import environment
+
+        resolved_ends_at = ends_at or (
+            task["ends_at"] if "ends_at" in task.keys() else "done"  # noqa: SIM118
+        )
+        try:
+            resolved_ends_at = environment.validate_ends_at(resolved_ends_at)
+        except environment.RepoEnvironmentError as exc:
+            raise SupervisorError(str(exc)) from exc
         from middle_manager.config import default_worker_provider
 
         provider = task["provider"] or default_worker_provider()
@@ -634,6 +658,7 @@ class Supervisor:
                 reasoning=reasoning,
                 message=message,
                 continuation=continuation,
+                ends_at=resolved_ends_at,
             )
         except BaseException:
             self._release(execution)
@@ -650,6 +675,7 @@ class Supervisor:
         reasoning: str | None,
         message: str | None,
         continuation: dict | None = None,
+        ends_at: str = "done",
     ) -> dict:
         task_id = int(task["id"])
         sess = conn.execute(
@@ -688,12 +714,25 @@ class Supervisor:
         # it is being worked again, not `failed` from the session we just replaced.
         superseded = store.supersede_runners(conn, task_id, reason="resume")
         store.set_task_status(conn, task_id, "in_progress")
-        store.update_task_fields(conn, task_id, model=model, reasoning=reasoning)
+        store.update_task_fields(conn, task_id, model=model, reasoning=reasoning, ends_at=ends_at)
+        task = store.get_task(conn, task_id)
 
         # A continuation replaces the worker's instructions for the turn. It
         # carries the brief's Goals, Intent, In scope and Out of scope with it, so
         # a steer or answer never silently erases a boundary (issue #77).
-        packet, scope_preserved = _self_contained(conn, task, message)
+        from middle_manager import environment
+
+        finish = environment.finish_instruction(task_id, ends_at)
+        terminal_message = (
+            f"{message}\n\nTerminal instruction: {finish}"
+            if message
+            else f"Terminal instruction: {finish}"
+        )
+        packet, scope_preserved = _self_contained(conn, task, terminal_message)
+        repo_row = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        process_env = (
+            environment.task_process_env(conn, repo_row, task_id) if repo_row is not None else {}
+        )
         spec = TaskSpec(
             task_id=task_id,
             title=task["title"],
@@ -707,6 +746,7 @@ class Supervisor:
             branch=task["branch"],
             resume_session_id=session_id,
             steer_message=packet,
+            process_env=process_env,
         )
         adapter = _adapter_for(spec.provider)
         runner = RunnerGuardian(adapter)
@@ -727,6 +767,7 @@ class Supervisor:
                 "superseded_runners": superseded,
                 "status": "in_progress",
                 "scope_preserved": scope_preserved,
+                "ends_at": ends_at,
                 **(continuation or {}),
             },
             run_id=task["run_id"],
@@ -738,6 +779,7 @@ class Supervisor:
             "task_id": task_id,
             "resumed_session": session_id,
             "status": "in_progress",
+            "ends_at": ends_at,
             "superseded_runners": superseded,
             "worktree_rebuilt": rebuilt,
         }

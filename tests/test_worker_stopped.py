@@ -104,6 +104,36 @@ def test_a_worker_that_pushed_and_filed_a_done_note_is_done(server, source_repo)
     assert not _events(resp["task_id"], turn_end.WORKER_STOPPED)
 
 
+def test_review_terminal_phase_needs_review_note_and_does_not_need_a_push(
+    mm_home, source_repo
+) -> None:
+    from middle_manager import progress
+
+    added = repos.add_repo(source_repo)
+    conn = init_db()
+    run_id = store.create_run(conn, "review it")
+    task_id = store.add_task(
+        conn,
+        run_id=run_id,
+        title="review handoff",
+        repo_id=store.get_repo(conn, added.name)["id"],
+        ends_at="review",
+    )
+    store.update_task_fields(
+        conn,
+        task_id,
+        worktree_path=source_repo,
+        branch="never-pushed",
+        base_sha=_git(source_repo, "rev-parse", "HEAD"),
+    )
+    progress.record(task_id, phase="review", note="ready for the manager", conn=conn)
+
+    verdict = turn_end.why_stopped(conn, task_id)
+    assert verdict.stopped is False
+    assert verdict.expected_phase == "review"
+    assert verdict.unpushed == 0
+
+
 # --------------------------------------------------------------------------- #
 # Each trigger, on its own
 # --------------------------------------------------------------------------- #

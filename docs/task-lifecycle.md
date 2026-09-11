@@ -10,7 +10,7 @@ the manager schedules, nags, and reports off it, and the heartbeat treats
 | --- | --- |
 | `requested` | The task row exists; no worker has started. |
 | `in_progress` | A worker session is live, or is being started right now. |
-| `worker_done` | The worker finished a turn and the evidence says it finished the gate: a `done` progress note, nothing unpushed, and no backgrounded command left hanging. |
+| `worker_done` | The worker finished a turn and reached its stored terminal phase. A `done` task also has nothing unpushed; a `review` task stays local for manager review and delivery. Neither may leave a backgrounded command hanging. |
 | `worker_stopped` | The turn ended mid-gate. Not terminal, not a failure — the work is there and unfinished, and `mm resume` picks it up. |
 | `blocked` | The worker asked a question and stopped. |
 | `failed` | The worker's *current* session ended without a result. |
@@ -25,13 +25,18 @@ backgrounded suite was killed with the session, the branch was never pushed, no
 `done` note was ever filed — and the harness recorded `worker_done` (task 103,
 2026-09-04; task 104 repeated it with browser smoke retries).
 
+`mm dispatch --ends-at review|done` records the task's terminal phase (`done` by
+default). `mm resume --ends-at ...` can override and persist it; otherwise resume
+keeps the stored value. `mm progress --phase done` is refused without a state
+change for a review-ending task.
+
 So a completed turn is now judged on evidence. Any of these means the task lands
 in `worker_stopped` instead:
 
 | Signal | What it means |
 | --- | --- |
-| The newest progress note is not `--phase done` | The worker never said it got to the end. |
-| The branch holds commits no remote has | The work was never pushed, so nobody but that worktree has it. |
+| The newest progress note is not the stored terminal phase | The worker never said it got to the agreed handoff. |
+| A `done` task's branch holds commits no remote has | The work was never pushed, so nobody but that worktree has it. Review-ending tasks deliberately leave this delivery step to the manager. |
 | The session's last tool call was a backgrounded command | Whatever it was waiting on died with the session. |
 
 "Commits no remote has" is asked by patch, not by SHA, so a branch that a stack
@@ -45,6 +50,11 @@ work.
 short — the unfinished gate, the unpushed commits, and the instruction to run the
 suite in the foreground, file the done note, and push. Claude workers are told the
 same thing up front in the injected command rules.
+
+For repeatable proof, `mm receipt <task> -- <command>` runs in that task's clean,
+resolved process environment, writes combined output to the task evidence directory
+as `.txt`, appends the UTC/command/exit/elapsed/head result to `receipts.txt`, and
+propagates failures.
 
 ### The push the harness finishes for the worker
 

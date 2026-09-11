@@ -20,12 +20,12 @@ def mm_home(tmp_path, monkeypatch):
     return tmp_path / ".mm"
 
 
-def _task(conn, *, status="in_progress", title="build"):
+def _task(conn, *, status="in_progress", title="build", ends_at="done"):
     repo_id = store.add_repo(
         conn, name="demo", origin="/o", local_path="/l", default_branch="main", base_sha="a"
     )
     run_id = store.create_run(conn, "ship it")
-    task_id = store.add_task(conn, run_id=run_id, title=title, repo_id=repo_id)
+    task_id = store.add_task(conn, run_id=run_id, title=title, repo_id=repo_id, ends_at=ends_at)
     store.set_task_status(conn, task_id, status)
     return run_id, task_id
 
@@ -64,6 +64,25 @@ def test_record_validation(mm_home) -> None:
         progress.record(task_id, phase="plan", note="  ", conn=conn)
     with pytest.raises(progress.ProgressError):
         progress.record(999, phase="implement", conn=conn)
+
+
+def test_review_only_task_refuses_done_without_changing_state(mm_home) -> None:
+    conn = init_db()
+    _, task_id = _task(conn, ends_at="review")
+    before = dict(store.get_task(conn, task_id))
+    events_before = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE task_id = ?", (task_id,)
+    ).fetchone()[0]
+
+    with pytest.raises(progress.ProgressError, match="--ends-at review"):
+        progress.record(task_id, phase="done", note="finished", conn=conn)
+
+    assert dict(store.get_task(conn, task_id)) == before
+    assert (
+        conn.execute("SELECT COUNT(*) FROM events WHERE task_id = ?", (task_id,)).fetchone()[0]
+        == events_before
+    )
+    assert progress.record(task_id, phase="review", note="ready", conn=conn)
 
 
 def test_cli_progress_task_and_memory_show(mm_home, capsys) -> None:

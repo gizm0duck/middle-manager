@@ -7,6 +7,7 @@ import time
 import pytest
 
 from middle_manager import repos
+from middle_manager.state import init_db
 from middle_manager.supervisor.client import SupervisorClient
 from middle_manager.supervisor.server import SupervisorServer
 
@@ -55,3 +56,36 @@ def test_blocked_then_resume_completes(server, source_repo) -> None:
     rs = client.run_status(resp["run_id"])
     kinds = [a["kind"] for a in rs["actionable"]]
     assert "worker_done" in kinds
+
+
+def test_resume_keeps_stored_terminal_phase_and_explicit_override_persists(
+    server, source_repo
+) -> None:
+    _srv, client = server
+    added = repos.add_repo(source_repo)
+    dispatched = client.dispatch_task(
+        repo=added.name,
+        title="review handoff",
+        instructions="ASK: ready for review?",
+        ends_at="review",
+    )
+    task_id = dispatched["task_id"]
+    _wait_status(client, task_id, "blocked")
+    conn = init_db()
+    assert conn.execute("SELECT ends_at FROM tasks WHERE id = ?", (task_id,)).fetchone()[0] == (
+        "review"
+    )
+
+    resumed = client.resume_task(task_id, "continue")
+    assert resumed["ends_at"] == "review"
+    assert conn.execute("SELECT ends_at FROM tasks WHERE id = ?", (task_id,)).fetchone()[0] == (
+        "review"
+    )
+    _wait_status(client, task_id, "failed")
+
+    resumed = client.resume_task(task_id, "finish", ends_at="done")
+    assert resumed["ends_at"] == "done"
+    assert conn.execute("SELECT ends_at FROM tasks WHERE id = ?", (task_id,)).fetchone()[0] == (
+        "done"
+    )
+    _wait_status(client, task_id, "worker_done")

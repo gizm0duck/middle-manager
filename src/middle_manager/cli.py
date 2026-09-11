@@ -323,7 +323,7 @@ def _cmd_brief(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"brief lint: {exc}", file=sys.stderr)
         return 1
-    findings = brief_lint.lint_brief(text)
+    findings = brief_lint.lint_brief(text, ends_at=args.ends_at)
     kind = "defect brief" if brief_lint.is_defect_brief(text) else "brief"
     if not findings:
         print(f"{args.file}: {kind}, no findings")
@@ -356,7 +356,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
     if args.brief:
-        findings = brief_lint.lint_brief(instructions)
+        findings = brief_lint.lint_brief(instructions, ends_at=args.ends_at)
         if findings:
             # Wrong premises and self-contradicting scope cost 25 and 13 reflections
             # in cycle 4 (issue #59); say so before the worker is out the door.
@@ -409,6 +409,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             base=args.base,
             stack_on=args.stack_on,
+            ends_at=args.ends_at,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -725,7 +726,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.resume_task(args.task_id, message=args.message)
+        resp = client.resume_task(args.task_id, message=args.message, ends_at=args.ends_at)
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -734,7 +735,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         return 1
     print(
         f"resuming task {args.task_id} (session {resp.get('resumed_session')}) — "
-        f"status {resp.get('status', 'in_progress')}"
+        f"status {resp.get('status', 'in_progress')} (ends at {resp.get('ends_at', args.ends_at)})"
     )
     return 0
 
@@ -1224,6 +1225,22 @@ def _cmd_progress(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_receipt(args: argparse.Namespace) -> int:
+    """Run one command with a task's environment and retain its output and result."""
+    from middle_manager import receipt
+
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    try:
+        result = receipt.run(args.task_id, command)
+    except receipt.ReceiptError as exc:
+        print(f"receipt: {exc}", file=sys.stderr)
+        return 1
+    print(f"receipt: {result.output_path}")
+    return result.exit_code
+
+
 def _cmd_reflect(args: argparse.Namespace) -> int:
     """A worker's end-of-task reflection: its self-assessment and its assessment of the manager."""
     from middle_manager import reflections
@@ -1675,6 +1692,34 @@ def build_parser() -> argparse.ArgumentParser:
             "**/alembic/versions/*.py, empty string restores it"
         ),
     )
+    rset.add_argument(
+        "--db-url-template",
+        dest="db_url_template",
+        default=None,
+        metavar="TEMPLATE",
+        help="DATABASE_URL template; placeholders: {port}, {name}, {task_id}; empty clears it",
+    )
+    rset.add_argument(
+        "--test-db-url-template",
+        dest="test_db_url_template",
+        default=None,
+        metavar="TEMPLATE",
+        help="TEST_DATABASE_URL template; placeholders: {port}, {name}, {task_id}; empty clears it",
+    )
+    rset.add_argument(
+        "--source-line-ceiling",
+        dest="source_line_ceiling",
+        default=None,
+        metavar="LINES",
+        help="maximum source-file line count enforced by the repo harness; 0 clears it",
+    )
+    rset.add_argument(
+        "--needs-elevated-localhost",
+        dest="needs_elevated_localhost",
+        action="store_true",
+        default=None,
+        help="record that localhost and Git object operations may need the elevated path",
+    )
     # The environment block every worker dispatched to this repo is handed
     # (issue #60). Each is optional; `no` or an empty string clears it.
     rset.add_argument(
@@ -1769,6 +1814,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default="done",
+        help="worker terminal progress phase (default: done)",
+    )
+    dispatch.add_argument(
         "--brief",
         default=None,
         help=(
@@ -1830,6 +1881,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     blint.add_argument("file", help="the brief (Markdown)")
+    blint.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default="done",
+        help="terminal phase to check the brief against (default: done)",
+    )
     brief.set_defaults(func=_cmd_brief)
 
     worktree = sub.add_parser("worktree", help="inspect and reclaim leased and orphaned worktrees")
@@ -1950,6 +2007,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="resume a task's provider session")
     resume.add_argument("task_id", type=int)
     resume.add_argument("--message", default=None, help="answer/steer message")
+    resume.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default=None,
+        help="override and persist the task's terminal phase (default: stored value)",
+    )
     resume.set_defaults(func=_cmd_resume)
 
     steer = sub.add_parser("steer", help="steer a task (checkpoint or capability-gated interrupt)")
@@ -2097,6 +2160,11 @@ def build_parser() -> argparse.ArgumentParser:
     prog.add_argument("--history", action="store_true", help="show every report, oldest last")
     prog.add_argument("--json", action="store_true")
     prog.set_defaults(func=_cmd_progress)
+
+    receipt = sub.add_parser("receipt", help="run a command and retain task evidence")
+    receipt.add_argument("task_id", type=int)
+    receipt.add_argument("command", nargs=argparse.REMAINDER, help="command to run after --")
+    receipt.set_defaults(func=_cmd_receipt)
 
     refl = sub.add_parser(
         "reflect",
