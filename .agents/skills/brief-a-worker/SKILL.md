@@ -166,6 +166,24 @@ of re-reading the brief for it.
   product call: the user). A worker resolving a wrong brief on its own cost one
   stale-intent incident and one two-round change request.
 
+- **Adversarial acceptance matrix.** The rows the independent reviewer would otherwise
+  find after the worker's first review-ready commit, written into the brief as blocking
+  plan-note items with a proof each: every interleaving of two callers on the same row or
+  lock (lock order as a partial order); the semantic role of every injected clock
+  (eligibility cutoff, retry clock, post-lock admission); JSON scalar equality where
+  Python values validate JSON (true is not 1); limit-plus-one and influence-set rows
+  (every row hashed into a predicate is an observation); deferred completion after an
+  async boundary in both orders; the repository's harness ceilings checked before the
+  long gate. Twenty-nine of 89 reviews requested changes in the window ending
+  2026-09-11 and 14 workers said the probes belonged in the brief: each late round cost
+  a stop, a resume and a full gate. A second review round means a row was missing —
+  name it and add it to `.mm/briefs/_templates/defect-brief.md` the same day.
+- **Continuations are deltas.** A steer or continuation names what changed since the
+  last packet and nothing else; a full packet is re-issued only when the scope is
+  replaced, says so in its first line, and drops superseded operational instructions.
+  Seven reflections (tasks 175, 176, 184, 196) lost time reconciling serial
+  superseding packets.
+
 Then **one closeout checklist at the end of the brief** — every acceptance item, gate and
 receipt in a single list — instead of the same constraints repeated inside each section.
 Three separate workers asked for exactly this (2026-08-31); duplicated constraints drift
