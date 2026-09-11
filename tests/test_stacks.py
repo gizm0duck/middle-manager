@@ -8,12 +8,16 @@ pass it as --base". These tests pin the four things that replace that.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
+from datetime import UTC, datetime
 
 import pytest
 
 from middle_manager import delivery, repos, stacks
+from middle_manager.config import MMConfig, save_config
+from middle_manager.review import record_review
 from middle_manager.state import init_db, store
 from middle_manager.supervisor.client import SupervisorClient
 from middle_manager.supervisor.server import SupervisorServer
@@ -244,6 +248,139 @@ def test_stack_cli_renders_and_refuses_an_unknown_id(mm_home, monkeypatch, capsy
 
     assert main(["stack", "424242"]) == 1
     assert "no task or run" in capsys.readouterr().err
+
+
+def test_native_stack_merge_retargets_then_stops_on_the_next_red_check(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    cfg = MMConfig()
+    cfg.authority.merge = True
+    save_config(cfg)
+    added = repos.add_repo(source_repo)
+    conn = init_db()
+    repo = store.get_repo(conn, added.name)
+    run_id = store.create_run(conn, "three layers")
+    bottom = store.add_task(conn, run_id=run_id, title="bottom", repo_id=repo["id"])
+    middle = store.add_task(conn, run_id=run_id, title="middle", repo_id=repo["id"])
+    top = store.add_task(conn, run_id=run_id, title="top", repo_id=repo["id"])
+    store.update_task_fields(
+        conn, bottom, branch="stack/bottom", worktree_path=source_repo, base_sha="1" * 40
+    )
+    store.update_task_fields(
+        conn,
+        middle,
+        branch="stack/middle",
+        worktree_path=source_repo,
+        base_sha="2" * 40,
+        stacked_on="stack/bottom",
+        stacked_on_task=bottom,
+    )
+    store.update_task_fields(
+        conn,
+        top,
+        branch="stack/top",
+        worktree_path=source_repo,
+        base_sha="3" * 40,
+        stacked_on="stack/middle",
+        stacked_on_task=middle,
+    )
+    prs = {
+        "stack/bottom": {
+            "number": 11,
+            "baseRefName": "main",
+            "state": "OPEN",
+            "mergedAt": None,
+            "mergeCommit": None,
+        },
+        "stack/middle": {
+            "number": 12,
+            "baseRefName": "stack/bottom",
+            "state": "OPEN",
+            "mergedAt": None,
+            "mergeCommit": None,
+        },
+        "stack/top": {
+            "number": 13,
+            "baseRefName": "stack/middle",
+            "state": "OPEN",
+            "mergedAt": None,
+            "mergeCommit": None,
+        },
+    }
+    by_number = {pr["number"]: branch for branch, pr in prs.items()}
+
+    def fake_forge(argv, *, cwd=None):
+        if argv[1:3] == ["pr", "view"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(prs[argv[3]]), "")
+        if argv[1:3] == ["pr", "checks"]:
+            number = int(argv[3])
+            checks = (
+                [{"name": "Integration", "bucket": "fail"}]
+                if number == 12
+                else [{"name": "Unit", "bucket": "pass"}]
+            )
+            return subprocess.CompletedProcess(
+                argv, 1 if number == 12 else 0, json.dumps(checks), ""
+            )
+        if argv[1:3] == ["pr", "merge"]:
+            number = int(argv[3])
+            pr = prs[by_number[number]]
+            pr.update(
+                state="MERGED",
+                mergedAt="2026-09-11T18:00:00Z",
+                mergeCommit={"oid": "a" * 40},
+            )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[1:3] == ["pr", "edit"]:
+            number = int(argv[3])
+            prs[by_number[number]]["baseRefName"] = argv[5]
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(stacks, "_pr_tool", lambda: "gh")
+    monkeypatch.setattr(stacks, "_run_forge", fake_forge)
+    result = stacks.merge_stack(bottom, all_layers=True, sleep=lambda _seconds: None)
+
+    assert [item["task_id"] for item in result.merged] == [bottom]
+    assert prs["stack/middle"]["baseRefName"] == "main"
+    assert prs["stack/top"]["baseRefName"] == "stack/middle"
+    assert result.stopped and "Integration" in result.stopped
+    assert store.get_task(conn, bottom)["merged_sha"] == "a" * 40
+
+
+def test_deliver_refuses_composed_open_task_commits_but_not_a_merged_sibling(
+    server, source_repo
+) -> None:
+    _srv, client = server
+    added = repos.add_repo(source_repo)
+    bottom_resp = client.dispatch_task(repo=added.name, title="bottom")
+    _wait_terminal(client, bottom_resp["task_id"])
+    top_resp = client.dispatch_task(
+        repo=added.name,
+        title="top",
+        run_id=bottom_resp["run_id"],
+        stack_on=bottom_resp["task_id"],
+    )
+    _wait_terminal(client, top_resp["task_id"])
+    record_review(top_resp["task_id"], "approved")
+
+    with pytest.raises(delivery.DeliveryError) as refused:
+        delivery.deliver(top_resp["task_id"], push=False, open_pr=False, base="main")
+    message = str(refused.value)
+    assert f"task {top_resp['task_id']}" in message
+    assert f"task {bottom_resp['task_id']}" in message
+
+    conn = init_db()
+    store.update_task_fields(
+        conn,
+        bottom_resp["task_id"],
+        merged_sha="b" * 40,
+        merged_at=datetime.now(UTC).isoformat(),
+    )
+    assert (
+        delivery.deliver(top_resp["task_id"], push=False, open_pr=False, base="main").task_id
+        == top_resp["task_id"]
+    )
 
 
 # --------------------------------------------------------------------------- #

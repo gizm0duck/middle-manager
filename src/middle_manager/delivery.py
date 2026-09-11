@@ -80,6 +80,80 @@ def _run(argv: list[str], cwd: str | None = None) -> subprocess.CompletedProcess
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
 
 
+def _git_lines(worktree: str, *args: str) -> list[str]:
+    proc = _run(["git", "-C", worktree, *args])
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def _resolved_ref(worktree: str, *candidates: str | None) -> str | None:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        lines = _git_lines(worktree, "rev-parse", "--verify", candidate)
+        if lines:
+            return lines[0]
+    return None
+
+
+def composition_tasks(conn, task, *, remote: str, base: str | None, head: str) -> list[dict]:
+    """Open sibling tasks whose own commits appear in this task's proposed PR diff."""
+    worktree = task["worktree_path"]
+    if not worktree:
+        return []
+    default_branch = "main"
+    if task["repo_id"]:
+        repo = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo is not None:
+            default_branch = repo["default_branch"] or "main"
+    base_name = base or default_branch
+    base_sha = _resolved_ref(worktree, f"{remote}/{base_name}", base_name, task["base_sha"])
+    if not base_sha:
+        return []
+    proposed = set(_git_lines(worktree, "rev-list", f"{base_sha}..{head}"))
+    if not proposed:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE repo_id = ? AND id != ? "
+        "AND (merged_sha IS NULL OR merged_sha = '') "
+        "AND status NOT IN ('closed', 'cancelled') ORDER BY id",
+        (task["repo_id"], task["id"]),
+    ).fetchall()
+    conflicts: list[dict] = []
+    for sibling in rows:
+        sibling_head = _resolved_ref(
+            worktree,
+            f"{remote}/{sibling['branch']}" if sibling["branch"] else None,
+            sibling["branch"],
+        )
+        if sibling_head is None and sibling["lease_id"] and sibling["worktree_path"]:
+            lease = conn.execute(
+                "SELECT * FROM leases WHERE id = ? AND status = 'active'",
+                (sibling["lease_id"],),
+            ).fetchone()
+            if (
+                lease is not None
+                and lease["task_id"] == sibling["id"]
+                and lease["worktree_path"] == sibling["worktree_path"]
+            ):
+                sibling_head = _resolved_ref(sibling["worktree_path"], "HEAD")
+        sibling_base = sibling["base_sha"]
+        if not sibling_head or not sibling_base:
+            continue
+        own_commits = set(_git_lines(worktree, "rev-list", f"{sibling_base}..{sibling_head}"))
+        shared = sorted(proposed & own_commits)
+        if shared:
+            conflicts.append(
+                {
+                    "task_id": int(sibling["id"]),
+                    "title": sibling["title"],
+                    "commits": shared,
+                }
+            )
+    return conflicts
+
+
 def _pr_tool() -> str | None:
     # One resolver for both directions: see ``companions.pr_tool``.
     return pr_tool()
@@ -173,12 +247,21 @@ def deliver(
         except stacks.StackError as exc:
             raise DeliveryError(str(exc)) from exc
 
+    head = head_sha(worktree)
+    compositions = composition_tasks(conn, task, remote=remote, base=base, head=head)
+    if compositions:
+        carried = ", ".join(f'task {item["task_id"]} "{item["title"]}"' for item in compositions)
+        raise DeliveryError(
+            f'refusing composition: task {task_id} "{task["title"]}" would carry commits '
+            f"from another open task ({carried}). Keep the layer pull requests and merge them "
+            f"bottom-up with `mm stack merge {task_id}`."
+        )
+
     # The gate: never ship work that was not reviewed at its current head.
     approved, reason = is_approved_at_head(task_id)
     if not approved:
         raise DeliveryError(f"refusing to deliver: {reason}")
 
-    head = head_sha(worktree)
     pushed = False
     if push:
         proc = _run(["git", "push", remote, f"HEAD:{branch}"], cwd=worktree)
@@ -282,10 +365,31 @@ def record_merged(task_id: int, merged_sha: str, *, note: str | None = None) -> 
         )
     merged_sha = merged_sha.strip().lower()
     conn = init_db()
+    # Serialize the read-and-set so a watch tick racing a hand-run
+    # ``mm deliver --merged`` produces exactly one delivery/teardown event.
+    conn.execute("BEGIN IMMEDIATE")
     task = store.get_task(conn, task_id)
     if task is None:
+        conn.rollback()
         raise DeliveryError(f"task {task_id} not found")
     branch = task["branch"] or ""
+    recorded = (task["merged_sha"] or "").lower()
+    if recorded:
+        if recorded != merged_sha:
+            conn.rollback()
+            raise DeliveryError(
+                f"task {task_id} is already recorded merged at {recorded}; refusing to "
+                f"replace it with {merged_sha}"
+            )
+        conn.rollback()
+        return DeliveryResult(
+            task_id=task_id,
+            branch=branch,
+            head_sha=recorded,
+            pushed=False,
+            pr_url=None,
+            note=f"merge {recorded[:8]} was already recorded; nothing changed",
+        )
     # Record the landing on the task, not only in the event stream: a delivered
     # task never leaves that status, so without a merge on the row the heartbeat
     # would re-ask the forge about this branch on every tick, forever.

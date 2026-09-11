@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from middle_manager import repos
+from middle_manager import lifecycle, repos, turn_end
 from middle_manager.state import init_db, store
 from middle_manager.supervisor.client import SupervisorClient
 from middle_manager.supervisor.server import SupervisorServer
@@ -126,3 +126,56 @@ def test_failed_dirty_worker_keeps_lease(server, source_repo) -> None:
     assert os.path.exists(os.path.join(worktree, "mm-fake-partial.txt")), (
         "uncommitted work is preserved for inspection and resume"
     )
+
+
+def test_resume_refuses_a_released_lease_path_now_owned_by_another_task(
+    server, source_repo
+) -> None:
+    _srv, client = server
+    added = repos.add_repo(source_repo)
+    resp = client.dispatch_task(repo=added.name, title="finished")
+    task_id = resp["task_id"]
+    assert _wait_terminal(client, task_id) == "worker_done"
+    released = lifecycle.release_task_lease(task_id, reason="test release")
+    assert released["released"] is True
+
+    # Model the incident: Treehouse reused the old path, but the stale task row
+    # still names its released lease and must never run or push from that slot.
+    conn = init_db()
+    old_task = store.get_task(conn, task_id)
+    os.makedirs(old_task["worktree_path"])
+    other = store.add_task(conn, run_id=old_task["run_id"], title="new slot owner")
+    store.add_lease(
+        conn,
+        lease_id="replacement-owner",
+        repo_id=old_task["repo_id"],
+        task_id=other,
+        branch="mm/replacement-owner",
+        worktree_path=old_task["worktree_path"],
+        base_sha=old_task["base_sha"],
+        backend="git",
+    )
+
+    resumed = client.resume_task(task_id, "do not run")
+    assert resumed["ok"] is False
+    assert "lease_released event" in resumed["error"]
+
+
+def test_post_turn_push_logs_why_it_skipped_a_released_lease(server, source_repo) -> None:
+    _srv, client = server
+    added = repos.add_repo(source_repo)
+    resp = client.dispatch_task(repo=added.name, title="finished")
+    task_id = resp["task_id"]
+    assert _wait_terminal(client, task_id) == "worker_done"
+    lifecycle.release_task_lease(task_id, reason="test release")
+
+    conn = init_db()
+    pushed = turn_end.push_lease_branch(conn, task_id)
+    assert pushed.pushed is False
+    assert "lease_released event" in pushed.stderr
+    event = conn.execute(
+        "SELECT payload FROM events WHERE task_id = ? "
+        "AND kind = 'push_skipped_no_live_lease' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    assert event is not None and "post-turn push skipped" in event["payload"]

@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from middle_manager import decisions
+from middle_manager import decisions, lifecycle
 from middle_manager.config import ConfigError, load_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter, effective_allowed_tools
@@ -698,6 +698,7 @@ class Supervisor:
         rebuilt = self._ensure_worktree(conn, task)
         if rebuilt is not None:
             task = store.get_task(conn, task_id)
+        lifecycle.require_live_lease(conn, task_id, error_type=SupervisorError)
         # A cascade may have rewritten this task's branch while it was stopped.
         # Resuming a worker into a worktree that is behind its own remote ends in
         # a force-push over the cascade, so the worktree is moved onto the remote
