@@ -80,8 +80,8 @@ def require_live_lease(
     ).fetchone()
     event = f"lease_released event {released['id']}" if released else "no active lease record"
     raise error_type(
-        f"task {task_id} has no live worktree lease ({event}); a released lease is never "
-        "resumed because its pool slot may now belong to another task"
+        f"task {task_id} has no live worktree lease ({event}); refusing to use its recorded "
+        "path because a released lease identity may now belong to another task"
     )
 
 

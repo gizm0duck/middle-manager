@@ -698,6 +698,7 @@ class Supervisor:
         rebuilt = self._ensure_worktree(conn, task)
         if rebuilt is not None:
             task = store.get_task(conn, task_id)
+        lifecycle.require_live_lease(conn, task_id, error_type=SupervisorError)
         # A cascade may have rewritten this task's branch while it was stopped.
         # Resuming a worker into a worktree that is behind its own remote ends in
         # a force-push over the cascade, so the worktree is moved onto the remote

@@ -150,10 +150,12 @@ resumed process is started, so a task that was `failed`, `blocked`, or
 `needs_recovery` stops reading as stalled the moment work resumes rather than
 whenever the new worker happens to emit its first event.
 
-The exception is a released lease: resume refuses before admission, status change,
-branch synchronization, or worker launch, and names the task's `lease_released`
-event. A released pool slot may already belong to another task and is never rebuilt
-or resumed under the former task identity.
+A released lease identity and its old path are never reused. When that worktree is
+gone, a resumable task gets a **new lease** on the same branch/base, then resume
+proves the new lease owns the task and path before branch synchronization or worker
+launch. If the old path still exists but the task's recorded lease is released,
+mismatched, or owned by another task, resume refuses and names the
+`lease_released` event; that is a recycled slot, not a rebuild candidate.
 
 ## Cascade: a worktree whose branch was rewritten upstream
 

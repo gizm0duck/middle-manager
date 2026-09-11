@@ -22,7 +22,9 @@ import json
 import os
 import sqlite3
 import subprocess
+import tomllib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from middle_manager import compose
@@ -32,6 +34,7 @@ from middle_manager.state import init_db, store
 IN_FLIGHT = ("requested", "in_progress")
 DEFAULT_QUIET_MINUTES = 15
 DEFAULT_PLAN_MINUTES = 10
+TREEHOUSE_DEFAULT_MAX_TREES = 16
 
 
 class DispatchHealthError(Exception):
@@ -74,6 +77,40 @@ def _run_treehouse_status(cwd: str | None) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+def _treehouse_max_trees(cwd: str | None) -> int | None:
+    """Load the same repo/user config precedence used by Treehouse itself.
+
+    Treehouse finds the repository root with ``git rev-parse --show-toplevel``.
+    A repo-local ``treehouse.toml`` owns ``max_trees`` when present; otherwise
+    ``~/.config/treehouse/config.toml`` may supply it. Both files decode over
+    Treehouse's built-in default of 16. An unreadable or malformed selected
+    config is unknown rather than a reason to close the dispatch gate.
+    """
+    if not cwd:
+        return None
+    root = subprocess.run(
+        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if root.returncode != 0 or not root.stdout.strip():
+        return None
+    repo_config = Path(root.stdout.strip()) / "treehouse.toml"
+    user_config = Path.home() / ".config" / "treehouse" / "config.toml"
+    selected = repo_config if repo_config.exists() else user_config
+    if not selected.exists():
+        return TREEHOUSE_DEFAULT_MAX_TREES
+    try:
+        data = tomllib.loads(selected.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    value = data.get("max_trees", TREEHOUSE_DEFAULT_MAX_TREES)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def pool_capacity(repo: str | None = None, *, conn: sqlite3.Connection | None = None) -> dict:
     """The selected Treehouse pool's free slots, or an explicit unknown result.
 
@@ -103,12 +140,16 @@ def pool_capacity(repo: str | None = None, *, conn: sqlite3.Connection | None = 
     states = [slot.get("status") for slot in slots]
     if any(not isinstance(state, str) for state in states):
         return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
-    free = sum(state.lower() in {"idle", "free", "available"} for state in states)
+    max_trees = _treehouse_max_trees(cwd)
+    if max_trees is None:
+        return {"backend": backend, "known": False, "free_slots": None, "total_slots": None}
+    reusable = sum(state.lower() in {"idle", "free", "available"} for state in states)
+    growable = max(0, max_trees - len(states))
     return {
         "backend": backend,
         "known": True,
-        "free_slots": free,
-        "total_slots": len(states),
+        "free_slots": reusable + growable,
+        "total_slots": max_trees,
     }
 
 
