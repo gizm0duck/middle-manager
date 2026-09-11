@@ -174,7 +174,9 @@ of re-reading the brief for it.
   Python values validate JSON (true is not 1); limit-plus-one and influence-set rows
   (every row hashed into a predicate is an observation); deferred completion after an
   async boundary in both orders; the repository's harness ceilings checked before the
-  long gate. Twenty-nine of 89 reviews requested changes in the window ending
+  long gate; an invariant on a released or expired identity (lease, token, slot) that
+  never removes the path that mints a fresh one; and one probe of the real tool's
+  output shape behind every capacity or state read, never only a fake. Twenty-nine of 89 reviews requested changes in the window ending
   2026-09-11 and 14 workers said the probes belonged in the brief: each late round cost
   a stop, a resume and a full gate. A second review round means a row was missing —
   name it and add it to `.mm/briefs/_templates/defect-brief.md` the same day.
