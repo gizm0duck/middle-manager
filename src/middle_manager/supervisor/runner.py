@@ -15,6 +15,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from middle_manager.providers.base import ProviderAdapter, TaskSpec, WorkerResult
 from middle_manager.state import init_db, store
@@ -69,7 +70,9 @@ def _finalize_worktree(spec: TaskSpec, summary: str) -> Finalized:
 _TERMINAL_STATUS = {"completed": "worker_done", "blocked": "blocked", "failed": "failed"}
 
 
-def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
+def worker_env(
+    base: dict[str, str] | None = None, *, task_values: dict[str, str] | None = None
+) -> dict[str, str]:
     """Environment for a worker process: it can call ``mm``, and it can install things.
 
     ``mm`` resolves ``.mm`` from the cwd unless ``MM_HOME`` is set, and a worker's cwd
@@ -88,6 +91,11 @@ def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
     from middle_manager.paths import mm_home, uv_cache_dir
 
     env = dict(base if base is not None else os.environ)
+    # The manager's interpreter and database are never authority for a worker.
+    # Remove them before applying the task's resolved values so a missing repo
+    # setting cannot silently fall back to the manager shell.
+    for inherited in ("VIRTUAL_ENV", "DATABASE_URL", "TEST_DATABASE_URL"):
+        env.pop(inherited, None)
     home = mm_home()
     cache = uv_cache_dir()
     for directory in (home, cache):
@@ -95,6 +103,12 @@ def worker_env(base: dict[str, str] | None = None) -> dict[str, str]:
             directory.mkdir(parents=True, exist_ok=True)
     env["MM_HOME"] = str(home)
     env["UV_CACHE_DIR"] = str(cache)
+    env.update(task_values or {})
+    for cache_key in ("UV_CACHE_DIR", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR"):
+        configured = env.get(cache_key)
+        if configured:
+            with contextlib.suppress(OSError):
+                Path(configured).mkdir(parents=True, exist_ok=True)
     bin_dir = os.path.join(repo_root(), "bin")
     env["PATH"] = os.pathsep.join([bin_dir, env.get("PATH", "")])
     return env
@@ -133,7 +147,10 @@ class RunnerGuardian:
         spool = EventSpool(spec.run_id, spec.task_id)
 
         argv = self.adapter.resume(spec) if spec.resume_session_id else self.adapter.start(spec)
-        env = worker_env(self.adapter.child_env() if hasattr(self.adapter, "child_env") else None)
+        env = worker_env(
+            self.adapter.child_env() if hasattr(self.adapter, "child_env") else None,
+            task_values=spec.process_env,
+        )
 
         self._proc = subprocess.Popen(
             argv,
@@ -284,6 +301,7 @@ class RunnerGuardian:
                     "unpushed": verdict.unpushed,
                     "phase": verdict.phase,
                     "background_command": verdict.background_command,
+                    "expected_phase": verdict.expected_phase,
                     "resume_message": verdict.resume_message(),
                 },
                 run_id=spec.run_id,

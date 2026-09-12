@@ -97,6 +97,11 @@ def test_workers_are_told_to_reflect(mm_home) -> None:
     assert "mm reflect 7 --self" in preamble and "--manager" in preamble
     assert preamble.index("mm reflect 7") < preamble.index("--phase done")
 
+    review = memory.worker_context("demo", task_id=8, ends_at="review")
+    assert "--phase review" in review
+    assert "--phase done" not in review
+    assert "do not call done" in review
+
 
 def test_cli_reflect_records_and_shows(mm_home, capsys) -> None:
     conn = init_db()

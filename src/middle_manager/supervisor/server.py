@@ -232,6 +232,7 @@ class SupervisorServer:
                         stack_on=request.get("stack_on"),
                         prior_attempt=request.get("prior_attempt"),
                         brief_path=request.get("brief_path"),
+                        ends_at=request.get("ends_at") or "done",
                     ),
                 }
             if cmd == "task_status":
@@ -250,7 +251,11 @@ class SupervisorServer:
             if cmd == "resume_task":
                 return {
                     "ok": True,
-                    **sup.resume_task(int(request["task_id"]), request.get("message")),
+                    **sup.resume_task(
+                        int(request["task_id"]),
+                        request.get("message"),
+                        ends_at=request.get("ends_at"),
+                    ),
                 }
             if cmd == "steer_task":
                 return {

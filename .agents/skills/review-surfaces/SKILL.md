@@ -76,11 +76,13 @@ Decide in this order and say which one you used when you hand the surface over:
    `mm feedback` to collect annotations, act on them, and report the outcome.
 5. `stop` the poller when the review is finished.
 
-If the browser says the agent is not listening, the background poller died (a
-session restart takes it with it): `lavish-review open <file>` again re-arms it.
-When your harness offers a *tracked* background job that wakes you on completion,
-arming `lavish-axi poll <file>` through that instead is better still — the user's
-answer then interrupts you rather than waiting for your next turn.
+If the browser says the agent is not listening, the background poller died:
+`lavish-review open <file>` again re-arms it. When your harness offers a *tracked*
+background job that wakes you on completion, prefer it over the sidecar poller and
+arm `lavish-axi poll <file>` through that facility — the user's answer then
+interrupts you rather than waiting for your next turn. Use the wrapper's sidecar
+poller only when no completion-aware background facility exists. In either case,
+hand the turn back immediately; never hold it open waiting for feedback.
 
 ## Write for someone who has not read the source
 

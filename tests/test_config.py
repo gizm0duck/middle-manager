@@ -33,6 +33,9 @@ def test_round_trip(tmp_path) -> None:
     assert loaded.authority.merge is False
     assert loaded.cost_posture == "lean"
     assert loaded.assessments.completed_runs == 5
+    assert loaded.health.max_stale_stacks == 4
+    assert loaded.usage.input_ceiling_per_task == 12_000_000
+    assert loaded.usage.input_ceiling_per_review == 3_000_000
 
 
 def test_older_config_gets_default_assessment_policy(tmp_path) -> None:

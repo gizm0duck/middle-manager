@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from middle_manager import cli, compose, environment, progress, repos, review
+from middle_manager import cli, compose, environment, memory, progress, repos, review
 from middle_manager.config import MMConfig, WorkerCeiling, save_config
 from middle_manager.providers.base import TaskSpec
 from middle_manager.providers.claude import ClaudeAdapter
@@ -26,6 +26,7 @@ from middle_manager.state import init_db, store
 from middle_manager.state.db import _column_names
 from middle_manager.supervisor import autocommit
 from middle_manager.supervisor.client import SupervisorClient
+from middle_manager.supervisor.runner import worker_env
 from middle_manager.supervisor.server import SupervisorServer
 
 # --------------------------------------------------------------------------- #
@@ -65,6 +66,13 @@ def test_repo_set_records_the_environment_and_shows_it(mm_home, source_repo, cap
                 "yes",
                 "--local-gate",
                 "make test-backend",
+                "--db-url-template",
+                "postgresql://localhost:{port}/{name}_{task_id}",
+                "--test-db-url-template",
+                "postgresql://localhost:{port}/{name}_{task_id}_test",
+                "--source-line-ceiling",
+                "1000",
+                "--needs-elevated-localhost",
             ]
         )
         == 0
@@ -79,6 +87,10 @@ def test_repo_set_records_the_environment_and_shows_it(mm_home, source_repo, cap
     assert env.db_port_base == 54000
     assert env.push_hook_runs_full_suite is True
     assert env.local_gate == "make test-backend"
+    assert env.db_url_template == "postgresql://localhost:{port}/{name}_{task_id}"
+    assert env.test_db_url_template == "postgresql://localhost:{port}/{name}_{task_id}_test"
+    assert env.source_line_ceiling == 1000
+    assert env.needs_elevated_localhost is True
 
     # `no` and an empty string clear a setting rather than storing the word.
     assert (
@@ -166,6 +178,101 @@ def test_a_repo_can_name_the_variable_its_makefile_reads_the_port_from() -> None
     assert "`make <target> COMPOSE_PROJECT_NAME=task_165 PAPAYA_DB_PORT=55165`" in text
     assert "`COMPOSE_PROJECT_NAME=task_165`, `PAPAYA_DB_PORT=55165`" in text
     assert "DB_PORT=55165`" not in text.replace("PAPAYA_DB_PORT=55165`", "")
+
+
+def test_the_block_renders_one_exact_gate_with_urls_sandbox_and_source_ceiling(mm_home) -> None:
+    env = _env(
+        compose_stack="yes",
+        db_port_base=55000,
+        db_port_variable="PAPAYA_DB_PORT",
+        db_url_template="postgresql://localhost:{port}/{name}_{task_id}",
+        test_db_url_template="postgresql://localhost:{port}/{name}_{task_id}_test",
+        local_gate="make test",
+        source_line_ceiling=1000,
+        needs_elevated_localhost=True,
+    )
+    text = environment.render(
+        env,
+        task_id=12,
+        evidence_path="/wt/12/.mm-evidence",
+        compose_project="task_12",
+        db_port=55012,
+    )
+    gate = (
+        f"COMPOSE_PROJECT_NAME=task_12 PAPAYA_DB_PORT=55012 "
+        "DATABASE_URL=postgresql://localhost:55012/backend_12 "
+        "TEST_DATABASE_URL=postgresql://localhost:55012/backend_12_test "
+        f"UV_CACHE_DIR={environment.uv_cache_dir()} "
+        f"RUFF_CACHE_DIR={environment.task_cache_dir(12) / 'ruff'} "
+        f"MYPY_CACHE_DIR={environment.task_cache_dir(12) / 'mypy'} make test"
+    )
+    assert text.count(f"**Exact local gate:** `{gate}`") == 1
+    assert "localhost database access and Git object writes may require" in text
+    assert "no source file may exceed 1000 lines" in text
+    assert "Receipts are `.txt` files" in text
+
+
+def test_compose_without_url_templates_says_urls_are_absent(mm_home) -> None:
+    text = environment.render(
+        _env(compose_stack="yes", local_gate="make test"),
+        task_id=12,
+        evidence_path="/wt/12/.mm-evidence",
+        compose_project="task_12",
+    )
+    assert "Database URL templates are not registered" in text
+    assert "Resolved database URLs" not in text
+
+
+def test_non_compose_task_has_no_database_exports_or_database_text(mm_home) -> None:
+    env = _env(
+        db_url_template="postgresql://localhost:{port}/dev",
+        test_db_url_template="postgresql://localhost:{port}/test",
+        local_gate="make test",
+    )
+    values = environment._resolved_variables(env, task_id=12, compose_project=None, db_port=None)
+    assert set(values) == {"UV_CACHE_DIR", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR"}
+    child = worker_env(
+        {
+            "PATH": "/usr/bin",
+            "DATABASE_URL": "manager-dev",
+            "TEST_DATABASE_URL": "manager-test",
+            "VIRTUAL_ENV": "/manager/.venv",
+        },
+        task_values=values,
+    )
+    assert "DATABASE_URL" not in child
+    assert "TEST_DATABASE_URL" not in child
+    assert "VIRTUAL_ENV" not in child
+    text = environment.render(
+        env,
+        task_id=12,
+        evidence_path="/wt/12/.mm-evidence",
+        process_env=values,
+    )
+    assert "DATABASE_URL" not in text
+    assert "database URL" not in text.lower()
+
+
+@pytest.mark.parametrize("push_hook", [False, True])
+@pytest.mark.parametrize("ends_at", ["done", "review"])
+def test_terminal_instruction_matches_task_with_and_without_push_hook(
+    push_hook: bool, ends_at: str
+) -> None:
+    text = environment.render(
+        _env(push_hook_runs_full_suite=push_hook),
+        task_id=12,
+        evidence_path="/wt/12/.mm-evidence",
+        branch="mm/task-12-abc",
+        ends_at=ends_at,
+    )
+    context = memory.worker_context("backend", task_id=12, ends_at=ends_at)
+    combined = context + text
+    if ends_at == "review":
+        assert "--phase review" in combined
+        assert "--phase done" not in combined
+        assert "do not call done" in combined
+    else:
+        assert "--phase done" in combined
 
 
 def test_the_push_hook_line_routes_the_push_through_the_harness() -> None:
@@ -372,6 +479,9 @@ def test_a_dispatched_claude_brief_carries_the_block_for_this_task(
         db_port_base="54000",
         push_hook_runs_full_suite="yes",
         local_gate="make test-backend",
+        db_port_variable="PAPAYA_DB_PORT",
+        db_url_template="postgresql://localhost:{port}/{name}_{task_id}",
+        test_db_url_template="postgresql://localhost:{port}/{name}_{task_id}_test",
     )
     captured: list[TaskSpec] = []
     monkeypatch.setattr(
@@ -389,10 +499,33 @@ def test_a_dispatched_claude_brief_carries_the_block_for_this_task(
     prompt = ClaudeAdapter().worker_prompt(spec)
     assert prompt.index(RULES_HEADING) < prompt.index(environment.HEADING)
     assert prompt.index(environment.HEADING) < prompt.index("THE BRIEF BODY")
-    assert f"COMPOSE_PROJECT_NAME=task_{task_id} DB_PORT={54000 + task_id}" in prompt
+    assert f"COMPOSE_PROJECT_NAME=task_{task_id} PAPAYA_DB_PORT={54000 + task_id}" in prompt
     assert f"{spec.worktree_path}/.mm-evidence/" in prompt
     assert "Local gate: `make test-backend`" in prompt
     assert f"pushes `{spec.branch}` on your behalf" in prompt
+    polluted = {
+        "PATH": "/usr/bin",
+        "KEEP": "yes",
+        "VIRTUAL_ENV": "/manager/.venv",
+        "DATABASE_URL": "manager-dev",
+        "TEST_DATABASE_URL": "manager-test",
+    }
+    child = worker_env(polluted, task_values=spec.process_env)
+    expected = {
+        "PATH": child["PATH"],
+        "KEEP": "yes",
+        "MM_HOME": child["MM_HOME"],
+        "COMPOSE_PROJECT_NAME": f"task_{task_id}",
+        "PAPAYA_DB_PORT": str(54000 + task_id),
+        "DATABASE_URL": f"postgresql://localhost:{54000 + task_id}/{added.name}_{task_id}",
+        "TEST_DATABASE_URL": (
+            f"postgresql://localhost:{54000 + task_id}/{added.name}_{task_id}_test"
+        ),
+        "UV_CACHE_DIR": str(environment.uv_cache_dir()),
+        "RUFF_CACHE_DIR": str(environment.task_cache_dir(task_id) / "ruff"),
+        "MYPY_CACHE_DIR": str(environment.task_cache_dir(task_id) / "mypy"),
+    }
+    assert child == expected
 
     conn = init_db()
     assert compose.project_for(task_id, conn=conn) == f"task_{task_id}"

@@ -245,7 +245,7 @@ workers report it with `mm progress <task_id> --phase ... --note ...`, and
 """
 
 
-def worker_context(name: str, *, task_id: int | None = None) -> str:
+def worker_context(name: str, *, task_id: int | None = None, ends_at: str = "done") -> str:
     """A short preamble handed to a worker so it reports progress and uses repo memory.
 
     Uses absolute paths — a worker's cwd is its leased worktree, not the ``.mm`` root.
@@ -254,6 +254,9 @@ def worker_context(name: str, *, task_id: int | None = None) -> str:
     notes = repo_notes_path(name)
     tasks = repo_tasks_path(name)
     tid = str(task_id) if task_id is not None else "<task_id>"
+    from middle_manager.environment import finish_instruction
+
+    finish = finish_instruction(tid, ends_at)
     return (
         "Report progress with `mm progress` (structured, visible to your manager):\n"
         f"- BEFORE you start implementing: `mm progress {tid} --phase plan --note "
@@ -268,7 +271,7 @@ def worker_context(name: str, *, task_id: int | None = None) -> str:
         '--manager "<how the brief, scope, steering, and review served you; what the '
         "manager should change>\"`. Be candid and specific — this is read in the manager's "
         "own performance review, and it is the only channel where your view counts.\n"
-        f'- Then finish: `mm progress {tid} --phase done --note "<summary>"`.\n'
+        f"- Then {finish}\n"
         "Shared repo memory (durable, and visible to your manager) — use it:\n"
         f"- Learnings: {notes}\n"
         "  Read it before you start; append any durable facts you discover "

@@ -9,7 +9,8 @@ from itertools import count
 
 import pytest
 
-from middle_manager import board, cli, delivery, watch
+from middle_manager import board, cli, compose, delivery, watch
+from middle_manager.config import MMConfig, save_config
 from middle_manager.state import init_db, store
 
 
@@ -103,6 +104,28 @@ def test_run_once_prints_exactly_one_line_and_returns(home) -> None:
     assert out.getvalue().count("\n") == 1
     assert out.getvalue().startswith("TEAM ")
     assert slept == []
+
+
+def test_watch_prints_usage_advisories(home) -> None:
+    conn = home
+    cfg = MMConfig()
+    cfg.usage.input_ceiling_per_task = 10
+    save_config(cfg)
+    run_id = store.create_run(conn, "usage")
+    task_id = store.add_task(conn, run_id=run_id, title="expensive")
+    store.record_usage(
+        conn,
+        run_id=run_id,
+        task_id=task_id,
+        provider="codex",
+        model="m",
+        reasoning="low",
+        input_tokens=11,
+        output_tokens=1,
+    )
+    snapshot = watch.tick(conn)
+    assert snapshot["usage_advisories"][0]["task_id"] == task_id
+    assert "usage advisory" in watch.render(snapshot)
 
 
 def test_run_loops_on_the_interval_until_stopped(home) -> None:
@@ -240,6 +263,112 @@ def test_a_merged_pull_request_is_news_once_and_then_never_asked_about_again(
     assert calls == []  # a terminal state cannot change: stop paying for it
     assert third["pr_changes"] == []
     assert "prs:" not in watch.render(third)
+
+
+def test_watch_records_the_forge_merge_commit_tears_down_and_retires_the_pr(
+    home, tmp_path, monkeypatch
+) -> None:
+    conn = home
+    task_id = delivered_task(conn, tmp_path, "harness/landing")
+    compose.record_project(task_id, f"task_{task_id}", conn=conn)
+    monkeypatch.setattr(
+        compose,
+        "down",
+        lambda project: {
+            "project": project,
+            "ran": True,
+            "ok": True,
+            "removed": ["network"],
+            "detail": "removed",
+        },
+    )
+    merge_sha = "a" * 40
+    calls = fake_forge(
+        monkeypatch,
+        pr={
+            **OPEN_PR,
+            "state": "MERGED",
+            "mergedAt": "2026-09-11T18:00:00Z",
+            "mergeCommit": {"oid": merge_sha},
+        },
+    )
+
+    first = watch.tick(conn)
+    assert store.get_task(conn, task_id)["merged_sha"] == merge_sha
+    assert first["recorded_merges"][0]["merge_commit"] == merge_sha
+    assert "recorded merged" in watch.render(first)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'compose_down'", (task_id,)
+        ).fetchone()[0]
+        == 1
+    )
+
+    calls.clear()
+    second = watch.tick(conn)
+    assert second["prs"] == []
+    assert calls == []
+
+
+def test_closed_unmerged_and_non_boolean_merge_payloads_are_never_recorded(
+    home, tmp_path, monkeypatch
+) -> None:
+    conn = home
+    closed = delivered_task(conn, tmp_path, "harness/closed")
+    fake_forge(monkeypatch, pr={**OPEN_PR, "state": "CLOSED"})
+    assert watch.tick(conn)["recorded_merges"] == []
+    assert store.get_task(conn, closed)["merged_sha"] is None
+
+    malformed = delivered_task(conn, tmp_path, "harness/malformed")
+    monkeypatch.setattr(
+        watch,
+        "_lookup_pr",
+        lambda branch, cwd: {
+            "known": True,
+            "pr": 99,
+            "state": "MERGED",
+            "merged": "true",
+            "merge_commit": "b" * 40,
+            "ci": "none",
+            "failing": [],
+        },
+    )
+    assert watch.tick(conn)["recorded_merges"] == []
+    assert store.get_task(conn, malformed)["merged_sha"] is None
+
+
+def test_record_merged_is_idempotent_for_a_racing_second_writer(
+    home, tmp_path, monkeypatch
+) -> None:
+    conn = home
+    task_id = delivered_task(conn, tmp_path, "harness/race")
+    compose.record_project(task_id, f"task_{task_id}", conn=conn)
+    monkeypatch.setattr(
+        compose,
+        "down",
+        lambda project: {
+            "project": project,
+            "ran": True,
+            "ok": True,
+            "removed": [],
+            "detail": "gone",
+        },
+    )
+    sha = "c" * 40
+    assert "recorded as delivered" in delivery.record_merged(task_id, sha).note
+    assert "already recorded" in delivery.record_merged(task_id, sha).note
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'delivered'", (task_id,)
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM events WHERE task_id = ? AND kind = 'compose_down'", (task_id,)
+        ).fetchone()[0]
+        == 1
+    )
 
 
 def test_run_stops_polling_a_pull_request_once_it_has_landed(home, tmp_path, monkeypatch) -> None:

@@ -172,7 +172,7 @@ def test_cli_resume_reports_liveness_and_fails_when_no_worker_appears(
         def __init__(self, *a, **k):
             pass
 
-        def resume_task(self, tid, message=None):
+        def resume_task(self, tid, message=None, **kwargs):
             return {"ok": True, **supervisor.resume_task(tid, message)}
 
     import middle_manager.supervisor.client as client_mod
@@ -185,7 +185,7 @@ def test_cli_resume_reports_liveness_and_fails_when_no_worker_appears(
 
     # A resume whose worker never appears is an incident, not a success.
     class GhostClient(FakeClient):
-        def resume_task(self, tid, message=None):
+        def resume_task(self, tid, message=None, **kwargs):
             return {"ok": True, "resumed_session": None, "status": "in_progress"}
 
     monkeypatch.setattr(client_mod, "SupervisorClient", GhostClient)

@@ -56,6 +56,17 @@ _BACKTICKED = re.compile(r"`([^`\s]{2,})`")
 _TMP_PATH = re.compile(r"(?<![\w./-])(?:/private)?/tmp/[^\s`'\")\]]+")
 _DEFECT_WORDS = re.compile(r"\bdefect\b|\bsymptom\b", re.IGNORECASE)
 _FAIL_WORD = re.compile(r"\bFAIL\b")
+_REVIEW_END = re.compile(
+    r"(?:stop|end|finish)\s+(?:at|with|in\s+)?(?:`?--phase\s+|phase\s+)?review\b"
+    r"|\bphase-review\s+end\b|\bnever\s+(?:call\s+)?done\b"
+    r"|\bdo\s+not\s+call\s+done\b",
+    re.IGNORECASE,
+)
+_DONE_END = re.compile(
+    r"(?:finish|end|report)\b[^\n]{0,60}(?:`?--phase\s+done|\bphase\s+done\b)",
+    re.IGNORECASE,
+)
+_DONE_NEGATED = re.compile(r"\b(?:never|refus(?:e|ed)|do\s+not|must\s+not|without)\b", re.I)
 
 _CAUSE_WORDS = ("hypothes", "cause", "mechanism", "diagnos")
 _FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -621,7 +632,39 @@ def _check_outcome_sections(lines: list[_Line]) -> list[Finding]:
     return findings
 
 
-def lint_brief(text: str) -> list[Finding]:
+def _check_terminal_phase(lines: list[_Line], ends_at: str) -> list[Finding]:
+    """Flag only directive-shaped terminal language that disagrees with dispatch."""
+    if ends_at == "done":
+        match = next((line for line in lines if _REVIEW_END.search(line.text)), None)
+        if match:
+            return [
+                Finding(
+                    match.number,
+                    "brief says to stop at review, but dispatch uses `--ends-at done`; "
+                    "pass `--ends-at review` or make the brief end at done",
+                )
+            ]
+        return []
+    match = next(
+        (
+            line
+            for line in lines
+            if _DONE_END.search(line.text) and not _DONE_NEGATED.search(line.text)
+        ),
+        None,
+    )
+    if match:
+        return [
+            Finding(
+                match.number,
+                "brief says to finish at done, but dispatch uses `--ends-at review`; "
+                "pass `--ends-at done` or make the brief stop at review",
+            )
+        ]
+    return []
+
+
+def lint_brief(text: str, *, ends_at: str = "done") -> list[Finding]:
     """Every finding for ``text``, in line order.
 
     Empty when the brief has the shape a worker can be right about.
@@ -638,6 +681,7 @@ def lint_brief(text: str) -> list[Finding]:
     findings += _check_pre_authorised(lines)
     findings += _check_self_consistency(lines)
     findings += _check_evidence_paths(lines)
+    findings += _check_terminal_phase(lines, ends_at)
     return sorted(findings, key=lambda f: f.line)
 
 

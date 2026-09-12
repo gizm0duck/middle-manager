@@ -133,6 +133,16 @@ class HealthPolicy:
     quiet_minutes: int = 15
     # Minutes a worker may run before it is flagged for never having posted a plan.
     plan_minutes: int = 10
+    # Finished task stacks still consume Docker networks and database ports.
+    max_stale_stacks: int = 4
+
+
+@dataclass
+class UsagePolicy:
+    """Advisory input-token ceilings; these report, they never stop work."""
+
+    input_ceiling_per_task: int = 12_000_000
+    input_ceiling_per_review: int = 3_000_000
 
 
 @dataclass
@@ -144,6 +154,7 @@ class MMConfig:
     tools: ToolsPolicy = field(default_factory=ToolsPolicy)
     assessments: AssessmentPolicy = field(default_factory=AssessmentPolicy)
     health: HealthPolicy = field(default_factory=HealthPolicy)
+    usage: UsagePolicy = field(default_factory=UsagePolicy)
     claude: ClaudeProfile = field(default_factory=ClaudeProfile)
 
     def validate(self) -> None:
@@ -210,6 +221,12 @@ class MMConfig:
             raise ConfigError("health.quiet_minutes must be at least 1")
         if self.health.plan_minutes < 1:
             raise ConfigError("health.plan_minutes must be at least 1")
+        if self.health.max_stale_stacks < 0:
+            raise ConfigError("health.max_stale_stacks must be zero or greater")
+        for name in ("input_ceiling_per_task", "input_ceiling_per_review"):
+            value = getattr(self.usage, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ConfigError(f"usage.{name} must be a positive integer")
         if not isinstance(self.claude.allowed_tools, list):
             raise ConfigError("claude.allowed_tools must be a list of tool patterns")
         for pattern in self.claude.allowed_tools:
@@ -228,6 +245,7 @@ class MMConfig:
             "tools": asdict(self.tools),
             "assessments": asdict(self.assessments),
             "health": asdict(self.health),
+            "usage": asdict(self.usage),
             "claude": asdict(self.claude),
         }
 
@@ -246,6 +264,7 @@ def _from_dict(data: dict) -> MMConfig:
         tools=ToolsPolicy(**data.get("tools", {})),
         assessments=AssessmentPolicy(**data.get("assessments", {})),
         health=HealthPolicy(**data.get("health", {})),
+        usage=UsagePolicy(**data.get("usage", {})),
         claude=ClaudeProfile(**data.get("claude", {})),
     )
     return cfg

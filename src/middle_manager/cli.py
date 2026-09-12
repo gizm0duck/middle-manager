@@ -136,10 +136,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
                 cfg.health.quiet_minutes = args.quiet_minutes
             if args.plan_minutes is not None:
                 cfg.health.plan_minutes = args.plan_minutes
+            if args.max_stale_stacks is not None:
+                cfg.health.max_stale_stacks = args.max_stale_stacks
             save_config(cfg)
             print(
                 f"worker health: flag a worker after {cfg.health.quiet_minutes}m of silence, "
-                f"or {cfg.health.plan_minutes}m without a plan"
+                f"or {cfg.health.plan_minutes}m without a plan; refuse dispatch above "
+                f"{cfg.health.max_stale_stacks} stale compose stack(s)"
             )
             return 0
         if args.config_cmd == "assessments":
@@ -360,7 +363,7 @@ def _cmd_brief(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"brief lint: {exc}", file=sys.stderr)
         return 1
-    findings = brief_lint.lint_brief(text)
+    findings = brief_lint.lint_brief(text, ends_at=args.ends_at)
     if args.provider == "claude":
         from middle_manager.providers.claude import effective_allowed_tools
 
@@ -379,9 +382,15 @@ def _cmd_brief(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    from middle_manager import brief_lint, preflight
+    from middle_manager import brief_lint, health, preflight
     from middle_manager.config import default_worker_provider
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
+
+    try:
+        health.require_dispatch_capacity(args.repo)
+    except health.DispatchHealthError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 1
 
     # Preflight first: refuse before any task state exists, and say why plainly.
     if args.brief and args.instructions:
@@ -405,7 +414,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
     provider = args.provider or default_worker_provider()
     if args.brief:
-        findings = brief_lint.lint_brief(instructions)
+        findings = brief_lint.lint_brief(instructions, ends_at=args.ends_at)
         # The worker's actual command surface, and the history of the objective
         # (issue #79): friction a brief can avoid before the worker is out the door.
         if provider == "claude":
@@ -481,6 +490,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             stack_on=args.stack_on,
             prior_attempt=args.prior_attempt,
             brief_path=str(Path(args.brief).expanduser().resolve()) if args.brief else None,
+            ends_at=args.ends_at,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -773,11 +783,47 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_stack(args: argparse.Namespace) -> int:
-    """Render a stack bottom-up: the order it has to be merged in."""
-    from middle_manager.stacks import StackError, render_stack, stack_layers
+    """Render, merge, or rebuild a native pull-request stack."""
+    from middle_manager.stacks import (
+        StackError,
+        merge_stack,
+        rebuild_layer,
+        render_stack,
+        stack_layers,
+    )
 
     try:
-        layers = stack_layers(args.id)
+        if args.command_or_id == "merge":
+            if args.id is None:
+                raise StackError("merge needs a task id")
+            result = merge_stack(args.id, all_layers=args.all)
+            for merged in result.merged:
+                print(
+                    f"task {merged['task_id']}: PR #{merged['pr']} merged at "
+                    f"{merged['merge_commit'][:8]} and recorded"
+                )
+            for changed in result.retargeted:
+                print(
+                    f"task {changed['task_id']}: PR #{changed['pr']} retargeted to "
+                    f"{changed['base']}"
+                )
+            if result.stopped:
+                print(f"stack merge stopped: {result.stopped}", file=sys.stderr)
+                return 1
+            return 0
+        if args.command_or_id == "rebuild":
+            if args.id is None:
+                raise StackError("rebuild needs a task id")
+            rebuilt = rebuild_layer(args.id)
+            print(f"task {args.id}: {rebuilt['note']}")
+            return 0
+        if args.id is not None:
+            raise StackError("view takes one task or run id")
+        try:
+            identifier = int(args.command_or_id)
+        except ValueError as exc:
+            raise StackError("expected a task/run id, `merge <task>`, or `rebuild <task>`") from exc
+        layers = stack_layers(identifier)
     except StackError as exc:
         print(f"stack: {exc}", file=sys.stderr)
         return 1
@@ -805,7 +851,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
     client = SupervisorClient()
     try:
-        resp = client.resume_task(args.task_id, message=args.message)
+        resp = client.resume_task(args.task_id, message=args.message, ends_at=args.ends_at)
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -814,7 +860,7 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         return 1
     print(
         f"resuming task {args.task_id} (session {resp.get('resumed_session')}) — "
-        f"status {resp.get('status', 'in_progress')}"
+        f"status {resp.get('status', 'in_progress')} (ends at {resp.get('ends_at', args.ends_at)})"
     )
     if resp.get("worktree_rebuilt"):
         print(f"worktree rebuilt: {resp['worktree_rebuilt'].get('summary')}")
@@ -909,6 +955,11 @@ def _cmd_review(args: argparse.Namespace) -> int:
             task = store.get_task(conn, args.task_id)
             paths = captures.capture_paths(r["note"] for r in reports)
             if task is not None:
+                from middle_manager import health
+
+                for advisory in health.usage_advisories(conn, task_id=args.task_id):
+                    print(health.describe_usage_advisory(advisory))
+                    print()
                 # The evidence directory the environment block pinned is listed
                 # whether or not the worker's report named it: a receipt filed
                 # where the block said is never invisible to the reviewer.
@@ -1121,15 +1172,26 @@ def _cmd_health(args: argparse.Namespace) -> int:
     entries = health.check(quiet_after=quiet_after)
     tools = health.claude_tool_profile()
     stacks = compose.prunable_stacks()
+    dispatch = health.dispatch_snapshot()
     if args.json:
         print(
             json.dumps(
-                {"workers": entries, "claude_tools": tools, "prunable_compose_stacks": stacks},
+                {
+                    "workers": entries,
+                    "claude_tools": tools,
+                    "prunable_compose_stacks": stacks,
+                    "dispatch": dispatch,
+                },
                 indent=2,
             )
         )
         return 0
     print(health.describe_claude_tools(tools))
+    pool = dispatch["pool"]
+    if pool["known"]:
+        print(f"worktree pool: {pool['free_slots']} of {pool['total_slots']} slot(s) free")
+    else:
+        print(f"worktree pool: no fixed capacity ({pool['backend']} backend)")
     print(compose.describe_prunable(stacks))
     if not entries:
         print("no workers in flight")
@@ -1345,6 +1407,22 @@ def _cmd_progress(args: argparse.Namespace) -> int:
         return 1
     print(f"task {args.task_id}: {args.phase} recorded")
     return 0
+
+
+def _cmd_receipt(args: argparse.Namespace) -> int:
+    """Run one command with a task's environment and retain its output and result."""
+    from middle_manager import receipt
+
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    try:
+        result = receipt.run(args.task_id, command)
+    except receipt.ReceiptError as exc:
+        print(f"receipt: {exc}", file=sys.stderr)
+        return 1
+    print(f"receipt: {result.output_path}")
+    return result.exit_code
 
 
 def _cmd_reflect(args: argparse.Namespace) -> int:
@@ -1600,7 +1678,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - status must never crash
         print("repos:   (state not initialized)")
     try:
-        from middle_manager import board
+        from middle_manager import board, health
         from middle_manager.state import init_db, store
 
         conn = init_db()
@@ -1619,6 +1697,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"todos:   {len(nxt)} next, {len(blocked)} waiting")
         for t in nxt[:3]:
             print(f"  next:  #{t['id']} {t['text']}")
+        for advisory in health.usage_advisories(conn):
+            print(health.describe_usage_advisory(advisory))
         _ = store
     except Exception:  # noqa: BLE001 - status must never crash
         pass
@@ -1751,6 +1831,7 @@ def build_parser() -> argparse.ArgumentParser:
     health_cfg = csub.add_parser("health", help="change the worker quiet threshold")
     health_cfg.add_argument("--quiet-minutes", dest="quiet_minutes", type=int, default=None)
     health_cfg.add_argument("--plan-minutes", dest="plan_minutes", type=int, default=None)
+    health_cfg.add_argument("--max-stale-stacks", dest="max_stale_stacks", type=int, default=None)
     config.set_defaults(func=_cmd_config)
 
     repo = sub.add_parser("repo", help="register and sync repositories")
@@ -1815,6 +1896,34 @@ def build_parser() -> argparse.ArgumentParser:
             "when two unmerged tasks add one off the same head; default "
             "**/alembic/versions/*.py, empty string restores it"
         ),
+    )
+    rset.add_argument(
+        "--db-url-template",
+        dest="db_url_template",
+        default=None,
+        metavar="TEMPLATE",
+        help="DATABASE_URL template; placeholders: {port}, {name}, {task_id}; empty clears it",
+    )
+    rset.add_argument(
+        "--test-db-url-template",
+        dest="test_db_url_template",
+        default=None,
+        metavar="TEMPLATE",
+        help="TEST_DATABASE_URL template; placeholders: {port}, {name}, {task_id}; empty clears it",
+    )
+    rset.add_argument(
+        "--source-line-ceiling",
+        dest="source_line_ceiling",
+        default=None,
+        metavar="LINES",
+        help="maximum source-file line count enforced by the repo harness; 0 clears it",
+    )
+    rset.add_argument(
+        "--needs-elevated-localhost",
+        dest="needs_elevated_localhost",
+        action="store_true",
+        default=None,
+        help="record that localhost and Git object operations may need the elevated path",
     )
     # The environment block every worker dispatched to this repo is handed
     # (issue #60). Each is optional; `no` or an empty string clears it.
@@ -1922,6 +2031,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch.add_argument("--instructions", default=None, help="task instructions")
     dispatch.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default="done",
+        help="worker terminal progress phase (default: done)",
+    )
+    dispatch.add_argument(
         "--brief",
         default=None,
         help=(
@@ -2008,6 +2123,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="prior_attempt",
         default=None,
         help="describe the earlier attempt to require a `## Prior attempt` section",
+    )
+    blint.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default="done",
+        help="terminal phase to check the brief against (default: done)",
     )
     brief.set_defaults(func=_cmd_brief)
 
@@ -2103,12 +2224,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     stack = sub.add_parser(
         "stack",
-        help="render a stack bottom-up: layer, branch, PR and base, review, cascade state",
+        help="render, merge, or rebuild a native pull-request stack",
     )
     stack.add_argument(
-        "id",
-        type=int,
-        help="a task in the stack, or a run id to render every stacked task in the run",
+        "command_or_id",
+        help="a task/run id to view, or `merge` / `rebuild`",
+    )
+    stack.add_argument("id", nargs="?", type=int, help="task id for merge/rebuild")
+    stack.add_argument(
+        "--all",
+        action="store_true",
+        help="with merge, continue upward until the stack is done or a required check is red",
     )
     stack.add_argument("--json", action="store_true", help="machine-readable output")
     stack.set_defaults(func=_cmd_stack)
@@ -2138,6 +2264,12 @@ def build_parser() -> argparse.ArgumentParser:
             "after the resume, wait up to this long for a live worker process (or a recorded "
             "result) and report it; exit 1 if none appears. 0 skips the check"
         ),
+    )
+    resume.add_argument(
+        "--ends-at",
+        choices=["review", "done"],
+        default=None,
+        help="override and persist the task's terminal phase (default: stored value)",
     )
     resume.set_defaults(func=_cmd_resume)
 
@@ -2286,6 +2418,11 @@ def build_parser() -> argparse.ArgumentParser:
     prog.add_argument("--history", action="store_true", help="show every report, oldest last")
     prog.add_argument("--json", action="store_true")
     prog.set_defaults(func=_cmd_progress)
+
+    receipt = sub.add_parser("receipt", help="run a command and retain task evidence")
+    receipt.add_argument("task_id", type=int)
+    receipt.add_argument("command", nargs=argparse.REMAINDER, help="command to run after --")
+    receipt.set_defaults(func=_cmd_receipt)
 
     refl = sub.add_parser(
         "reflect",

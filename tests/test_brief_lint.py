@@ -324,6 +324,45 @@ def test_dispatch_of_a_clean_brief_says_nothing_about_lint(home, fake_supervisor
     assert "brief lint" not in capsys.readouterr().err
 
 
+def test_terminal_phase_lint_finds_both_mismatch_directions() -> None:
+    review_brief = GOOD_DEFECT + "\nStop at `--phase review`; do not call done.\n"
+    done_brief = GOOD_DEFECT + (
+        '\nThen finish with `mm progress 7 --phase done --note "summary"`.\n'
+    )
+
+    mismatch = [f for f in lint_brief(review_brief, ends_at="done") if "--ends-at" in f.message]
+    assert len(mismatch) == 1 and "--ends-at done" in mismatch[0].message
+    assert not [f for f in lint_brief(review_brief, ends_at="review") if "--ends-at" in f.message]
+
+    mismatch = [f for f in lint_brief(done_brief, ends_at="review") if "--ends-at" in f.message]
+    assert len(mismatch) == 1 and "--ends-at review" in mismatch[0].message
+    assert not [f for f in lint_brief(done_brief, ends_at="done") if "--ends-at" in f.message]
+
+
+def test_dispatch_passes_ends_at_to_lint_and_supervisor(home, fake_supervisor, capsys) -> None:
+    brief = home / "review.md"
+    brief.write_text(GOOD_DEFECT + "\nEnd with phase review, never done.\n")
+    assert (
+        cli.main(
+            [
+                "dispatch",
+                "--repo",
+                "papaya",
+                "--brief",
+                str(brief),
+                "--provider",
+                "claude",
+                "--ends-at",
+                "review",
+                "--strict",
+            ]
+        )
+        == 0
+    )
+    assert "brief lint" not in capsys.readouterr().err
+    assert fake_supervisor["ends_at"] == "review"
+
+
 # --------------------------------------------------------------------------- #
 # Goals, Intent, In scope, Out of scope (issue #77)
 # --------------------------------------------------------------------------- #

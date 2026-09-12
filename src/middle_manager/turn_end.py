@@ -10,8 +10,8 @@ pushed.
 
 A turn ending is not evidence of completion. This module asks for the evidence:
 
-1. the newest progress note says the worker reached ``done``;
-2. the branch holds nothing the remote does not already have;
+1. the newest progress note says the worker reached its stored terminal phase;
+2. for a ``done`` task, the branch holds nothing the remote does not already have;
 3. the session's last tool call was not a backgrounded command, which dies with
    the session that started it.
 
@@ -52,22 +52,28 @@ class StopVerdict:
     unpushed: int = 0
     phase: str | None = None
     background_command: str | None = None
+    expected_phase: str = "done"
 
     @property
     def summary(self) -> str:
         if not self.stopped:
             return "the worker finished the gate"
-        return "worker stopped before done: " + "; ".join(self.reasons)
+        return f"worker stopped before {self.expected_phase}: " + "; ".join(self.reasons)
 
     def resume_message(self) -> str:
         """The default `mm resume` message: what was cut short, and what to do now."""
+        finish = (
+            "file your `mm progress <task_id> --phase review --note ...` report"
+            if self.expected_phase == "review"
+            else "file your `mm progress <task_id> --phase done --note ...` report, and push "
+            "your branch"
+        )
         return (
             "Your turn ended before the work was finished: "
             + "; ".join(self.reasons)
             + ". Pick it back up in this worktree: run the authoritative verification "
             "suite in the foreground (never as a background task — a backgrounded "
-            "command dies with the session), file your `mm progress <task_id> --phase "
-            "done --note ...` report, and push your branch."
+            f"command dies with the session), {finish}."
         )
 
 
@@ -144,20 +150,21 @@ def why_stopped(conn, task_id: int) -> StopVerdict:
     from middle_manager import stacks
 
     task = store.get_task(conn, task_id)
-    verdict = StopVerdict()
     if task is None:
-        return verdict
+        return StopVerdict()
+    expected = task["ends_at"] if "ends_at" in task.keys() else "done"  # noqa: SIM118
+    verdict = StopVerdict(expected_phase=expected)
 
     verdict.phase = _latest_phase(conn, task_id)
-    if verdict.phase != "done":
+    if verdict.phase != expected:
         verdict.stopped = True
         verdict.reasons.append(
-            "no done note was ever filed"
+            f"no {expected} note was ever filed"
             if verdict.phase is None
-            else f"the latest progress note is {verdict.phase!r}, not a done note"
+            else f"the latest progress note is {verdict.phase!r}, not a {expected} note"
         )
 
-    unpushed = stacks.unpushed_commits(conn, task)
+    unpushed = stacks.unpushed_commits(conn, task) if expected == "done" else 0
     verdict.unpushed = unpushed
     if unpushed > 0:
         verdict.stopped = True
@@ -212,11 +219,27 @@ def push_lease_branch(conn, task_id: int) -> PushResult:
     commits survive. A rejected push is not raised: it comes back as a result
     carrying the remote's own words, which is what the manager needs to read.
     """
-    from middle_manager import stacks
+    from middle_manager import lifecycle, stacks
 
     task = store.get_task(conn, task_id)
     if task is None:
         return PushResult(task_id=task_id, pushed=False, stderr="there is no such task")
+    try:
+        lifecycle.require_live_lease(conn, task_id)
+    except lifecycle.LifecycleError as exc:
+        reason = str(exc)
+        store.append_event(
+            conn,
+            kind="push_skipped_no_live_lease",
+            payload={
+                "task_id": task_id,
+                "summary": f"post-turn push skipped: {reason}",
+                "reason": reason,
+            },
+            run_id=task["run_id"],
+            task_id=task_id,
+        )
+        return PushResult(task_id=task_id, pushed=False, stderr=reason)
     worktree, branch = task["worktree_path"], task["branch"]
     if not worktree or not branch:
         return PushResult(
@@ -318,4 +341,5 @@ def latest_stop_verdict(conn, task_id: int) -> StopVerdict | None:
         unpushed=int(payload.get("unpushed") or 0),
         phase=payload.get("phase"),
         background_command=payload.get("background_command"),
+        expected_phase=payload.get("expected_phase") or "done",
     )
