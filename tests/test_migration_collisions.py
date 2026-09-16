@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from middle_manager import cli, migrations, repos
 from middle_manager.state import init_db
 from middle_manager.state.db import _column_names
@@ -53,6 +55,26 @@ def test_the_default_glob_finds_alembic_revisions_at_any_depth() -> None:
     assert migrations.matches("services/api/alembic/versions/aaa.py", glob)
     assert not migrations.matches("backend/models/events.py", glob)
     assert not migrations.matches("backend/alembic/env.py", glob)
+
+
+@pytest.mark.parametrize(
+    ("path", "glob", "expected"),
+    [
+        ("alembic/versions/aaa.py", migrations.DEFAULT_MIGRATIONS_GLOB, True),
+        ("services/api/alembic/versions/aaa.py", "**/alembic/versions/*.py", True),
+        ("db/changes/0007.sql", "db/changes/*.sql", True),
+        ("db/changes/nested/0007.sql", "db/changes/*.sql", False),
+        ("db/changes/a1.sql", "db/changes/??.sql", True),
+        ("db/changes/a/1.sql", "db/changes/??.sql", False),
+        ("db/changes/7.sql", "db/changes/[0-9].sql", True),
+        ("db/changes/x.sql", "db/changes/[0-9].sql", False),
+        ("backend/models/events.py", "**/alembic/versions/*.py", False),
+    ],
+)
+def test_migration_globs_have_the_same_segment_semantics_on_every_python(
+    path: str, glob: str, expected: bool
+) -> None:
+    assert migrations.matches(path, glob) is expected
 
 
 def test_down_revision_is_read_from_every_shape_alembic_writes() -> None:
