@@ -233,6 +233,10 @@ class SupervisorServer:
                         prior_attempt=request.get("prior_attempt"),
                         brief_path=request.get("brief_path"),
                         ends_at=request.get("ends_at") or "done",
+                        expect_base=request.get("expect_base"),
+                        starting_sha=request.get("starting_sha"),
+                        accepted_preflight=request.get("accepted_preflight"),
+                        preflight_reason=request.get("preflight_reason"),
                     ),
                 }
             if cmd == "task_status":

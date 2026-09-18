@@ -370,6 +370,14 @@ When the user gives you an objective:
    Markdown heading, so `--title` is only for overriding it (and is still required
    when you dispatch without a brief). Prefer the smallest eligible worker; the
    ceiling is enforced in code, so you cannot exceed it by accident.
+   Dispatch refuses a remote, starting commit, lease or gate the worker could not
+   trust: an origin naming another repository than the forge, a starting commit or
+   `--base` branch the forge does not have, a lease cut at the wrong commit, or a
+   recorded local gate a Claude worker's allowlist would deny (or whose `make`
+   target is missing at base). Fix the cause, usually `mm repo sync <repo>` or
+   `mm repo set <repo> --local-gate ...`. When you knowingly accept one, say so by
+   name: `--accept-preflight <remote|base|lease|gate> --reason "..."`. Each is recorded
+   on the task (see [`task-lifecycle.md`](task-lifecycle.md)).
    Every brief opens with four outcome sections — `## Goals` (observable outcomes,
    acceptance criteria, the authoritative contract), `## Intent` (why, for whom, the
    outcome as distinct from any suggested approach), `## In scope` and `## Out of
