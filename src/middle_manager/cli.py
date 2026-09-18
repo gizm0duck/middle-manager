@@ -8,9 +8,11 @@ as milestones land. M1 provides: setup, config, doctor, repo, status, version.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+from pathlib import Path
 
 from middle_manager import __version__
 from middle_manager.lifecycle import TASK_STATUSES
@@ -261,12 +263,43 @@ def _cmd_repo(args: argparse.Namespace) -> int:
 
 
 def _cmd_supervisor(args: argparse.Namespace) -> int:
+    from middle_manager import daemon
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
-    from middle_manager.supervisor.server import SupervisorServer, default_socket_path
+    from middle_manager.supervisor.server import (
+        SupervisorOwned,
+        SupervisorServer,
+        default_socket_path,
+    )
+
+    if args.supervisor_cmd == "start" or (
+        args.supervisor_cmd == "serve" and getattr(args, "detach", False)
+    ):
+        # Detached: its own session, no harness-tracked parent to be reclaimed
+        # under memory pressure (issue #80). The parent returns once the child
+        # holds the owner lock and is listening.
+        def body(ready) -> None:
+            import signal as _signal
+
+            server = SupervisorServer()
+            try:
+                server._bind()
+            except SupervisorOwned as exc:
+                ready(f"refused: {exc}")
+                return
+            _signal.signal(_signal.SIGTERM, lambda *_: server._stop.set())
+            print(f"supervisor listening on {server.socket_path} (detached)", flush=True)
+            ready("ok")
+            server._serve_loop()
+
+        try:
+            pid, log = daemon.detach("supervisor", body)
+        except daemon.DetachError as exc:
+            print(f"refusing to start: {exc}", file=sys.stderr)
+            return 1
+        print(f"supervisor started detached (pid {pid}) at {default_socket_path()}; log {log}")
+        return 0
 
     if args.supervisor_cmd == "serve":
-        from middle_manager.supervisor.server import SupervisorOwned
-
         server = SupervisorServer()
         try:
             server._bind()
@@ -285,7 +318,11 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     try:
         if args.supervisor_cmd == "status":
             resp = client.ping()
-            print(f"supervisor up (pid {resp.get('pid')}) at {default_socket_path()}")
+            detached = daemon.running_pid("supervisor")
+            how = " (detached)" if detached == resp.get("pid") else ""
+            print(f"supervisor up (pid {resp.get('pid')}){how} at {default_socket_path()}")
+            if how:
+                print(f"log: {daemon.log_path('supervisor')}")
             return 0
         if args.supervisor_cmd == "stop":
             client.shutdown()
@@ -327,6 +364,14 @@ def _cmd_brief(args: argparse.Namespace) -> int:
         print(f"brief lint: {exc}", file=sys.stderr)
         return 1
     findings = brief_lint.lint_brief(text, ends_at=args.ends_at)
+    if args.provider == "claude":
+        from middle_manager.providers.claude import effective_allowed_tools
+
+        allowed, _source = effective_allowed_tools()
+        findings += brief_lint.allowlist_findings(text, allowed)
+    if args.prior_attempt is not None:
+        findings += brief_lint.prior_attempt_findings(text, args.prior_attempt)
+    findings.sort(key=lambda f: f.line)
     kind = "defect brief" if brief_lint.is_defect_brief(text) else "brief"
     if not findings:
         print(f"{args.file}: {kind}, no findings")
@@ -364,8 +409,37 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except preflight.PreflightError as exc:
         print(f"dispatch refused: {exc}", file=sys.stderr)
         return 1
+    # An omitted --provider means "whatever this instance runs workers as", never
+    # the stub provider: defaulting to `fake` sent a real task to a fake worker on
+    # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
+    provider = args.provider or default_worker_provider()
     if args.brief:
         findings = brief_lint.lint_brief(instructions, ends_at=args.ends_at)
+        # The worker's actual command surface, and the history of the objective
+        # (issue #79): friction a brief can avoid before the worker is out the door.
+        if provider == "claude":
+            from middle_manager.providers.claude import effective_allowed_tools
+
+            allowed, _source = effective_allowed_tools()
+            findings += brief_lint.allowlist_findings(instructions, allowed)
+        prior_note = None
+        with contextlib.suppress(Exception):
+            from middle_manager import prior_attempts
+            from middle_manager.state import init_db, store
+
+            conn = init_db()
+            repo_row = store.get_repo(conn, args.repo)
+            guess = args.title or preflight.title_from_brief(instructions) or ""
+            prior = prior_attempts.for_dispatch(
+                conn,
+                repo_row["id"] if repo_row is not None else None,
+                guess,
+                explicit=args.prior_attempt,
+                brief_path=args.brief,
+            )
+            prior_note = prior.describe() if prior is not None else None
+        findings += brief_lint.prior_attempt_findings(instructions, prior_note)
+        findings.sort(key=lambda f: f.line)
         if findings:
             # Wrong premises and self-contradicting scope cost 25 and 13 reflections
             # in cycle 4 (issue #59); say so before the worker is out the door.
@@ -391,10 +465,6 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             return 1
         print(f'objective taken from the brief\'s first heading: "{title}"')
 
-    # An omitted --provider means "whatever this instance runs workers as", never
-    # the stub provider: defaulting to `fake` sent a real task to a fake worker on
-    # 2026-09-04, which pushed a stub branch to a live GitHub remote (issue #49).
-    provider = args.provider or default_worker_provider()
     if provider == "fake":
         from middle_manager import repos
 
@@ -418,6 +488,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             base=args.base,
             stack_on=args.stack_on,
+            prior_attempt=args.prior_attempt,
+            brief_path=str(Path(args.brief).expanduser().resolve()) if args.brief else None,
             ends_at=args.ends_at,
         )
     except SupervisorUnavailable as exc:
@@ -427,6 +499,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"dispatch failed: {resp.get('error')}", file=sys.stderr)
         return 1
     print(f"dispatched task {resp['task_id']} in run {resp['run_id']} (branch {resp['branch']})")
+    if resp.get("prior_attempt"):
+        print(
+            f"prior attempt: task {resp['prior_attempt']} carried this objective before; the "
+            "worker's environment block says how it ended"
+        )
+    if resp.get("routing"):
+        r = resp["routing"]
+        print(f"routing: {r['tier']} ({r['model']}/{r['reasoning']}) — {r['rule']}")
     for advisory in ("migration_advisory", "overlap_advisory"):
         if resp.get(advisory):
             print(resp[advisory])
@@ -782,7 +862,17 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         f"resuming task {args.task_id} (session {resp.get('resumed_session')}) — "
         f"status {resp.get('status', 'in_progress')} (ends at {resp.get('ends_at', args.ends_at)})"
     )
-    return 0
+    if resp.get("worktree_rebuilt"):
+        print(f"worktree rebuilt: {resp['worktree_rebuilt'].get('summary')}")
+    if args.verify_seconds <= 0:
+        return 0
+    # Saying in_progress is not the same as a worker running (issue #80): wait
+    # for the process, and call its absence what it is.
+    from middle_manager import liveness
+
+    seen = liveness.verify(args.task_id, timeout=args.verify_seconds)
+    print(seen.describe(args.task_id), file=sys.stderr if seen.verdict == "missing" else sys.stdout)
+    return 1 if seen.verdict == "missing" else 0
 
 
 def _cmd_steer(args: argparse.Namespace) -> int:
@@ -1114,8 +1204,41 @@ def _cmd_health(args: argparse.Namespace) -> int:
 
 def _cmd_watch(args: argparse.Namespace) -> int:
     """The team heartbeat: one relayable line of state per tick, on a cadence."""
-    from middle_manager import watch
+    from middle_manager import daemon, watch
 
+    if args.stop:
+        pid = daemon.stop("watch")
+        print(f"watch stopped (pid {pid})" if pid else "no detached watch was running")
+        return 0
+    if args.detach:
+        already = daemon.running_pid("watch")
+        if already is not None:
+            print(
+                f"a detached watch is already running (pid {already}); "
+                f"log {daemon.log_path('watch')}"
+            )
+            return 0
+
+        def body(ready) -> None:
+            import signal as _signal
+
+            def _terminate(*_args) -> None:
+                raise KeyboardInterrupt
+
+            _signal.signal(_signal.SIGTERM, _terminate)
+            ready("ok")
+            with contextlib.suppress(KeyboardInterrupt):
+                watch.run(
+                    interval=args.interval, as_json=args.json, exit_when_idle=args.exit_when_idle
+                )
+
+        try:
+            pid, log = daemon.detach("watch", body)
+        except daemon.DetachError as exc:
+            print(f"watch did not start: {exc}", file=sys.stderr)
+            return 1
+        print(f"watch started detached (pid {pid}); ticks go to {log}; `mm watch --stop` ends it")
+        return 0
     try:
         return watch.run(
             interval=args.interval,
@@ -1580,6 +1703,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - status must never crash
         pass
     try:
+        from middle_manager import health
+        from middle_manager.state import init_db
+
+        entries = health.check(init_db(), quiet_after=health.quiet_threshold())
+        dead = [e for e in entries if e["verdict"] == "dead"]
+        quiet = [e for e in entries if e["verdict"] == "quiet"]
+        if dead:
+            ids = ", ".join(str(e["task_id"]) for e in dead)
+            print(
+                f"INCIDENT: {len(dead)} worker process(es) gone with no result — task(s) {ids}; "
+                "`mm reconcile` then `mm resume <id>`"
+            )
+        if quiet:
+            ids = ", ".join(str(e["task_id"]) for e in quiet)
+            print(f"health:  {len(quiet)} quiet worker(s) — task(s) {ids}; see `mm health`")
+    except Exception:  # noqa: BLE001 - status must never crash
+        pass
+    try:
         from middle_manager import assessments
         from middle_manager.state import init_db
 
@@ -1861,7 +2002,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     supervisor = sub.add_parser("supervisor", help="run and control the supervisor")
     ssub = supervisor.add_subparsers(dest="supervisor_cmd", required=True)
-    ssub.add_parser("serve", help="run the supervisor (blocking)")
+    serve = ssub.add_parser("serve", help="run the supervisor (blocking; --detach to daemonize)")
+    serve.add_argument(
+        "--detach",
+        action="store_true",
+        help="run in its own session with logs under .mm/run/ (same as `supervisor start`)",
+    )
+    ssub.add_parser(
+        "start",
+        help=(
+            "start the supervisor detached from this terminal and harness: own session, "
+            "pid in .mm/run/supervisor.pid, log in .mm/run/supervisor.log"
+        ),
+    )
     ssub.add_parser("status", help="ping a running supervisor")
     ssub.add_parser("stop", help="ask a running supervisor to shut down")
     supervisor.set_defaults(func=_cmd_supervisor)
@@ -1905,6 +2058,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["fake", "claude", "codex"],
         help="worker provider (default: the configured one); `fake` only when asked for by name",
     )
+    dispatch.add_argument(
+        "--prior-attempt",
+        dest="prior_attempt",
+        type=int,
+        default=None,
+        help=(
+            "the ended task this dispatch retries, when its title does not match (a closed, "
+            "failed or cancelled task with the same title is found on its own); the brief "
+            "then owes a `## Prior attempt` section and the worker's block names how it ended"
+        ),
+    )
     dispatch.add_argument("--model", default=None, help="worker model (clamped to ceiling)")
     dispatch.add_argument("--reasoning", default=None, help="worker reasoning (clamped to ceiling)")
     dispatch.add_argument(
@@ -1945,6 +2109,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     blint.add_argument("file", help="the brief (Markdown)")
+    blint.add_argument(
+        "--provider",
+        default="claude",
+        choices=["claude", "codex"],
+        help=(
+            "check literal commands against this provider's command surface (default claude: "
+            "the worker allowlist; codex has a real shell and skips the check)"
+        ),
+    )
+    blint.add_argument(
+        "--prior-attempt",
+        dest="prior_attempt",
+        default=None,
+        help="describe the earlier attempt to require a `## Prior attempt` section",
+    )
     blint.add_argument(
         "--ends-at",
         choices=["review", "done"],
@@ -2076,6 +2255,16 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="resume a task's provider session")
     resume.add_argument("task_id", type=int)
     resume.add_argument("--message", default=None, help="answer/steer message")
+    resume.add_argument(
+        "--verify-seconds",
+        dest="verify_seconds",
+        type=float,
+        default=10.0,
+        help=(
+            "after the resume, wait up to this long for a live worker process (or a recorded "
+            "result) and report it; exit 1 if none appears. 0 skips the check"
+        ),
+    )
     resume.add_argument(
         "--ends-at",
         choices=["review", "done"],
@@ -2285,6 +2474,15 @@ def build_parser() -> argparse.ArgumentParser:
             "waiting for the team to have news again"
         ),
     )
+    watch_cmd.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "run in its own session, detached from this terminal and harness, ticks appended "
+            "to .mm/run/watch.log (the harness reclaims a tracked background task first)"
+        ),
+    )
+    watch_cmd.add_argument("--stop", action="store_true", help="stop a detached watch")
     watch_cmd.set_defaults(func=_cmd_watch)
 
     watermark = sub.add_parser(

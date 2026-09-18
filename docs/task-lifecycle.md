@@ -148,7 +148,12 @@ is attributable rather than anonymous.
 `mm resume <task> [--message ...]` flips the task to `in_progress` **before** the
 resumed process is started, so a task that was `failed`, `blocked`, or
 `needs_recovery` stops reading as stalled the moment work resumes rather than
-whenever the new worker happens to emit its first event.
+whenever the new worker happens to emit its first event. Because `in_progress` is
+written first, the command then **verifies liveness**: it waits up to
+`--verify-seconds` (default 10) for a runner with a live process, or a recorded
+result, and prints `worker alive (pid …)` or `already finished`. Nothing appearing
+is reported as an incident and the command exits 1 — on 2026-09-09 three resumes
+went into a supervisor the harness had already killed, and nothing said so.
 
 A released lease identity and its old path are never reused. When that worktree is
 gone, a resumable task gets a **new lease** on the same branch/base, then resume

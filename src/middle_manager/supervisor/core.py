@@ -167,6 +167,8 @@ class Supervisor:
         reasoning: str | None = None,
         base: str | None = None,
         stack_on: int | None = None,
+        prior_attempt: int | None = None,
+        brief_path: str | None = None,
         ends_at: str = "done",
     ) -> dict:
         # A caller that names no provider gets the configured worker provider. It
@@ -248,9 +250,13 @@ class Supervisor:
         except SchemaError as exc:
             raise SupervisorError(f"invalid task packet: {exc}") from exc
 
-        # Enforce the hard worker ceiling for real providers (runtime, not prompt).
+        # Enforce the hard worker ceiling for real providers (runtime, not prompt),
+        # after routing has picked a tier for a brief the caller left unpinned.
+        routing: dict | None = None
         if provider in ("claude", "codex"):
-            model, reasoning = self._resolve_and_enforce(provider, model, reasoning)
+            model, reasoning, routing = self._route_and_enforce(
+                provider, model, reasoning, instructions
+            )
         if provider == "claude":
             # A Claude worker with no allowed tools has no shell: it cannot run the
             # suite, commit, or even report progress. That used to happen silently
@@ -282,6 +288,9 @@ class Supervisor:
                 touched=touched,
                 migration_advisory=migration_advisory,
                 overlap_advisory=overlap_advisory,
+                routing=routing,
+                prior_attempt=prior_attempt,
+                brief_path=brief_path,
                 ends_at=ends_at,
             )
         except BaseException:
@@ -309,6 +318,9 @@ class Supervisor:
         migration_advisory: str | None,
         overlap_advisory: str | None,
         ends_at: str,
+        routing: dict | None = None,
+        prior_attempt: int | None = None,
+        brief_path: str | None = None,
     ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -401,6 +413,7 @@ class Supervisor:
                 "lease": lease.id,
                 "stacked_on": base,
                 "stacked_on_task": stack_on,
+                "routing": routing,
             },
             run_id=run_id,
             task_id=task_id,
@@ -432,16 +445,46 @@ class Supervisor:
         # inside the worktree, the local gate versus CI's full suite, a private
         # database stack assigned to this task, and the push-hook policy. Settled
         # here, recorded on the task, and rendered into the worker's prompt.
-        from middle_manager import environment
+        from middle_manager import environment, prior_attempts
 
+        # A re-dispatch — the same objective a closed or failed task in this
+        # repository carried, or one named by --prior-attempt — tells the worker
+        # how the last try ended, in the block, before it plans (issue #79).
+        prior = None
+        with contextlib.suppress(Exception):
+            prior = prior_attempts.for_dispatch(
+                conn, repo_row["id"], title, explicit=prior_attempt, brief_path=brief_path
+            )
+        if prior is not None and prior.task_id == task_id:
+            prior = None
+        # Which brief file this task came from, so the next attempt at the same
+        # plan position finds this one even after the brief is retitled.
+        with contextlib.suppress(Exception):
+            prior_attempts.record_brief_path(conn, task_id, brief_path)
         prepared = environment.prepare(
             conn,
             repo_row,
             task_id=task_id,
             worktree=lease.worktree_path,
             branch=lease.branch,
+            prior_attempt=prior,
             ends_at=ends_at,
         )
+        if prior is not None:
+            store.update_task_fields(conn, task_id, prior_attempt_task=prior.task_id)
+            store.append_event(
+                conn,
+                kind="prior_attempt_noted",
+                payload={
+                    "task_id": task_id,
+                    "prior_task": prior.task_id,
+                    "prior_status": prior.status,
+                    "reason": prior.reason,
+                    "summary": f"task {task_id} retries {prior.describe()}",
+                },
+                run_id=run_id,
+                task_id=task_id,
+            )
         if prepared.compose_project:
             store.append_event(
                 conn,
@@ -502,8 +545,30 @@ class Supervisor:
             "db_port": prepared.db_port,
             "evidence_path": prepared.evidence_path,
             "overlap_advisory": overlap_advisory,
+            "routing": routing,
+            "prior_attempt": prior.task_id if prior is not None else None,
             "ends_at": ends_at,
         }
+
+    def _route_and_enforce(
+        self, provider: str, model: str | None, reasoning: str | None, instructions: str
+    ) -> tuple[str, str, dict]:
+        """Pick the tier for a fresh dispatch, then prove it is within the ceiling."""
+        from middle_manager import routing as _routing
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            raise SupervisorError(f"run `mm setup` first: {exc}") from exc
+        chosen = _routing.route(
+            config, provider=provider, instructions=instructions, model=model, reasoning=reasoning
+        )
+        model, reasoning = self._resolve_and_enforce(provider, chosen.model, chosen.reasoning)
+        return (
+            model,
+            reasoning,
+            {"model": model, "reasoning": reasoning, "tier": chosen.tier, "rule": chosen.rule},
+        )
 
     def _resolve_and_enforce(
         self, provider: str, model: str | None, reasoning: str | None

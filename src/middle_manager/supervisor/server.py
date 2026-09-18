@@ -230,6 +230,8 @@ class SupervisorServer:
                         reasoning=request.get("reasoning"),
                         base=request.get("base"),
                         stack_on=request.get("stack_on"),
+                        prior_attempt=request.get("prior_attempt"),
+                        brief_path=request.get("brief_path"),
                         ends_at=request.get("ends_at") or "done",
                     ),
                 }

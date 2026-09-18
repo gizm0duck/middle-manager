@@ -40,11 +40,25 @@ something speculative while the product outcome sits unfinished (issue #77).
   worker that knows the difference flags a dead route instead of inventing a second
   source.
 - **In scope.** The concrete capabilities, files or components, changes and
-  verification this task covers — what the worker is authorised to do.
+  verification this task covers — what the worker is authorised to do. End it with a
+  **`Pre-authorised adjacent changes:`** line naming the small packaging or config
+  edits the scope implies (a pyproject entry, a lockfile, a generated file, a copy
+  index) or `none`; the lint asks for it. A packaged-script default once needed a
+  pyproject change no scope item named, and it landed under "Outside scope" (issue
+  #79).
 - **Out of scope.** Explicit exclusions and stopping boundaries, including the
   tempting adjacent work: legacy compatibility, redesigns, speculative abstractions,
   unrelated cleanup, additional hardening not needed for the agreed outcome. Name
   them; "nothing else" is not a boundary a worker can check against.
+
+- **Prior attempt** (re-dispatches only). When this piece of work was tried before — a
+  closed, failed or cancelled task in the repo dispatched from the **same brief file**
+  (the plan-position name, `b7-cli-browser-signin.md`, survives a retitled revision)
+  or with the same title, or one you name with `mm dispatch --prior-attempt <id>` — the
+  brief owes a `## Prior attempt`
+  section: what it did, why it ended, what this attempt does differently. The lint
+  asks for it, and the worker's environment block names the prior task and its
+  closure reason regardless, so the worker never learns mid-task from a repo note.
 
 These four travel. The runtime appends them verbatim to every resume and steer
 packet as a *standing scope* block, so a continuation stands on its own and cannot
@@ -218,6 +232,17 @@ against each other and the worker has to guess which copy is current.
 - **Escalation is built in**: after two identical gate failures with a code fix in
   between, the budget-versus-infrastructure decision goes to the user with the
   evidence — not a third code round.
+
+## 6a. Only name commands the worker can run
+
+`mm dispatch --brief` (and `mm brief lint`) scans a Claude brief's literal commands —
+fenced blocks and inline code that starts with a shell command — against
+`claude.allowed_tools` and warns on each one the allowlist would deny, naming the
+substitute where one is known: `chmod` → `git update-index --chmod=+x <file>` then
+`git checkout-index -f -- <file>`; `unzip` → `python3 -m zipfile -e <archive> <dir>`;
+`rm` → `git rm` / `git clean -f`. Two "Flagged, not done" entries on the first
+delivered connected-agent task were exactly this friction (issue #79). Rewrite the
+command, or do that step yourself before dispatch.
 
 ## 7. Don't restate the environment's command rules
 
