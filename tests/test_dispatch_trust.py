@@ -264,14 +264,16 @@ def spawned(monkeypatch):
     return built
 
 
-def test_a_lease_behind_the_forge_is_refused_released_and_no_worker_runs(
-    stale_local_origin, server, spawned, tmp_path, capsys
+def test_a_lease_behind_its_origin_with_no_forge_is_refused_released_and_no_worker_runs(
+    registered, server, spawned, tmp_path, capsys
 ) -> None:
-    added, ahead = stale_local_origin
-    stale = _git(added.local_path, "rev-parse", "HEAD")
+    """With a forge, a default lease is moved onto its main; with none it stays put."""
+    store.update_repo_fields(init_db(), registered.name, forge_url=None)
+    stale = _git(registered.local_path, "rev-parse", "HEAD")
+    ahead = _commit(registered.origin, "new.txt", "only on origin\n")
 
     rc = _dispatch(
-        added.name,
+        registered.name,
         "--provider",
         "fake",
         brief_text=f"# Do it\n\nyou must see `{ahead}`.\n",

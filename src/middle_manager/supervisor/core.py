@@ -404,18 +404,24 @@ class Supervisor:
             )
             raise SupervisorError(f"task {task_id}: no worktree lease: {exc}") from exc
         base_sha = lease.base_sha
-        if base:
-            # Stacked work starts from the exact tip of the branch it builds on, not
-            # from the repo's base. A worker cannot be redirected after it starts,
-            # and a wrong starting commit cost a dispatch on 2026-08-30.
+        # Stacked work starts from the exact tip of the branch it builds on, not
+        # from the repo's base. A worker cannot be redirected after it starts,
+        # and a wrong starting commit cost a dispatch on 2026-08-30. A default
+        # dispatch starts from the forge's default branch the same way: a reused
+        # pool slot is parked wherever its last task left it, and on 2026-09-18
+        # that refused a correct dispatch at the lease check. No forge, no reset.
+        start_branch = base
+        if not start_branch and repo_row["forge_url"]:
+            start_branch = repo_row["default_branch"] or "main"
+        if start_branch:
             try:
                 from middle_manager import repos as _repos
 
                 base_sha = _start_from_branch(
                     lease.worktree_path,
-                    base,
+                    start_branch,
                     _repos.upstream_remote(repo_row),
-                    local_source=_lease_worktree_for_branch(conn, base),
+                    local_source=_lease_worktree_for_branch(conn, base) if base else None,
                 )
             except SupervisorError as exc:
                 store.set_task_status(conn, task_id, "failed")
