@@ -87,9 +87,23 @@ brief and the packet the worker receives after a steer.
   the worker must fill: "Outside scope, required to build" and "Flagged, not done".
 - **The plan-note gate.** Require a `--phase plan` note (≤ 16 lines) before code that
   maps each Goal to the files that deliver it and names anything the plan would need
-  that Out of scope excludes — and say you will read it against the four sections.
-  A plan that serves a mechanism no Goal asks for, or that quietly reaches into an
-  exclusion, is steered before implementation, not reviewed after it.
+  that Out of scope excludes. The section states exactly one of
+  `blocking: stop after posting and wait for the manager's reply` or
+  `non-blocking: post it, then proceed`; `mm brief lint` flags a plan note with
+  neither. Four workers proceeded past a gate that never said whether to wait (tasks
+  245, 247, 248, 252); where a brief said so, workers stopped and were steered
+  before code (tasks 297, 298, 300). A plan that serves a mechanism no Goal asks for,
+  or that quietly reaches into an exclusion, is steered before implementation, not
+  reviewed after it.
+- **External facts are cited.** Every external contract the brief depends on — a
+  package release and its API, a route, an envelope field — is stated with its source
+  (file and line in a local clone, or the release tag) or explicitly marked `unknown`.
+  Four tasks lost time to unstated external facts (237, 241, 242, 243).
+- **Release and version-bump briefs.** The file list is the output of
+  `git show --stat <previous release commit>`, pasted with that command, never
+  transcribed; the previous release commit is the release commit, not the merge.
+  `mm brief lint` flags a release brief that lists files without the command. Three
+  release briefs repeated the same wrong eight-file list (tasks 235, 239, 246).
 
 ## 2. UI work: name the design reference
 
