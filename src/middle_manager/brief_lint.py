@@ -30,6 +30,12 @@ sits unfinished. Check 6 asks only that each section exists and says something
 :func:`standing_scope` carries into every resume and steer packet, so a
 continuation is self-contained and cannot silently drop a boundary.
 
+Two more contract checks apply to every brief (issue #96). A plan-note section
+must say whether the worker waits after posting — four workers proceeded past a
+gate that never said. A release or version-bump brief that lists files must
+carry the ``git show --stat`` command the list came from — three release briefs
+repeated the same wrong hand-transcribed list.
+
 The heuristics are deliberately narrow: a false positive costs the manager's
 trust in the lint, a miss costs one more reflection.
 """
@@ -73,6 +79,18 @@ _FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _PRIOR_ATTEMPT = re.compile(r"^prior[ -]attempts?\b")
 _PRE_AUTHORISED = re.compile(r"pre[ -]?authori[sz]ed adjacent changes?", re.IGNORECASE)
+#: "Plan note" and "Plan-note gate" headings, lowercased by the classifier.
+_PLAN_NOTE_HEADING = re.compile(r"\bplan[ -]note\b")
+#: "non-blocking" matches too: the word boundary sits at the hyphen.
+_BLOCKING = re.compile(r"\bblocking\b", re.IGNORECASE)
+_RELEASE_TITLE = re.compile(r"\brelease\b|\bversion[ -]bump\b", re.IGNORECASE)
+_GIT_SHOW_STAT = re.compile(r"\bgit\s+show\s+--stat\b")
+#: A file named in a list: an optional path, a stem of two or more characters (so
+#: "e.g." is not a file), and a common source or packaging extension.
+_FILE_TOKEN = re.compile(
+    r"(?<![\w./-])(?:[\w.-]+/)*[\w-][\w.-]+"
+    r"\.(?:md|py|toml|lock|json|ya?ml|txt|cfg|ini|sh|js|ts|tsx|swift|plist|rs|go)(?![\w/-])"
+)
 
 #: Words that open a shell command when they start a code span. Inline code
 #: mostly holds identifiers, so only a span whose first word is one of these
@@ -632,6 +650,54 @@ def _check_outcome_sections(lines: list[_Line]) -> list[Finding]:
     return findings
 
 
+def _check_plan_note_blocking(lines: list[_Line]) -> list[Finding]:
+    """A plan-note section that never says whether the worker waits after posting it."""
+    findings: list[Finding] = []
+    for line in lines:
+        heading = _own_heading(line)
+        if heading is None or not _PLAN_NOTE_HEADING.search(heading):
+            continue
+        section = [line, *_section_body(lines, line)]
+        if any(_BLOCKING.search(ln.text) for ln in section):
+            continue
+        findings.append(
+            Finding(
+                line.number,
+                "plan note does not say whether to block — add `blocking: stop after posting "
+                "and wait for the manager's reply` or `non-blocking: post it, then proceed`; "
+                "a worker with no channel to wait on proceeds",
+            )
+        )
+    return findings
+
+
+def _check_release_file_list(lines: list[_Line]) -> list[Finding]:
+    """A release brief whose file list was typed out instead of pasted from git."""
+    title = next(
+        (ln for ln in lines if (m := _HEADING.match(ln.text)) and len(m.group(1)) == 1), None
+    )
+    if title is None or not _RELEASE_TITLE.search(title.text):
+        return []
+    if any(_GIT_SHOW_STAT.search(ln.text) for ln in lines):
+        return []
+    listed = [
+        ln
+        for ln in lines
+        if (_ANY_BULLET.match(ln.text) or _TABLE_ROW.match(ln.text)) and _FILE_TOKEN.search(ln.text)
+    ]
+    files = {token for ln in listed for token in _FILE_TOKEN.findall(ln.text)}
+    if len(files) < 2:
+        return []
+    return [
+        Finding(
+            listed[0].number,
+            "release brief lists files with no `git show --stat` — paste the file list from "
+            "`git show --stat <previous release commit>` (the release commit, not the merge) "
+            "with that command, never transcribed by hand",
+        )
+    ]
+
+
 def _check_terminal_phase(lines: list[_Line], ends_at: str) -> list[Finding]:
     """Flag only directive-shaped terminal language that disagrees with dispatch."""
     if ends_at == "done":
@@ -682,6 +748,8 @@ def lint_brief(text: str, *, ends_at: str = "done") -> list[Finding]:
     findings += _check_self_consistency(lines)
     findings += _check_evidence_paths(lines)
     findings += _check_terminal_phase(lines, ends_at)
+    findings += _check_plan_note_blocking(lines)
+    findings += _check_release_file_list(lines)
     return sorted(findings, key=lambda f: f.line)
 
 

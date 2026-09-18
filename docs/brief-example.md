@@ -74,9 +74,11 @@ scope section excludes; never invent a substitute requirement.
 
 ## Plan note
 
+blocking: stop after posting and wait for the manager's reply.
+
 Before any code, `mm progress <task> --phase plan --note …` (≤ 16 lines) mapping
 each Goal to the files that deliver it and naming anything you would need that
-Out of scope excludes. The manager reads it against this brief before you go on.
+Out of scope excludes.
 
 ## Closeout checklist
 
