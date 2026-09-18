@@ -376,8 +376,10 @@ When the user gives you an objective:
    recorded local gate a Claude worker's allowlist would deny (or whose `make`
    target is missing at base). Fix the cause, usually `mm repo sync <repo>` or
    `mm repo set <repo> --local-gate ...`. When you knowingly accept one, say so by
-   name: `--accept-preflight <remote|base|lease|gate> --reason "..."`. Each is recorded
-   on the task (see [`task-lifecycle.md`](task-lifecycle.md)).
+   name: `--accept-preflight <remote|base|lease|gate|overlap|empty-parent> --reason
+   "..."`. Each is recorded on the task (see [`task-lifecycle.md`](task-lifecycle.md)).
+   Dispatch also refuses to sequence work badly: see "Stacked pull requests" below
+   for `overlap` and `empty-parent`.
    Every brief opens with four outcome sections — `## Goals` (observable outcomes,
    acceptance criteria, the authoritative contract), `## Intent` (why, for whom, the
    outcome as distinct from any suggested approach), `## In scope` and `## Out of
@@ -494,8 +496,12 @@ that see one slice with no context.
   opens the pull request against it without being told again. (`--base <branch>`
   still works when you genuinely mean a branch rather than a task.) The parent
   does not have to have pushed: a lease branch the forge has not seen yet is
-  taken from the base clone, so every layer of a stack can be dispatched the
-  moment its brief is ready — never poll the forge for the parent's branch.
+  taken from the base clone, so a layer can be dispatched as soon as the layer
+  below has committed. It does have to have *something*: `--stack-on` a parent
+  (or `--base` an in-flight task's lease branch) with no commits beyond its own
+  base, on the forge or in its lease worktree, is refused as `empty-parent` —
+  the child would start from, and record, the parent's base (`main`), which is
+  how a child became a sibling on 2026-09-17. Wait for the parent's first push.
 - **`mm stack <task_id>` is how you read a stack.** It renders bottom-up — the
   order it has to merge in — with each layer's branch, pull request and its base,
   review state, and whether that base still matches the layer below, which is the
@@ -509,10 +515,14 @@ that see one slice with no context.
 - **Independent changes still get independent pull requests.** Stack when the
   second change builds on, touches the same files as, or would conflict with the
   first. Two unrelated fixes in one repository are two bottom layers, not a stack.
-  `mm dispatch` tells you when a brief names files a task in flight is already
-  touching (put a `Touches:` line in every brief so it can), and suggests the
-  `--stack-on`; four parallel tasks on one module cost three hand-resolved
-  conflicts and three extra CI runs on 2026-09-06. `mm review show` and the
+  `mm dispatch` refuses a brief that names files a task in flight in the same
+  repository is already touching (put a `Touches:` line in every brief so it
+  can), naming each task, its paths, and the `--stack-on <id>` to use instead; the
+  task you stack on, and the stack under it, are never counted. Four parallel
+  tasks on one module cost three hand-resolved conflicts and three extra CI runs
+  on 2026-09-06, and the old printed suggestion was missed on a later dispatch. When
+  two siblings on the same files really are intended, say so on the record:
+  `--accept-preflight overlap --reason "..."`. `mm review show` and the
   pull request body then state the merge order, and `mm deliver` will not open
   an upper layer past an unmerged parent unless you pass `--base` yourself.
 - **Merge bottom-up, one layer at a time, only when merging is authorised.** After

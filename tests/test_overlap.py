@@ -1,4 +1,4 @@
-"""Two tasks in one repository editing the same files are named at dispatch (issue #61)."""
+"""Two tasks in one repository editing the same files are refused at dispatch (#61, #97)."""
 
 from __future__ import annotations
 
@@ -149,13 +149,12 @@ def test_dispatch_names_the_in_flight_task_touching_the_same_module(server, modu
         title="add a card",
         instructions="# Card\n\nEdit `src/radar/compose.py` to register the card.\n",
     )
-    assert second["ok"], second
-    advisory = second["overlap_advisory"]
-    assert advisory, "the second dispatch should have been told about the first"
-    assert f'task {first["task_id"]} "split the composer"' in advisory
-    assert "src/radar/compose.py" in advisory
-    assert f"--stack-on {first['task_id']}" in advisory
-    _wait_terminal(client, second["task_id"])
+    assert not second["ok"], "the second dispatch should have been refused for the first"
+    refusal = second["error"]
+    assert f'task {first["task_id"]} "split the composer"' in refusal
+    assert "src/radar/compose.py" in refusal
+    assert f"--stack-on {first['task_id']}" in refusal
+    assert "Nothing was refused" not in refusal
 
     # A different file in the same tree: nothing to say.
     third = client.dispatch_task(
@@ -166,16 +165,14 @@ def test_dispatch_names_the_in_flight_task_touching_the_same_module(server, modu
     _wait_terminal(client, third["task_id"])
 
     # A module directory covers the files inside it; the task being stacked on
-    # is not reported, the others are.
+    # is not named, the other sibling is.
     fourth = client.dispatch_task(
         repo=added.name,
         title="rework the module",
         instructions="Touches: src/radar/\n",
         stack_on=first["task_id"],
     )
-    assert fourth["ok"], fourth
-    advisory = fourth["overlap_advisory"]
-    assert advisory
-    assert f"--stack-on {first['task_id']}" not in advisory
-    assert f"--stack-on {second['task_id']}" in advisory
-    assert f"--stack-on {third['task_id']}" in advisory
+    assert not fourth["ok"], fourth
+    refusal = fourth["error"]
+    assert f"--stack-on {first['task_id']}" not in refusal
+    assert f"--stack-on {third['task_id']}" in refusal

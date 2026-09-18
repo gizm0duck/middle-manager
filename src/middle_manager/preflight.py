@@ -156,7 +156,9 @@ def archive_brief(repo: str, task_id: int, text: str) -> Path:
 # --------------------------------------------------------------------------- #
 
 #: The checks ``mm dispatch --accept-preflight`` can name. There is no blanket skip.
-CHECKS = ("remote", "base", "lease", "gate")
+#: ``overlap`` and ``empty-parent`` are the sequencing checks the supervisor runs
+#: (issue #97); the rest run in ``mm dispatch`` itself.
+CHECKS = ("remote", "base", "lease", "gate", "overlap", "empty-parent")
 
 #: The starting-commit line the brief templates use: "you must see `ef5f9cc`".
 _STARTING_SHA = re.compile(r"you must see\s+`?([0-9a-f]{7,40})\b`?", re.IGNORECASE)
@@ -506,3 +508,76 @@ def trust_checks(
     for check in accepted:
         trust.overridden.setdefault(check, None)
     return trust
+
+
+# --------------------------------------------------------------------------- #
+# Sequencing: a stack parent must have something to stack on (issue #97).
+#
+# On 2026-09-17 a child was stacked on a parent that had not committed yet. The
+# parent's branch was still its base, so the child started from `main`, recorded
+# `main` as its base, and was a sibling in all but name.
+# --------------------------------------------------------------------------- #
+
+
+def _forge_head(local_path: str, remote: str, branch: str) -> str | None:
+    """The branch's head on ``remote``, with its objects fetched when they are missing."""
+    listed = _git(local_path, "ls-remote", "--quiet", remote, f"refs/heads/{branch}")
+    words = listed.stdout.split() if listed.returncode == 0 else []
+    if not words:
+        return None
+    sha = words[0]
+    if _commit(local_path, sha) is None:
+        _git(local_path, "fetch", "--quiet", remote, branch)
+    return sha
+
+
+def _commits_beyond(cwd: str, base: str, head: str) -> int | None:
+    """How many commits ``head`` has that ``base`` does not; None when git cannot say."""
+    if head == base:
+        return 0
+    proc = _git(cwd, "rev-list", "--count", f"{base}..{head}")
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def empty_parent_refusal(parent, *, local_path: str, remote: str) -> str | None:
+    """Why ``parent`` has nothing to stack on yet, or None when it has (or cannot be judged).
+
+    The parent's branch is looked for where a child's start would find it: on the
+    forge, as the base clone's local branch, and in the parent's lease worktree.
+    It is empty only when it was found somewhere and every copy found has no
+    commits beyond the parent's own base. Uncommitted edits do not count: a child
+    starts from commits.
+    """
+    base, branch = parent["base_sha"], parent["branch"]
+    if not base or not branch:
+        return None
+    heads: list[tuple[str, str, str]] = []
+    forge = _forge_head(local_path, remote, branch)
+    if forge:
+        heads.append((f"on {remote}", local_path, forge))
+    local = _commit(local_path, f"refs/heads/{branch}")
+    if local:
+        heads.append(("in the base clone", local_path, local))
+    worktree = parent["worktree_path"]
+    if worktree and Path(worktree).is_dir():
+        lease_head = _commit(worktree, "HEAD")
+        if lease_head:
+            heads.append(("in its lease worktree", worktree, lease_head))
+    if not heads:
+        return None
+    for _where, cwd, head in heads:
+        if _commits_beyond(cwd, base, head) != 0:
+            return None
+    where = ", ".join(dict.fromkeys(where for where, _cwd, _head in heads))
+    return (
+        f'the stack parent, task {parent["id"]} "{parent["title"]}" (branch {branch}), has no '
+        f"commits beyond its own base {base[:12]} ({where}) — the new worker would start "
+        "from that base, not from the parent's work. Wait for the parent's first push, then "
+        "dispatch again; to start from its base anyway, --accept-preflight empty-parent "
+        "--reason ..."
+    )
