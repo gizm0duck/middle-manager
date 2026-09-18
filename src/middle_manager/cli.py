@@ -2153,13 +2153,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--accept-preflight",
         dest="accept_preflight",
         action="append",
-        choices=["remote", "base", "lease", "gate"],
+        choices=["remote", "base", "lease", "gate", "overlap", "empty-parent"],
         default=[],
         metavar="CHECK",
         help=(
-            "let the dispatch through a failing trust check: remote, base, lease or gate "
-            "(repeatable; there is no blanket skip). Needs --reason; each is recorded as an "
-            "event on the task"
+            "let the dispatch through a failing preflight check: remote, base, lease, gate, "
+            "overlap (in-flight work touches the same files) or empty-parent (the stack "
+            "parent has no commits yet) (repeatable; there is no blanket skip). Needs "
+            "--reason; each is recorded as an event on the task"
         ),
     )
     dispatch.add_argument(

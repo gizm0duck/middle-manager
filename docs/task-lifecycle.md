@@ -33,8 +33,20 @@ gate it cannot trust.
 | `gate` | Before any task exists; Claude dispatches only (Codex workers have a real shell) | A segment of the repo's recorded local gate (split on `&&` and `;`) opens with a `NAME=value` assignment, or is not covered by the worker's allowlist (the brief lint's matching), or runs `make` with a target that is not a rule in the Makefile at the intended base. Targets are **parsed** from the Makefile text (`git show <base>:Makefile`), never executed, so included makefiles are not read. |
 | `lease` | After the lease exists, before the worker starts | The lease HEAD is not the intended base: the `--base` / `--stack-on` branch head or the remote default branch head must match exactly, and the brief's named commit must be HEAD or an ancestor of it. The task is marked `failed` with a `preflight_refused` event naming both SHAs, the lease is released, and no worker runs. Fix: `mm repo sync <repo>`. |
 
-`--accept-preflight <check>` (repeatable; `remote`, `base`, `lease` or `gate`,
-nothing else) lets a dispatch through one check and requires `--reason`. Each
+Two more checks decide whether this worker should start *now*, beside the work
+already in flight (issue #97). Two briefs touched one server module concurrently
+off a pinned starting commit, and a child was stacked on a parent that had not
+committed yet, so it started from `main`. Both run in the supervisor before any
+task row exists; a refusal creates nothing.
+
+| Check | When | Refused when |
+| --- | --- | --- |
+| `overlap` | Before any task exists | An in-flight task in the same repository (a working status, a lease worktree on disk, activity in the last seven days) touches a path the brief touches: its `Touches:` list or its diff against its base. The `--stack-on` task and the stack under it, or the in-flight task whose lease branch `--base` names, are not counted. The refusal names each task, its paths, and the `--stack-on <id>` to use. Delivered, merged and closed tasks are never in flight. |
+| `empty-parent` | Before any task exists | The `--stack-on` parent, or the in-flight task whose lease branch `--base` names, has no commits beyond its own `base_sha` wherever its branch is found: on the forge (`git ls-remote`), as the base clone's branch, or in its lease worktree. One commit anywhere, pushed or not, passes. Fix: wait for the parent's first push. |
+
+`--accept-preflight <check>` (repeatable; `remote`, `base`, `lease`, `gate`,
+`overlap` or `empty-parent`, nothing else) lets a dispatch through one check and
+requires `--reason`. Each
 accepted check is recorded on the task as a `preflight_accepted` event carrying
 the reason and the refusal it waved through. There is no blanket skip.
 
