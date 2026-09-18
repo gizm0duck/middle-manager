@@ -164,6 +164,7 @@ mm supervisor start                    # per-task runners, durable state (detach
 mm worktree list                       # every leased slot: task, state, size
 mm worktree prune --dry-run            # what finished work is still holding disk
 mm dispatch --repo your-repo --title "add health endpoint" --provider claude
+mm dispatch ... --accept-preflight gate --reason "target lands in the parent PR"   # wave one trust check through, on the record
 mm wait <run_id>                       # block until something needs a human
 mm answer <task_id> --answer "use /v2/health" --scope run   # recorded + reused
 mm decision list                       # inspect / invalidate / forget my memory

@@ -170,6 +170,10 @@ class Supervisor:
         prior_attempt: int | None = None,
         brief_path: str | None = None,
         ends_at: str = "done",
+        expect_base: str | None = None,
+        starting_sha: str | None = None,
+        accepted_preflight: list[dict] | None = None,
+        preflight_reason: str | None = None,
     ) -> dict:
         # A caller that names no provider gets the configured worker provider. It
         # used to get `fake`, which on 2026-09-04 sent a real task to a stub worker
@@ -292,6 +296,12 @@ class Supervisor:
                 prior_attempt=prior_attempt,
                 brief_path=brief_path,
                 ends_at=ends_at,
+                trust={
+                    "expect_base": expect_base,
+                    "starting_sha": starting_sha,
+                    "accepted": accepted_preflight or [],
+                    "reason": preflight_reason,
+                },
             )
         except BaseException:
             # Whatever failed — the lease, the branch, provisioning, the adapter's
@@ -321,6 +331,7 @@ class Supervisor:
         routing: dict | None = None,
         prior_attempt: int | None = None,
         brief_path: str | None = None,
+        trust: dict | None = None,
     ) -> dict:
         if run_id is None:
             run_id = store.create_run(conn, title)
@@ -386,6 +397,53 @@ class Supervisor:
                 with contextlib.suppress(Exception):
                     self.release_task_lease(task_id, remove_branch=True)
                 raise
+        # The lease must sit on the base `mm dispatch` resolved from the forge, or
+        # the worker starts on a commit nobody meant (issue #95; tasks 214, 215).
+        trust = trust or {}
+        accepted = {a["check"]: a.get("overridden") for a in trust.get("accepted") or []}
+        from middle_manager import preflight as _preflight
+
+        refusal = _preflight.lease_refusal(
+            lease.worktree_path,
+            expect_base=trust.get("expect_base"),
+            starting_sha=trust.get("starting_sha"),
+        )
+        if refusal is not None and "lease" not in accepted:
+            store.set_task_status(conn, task_id, "failed")
+            store.append_event(
+                conn,
+                kind="preflight_refused",
+                payload={
+                    "task_id": task_id,
+                    "check": "lease",
+                    "expected": refusal.expected,
+                    "actual": refusal.actual,
+                    "summary": refusal.message,
+                },
+                run_id=run_id,
+                task_id=task_id,
+            )
+            with self._lock:
+                self._leases[task_id] = (lease, repo_row["local_path"])
+            with contextlib.suppress(Exception):
+                self.release_task_lease(task_id, remove_branch=True)
+            raise SupervisorError(f"task {task_id}: dispatch refused: {refusal.message}")
+        if refusal is not None:
+            accepted["lease"] = refusal.message
+        for check, overridden in accepted.items():
+            store.append_event(
+                conn,
+                kind="preflight_accepted",
+                payload={
+                    "task_id": task_id,
+                    "check": check,
+                    "reason": trust.get("reason"),
+                    "overridden": overridden,
+                    "summary": f"preflight check {check} accepted: {trust.get('reason')}",
+                },
+                run_id=run_id,
+                task_id=task_id,
+            )
         store.update_task_fields(
             conn,
             task_id,

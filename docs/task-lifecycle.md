@@ -17,6 +17,27 @@ the manager schedules, nags, and reports off it, and the heartbeat treats
 | `needs_recovery` | The runner process vanished without recording a result. |
 | `delivered` | Pushed (and normally a PR opened) after an approved review. |
 
+## Before a worker starts: the trust checks
+
+About 40% of worker reflections in performance assessment 6 named a false start
+`mm` could have caught in a second (issue #95): a gate command the worker's
+allowlist denied, a `make` target missing at base, a lease cut at the wrong
+commit, and a stale local origin that made a correct starting commit look missing.
+`mm dispatch` now checks all four, and a worker never starts on a base, remote or
+gate it cannot trust.
+
+| Check | When | Refused when |
+| --- | --- | --- |
+| `remote` | Before any task exists | The base clone's `origin` is a forge URL naming a different repository than the registered forge (ssh and https spellings of one GitHub repo agree). A local-path origin is a supported registration and passes. Fix: `mm repo add <path> --forge-url ...`. |
+| `base` | Before any task exists, after one `git fetch` of the repo's upstream remote (the forge remote when `origin` is a local path, so a stale checkout never supplies the base) | The brief's "you must see `<sha>`" commit is not on that remote, or the `--base` / `--stack-on` branch is on neither the remote, the base clone, nor the stack parent's worktree. |
+| `gate` | Before any task exists; Claude dispatches only (Codex workers have a real shell) | A segment of the repo's recorded local gate (split on `&&` and `;`) opens with a `NAME=value` assignment, or is not covered by the worker's allowlist (the brief lint's matching), or runs `make` with a target that is not a rule in the Makefile at the intended base. Targets are **parsed** from the Makefile text (`git show <base>:Makefile`), never executed, so included makefiles are not read. |
+| `lease` | After the lease exists, before the worker starts | The lease HEAD is not the intended base: the `--base` / `--stack-on` branch head or the remote default branch head must match exactly, and the brief's named commit must be HEAD or an ancestor of it. The task is marked `failed` with a `preflight_refused` event naming both SHAs, the lease is released, and no worker runs. Fix: `mm repo sync <repo>`. |
+
+`--accept-preflight <check>` (repeatable; `remote`, `base`, `lease` or `gate`,
+nothing else) lets a dispatch through one check and requires `--reason`. Each
+accepted check is recorded on the task as a `preflight_accepted` event carrying
+the reason and the refusal it waved through. There is no blanket skip.
+
 ## A turn ending is not the same as finishing
 
 A Claude worker started the full backend suite, the tool's foreground cap pushed
