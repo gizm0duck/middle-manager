@@ -31,7 +31,7 @@ gate it cannot trust.
 | `remote` | Before any task exists | The base clone's `origin` is a forge URL naming a different repository than the registered forge (ssh and https spellings of one GitHub repo agree). A local-path origin is a supported registration and passes. Fix: `mm repo add <path> --forge-url ...`. |
 | `base` | Before any task exists, after one `git fetch` of the repo's upstream remote (the forge remote when `origin` is a local path, so a stale checkout never supplies the base) | The brief's "you must see `<sha>`" commit is not on that remote, or the `--base` / `--stack-on` branch is on neither the remote, the base clone, nor the stack parent's worktree. |
 | `gate` | Before any task exists; Claude dispatches only (Codex workers have a real shell) | A segment of the repo's recorded local gate (split on `&&` and `;`) opens with a `NAME=value` assignment, or is not covered by the worker's allowlist (the brief lint's matching), or runs `make` with a target that is not a rule in the Makefile at the intended base. Targets are **parsed** from the Makefile text (`git show <base>:Makefile`), never executed, so included makefiles are not read. |
-| `lease` | After the lease exists, before the worker starts | The lease HEAD is not the intended base: the `--base` / `--stack-on` branch head or the remote default branch head must match exactly, and the brief's named commit must be HEAD or an ancestor of it. The task is marked `failed` with a `preflight_refused` event naming both SHAs, the lease is released, and no worker runs. Fix: `mm repo sync <repo>`. |
+| `lease` | After the lease exists and has been moved onto its starting branch, before the worker starts | The lease HEAD is not the intended base: the `--base` / `--stack-on` branch head or the remote default branch head must match exactly, and the brief's named commit must be HEAD or an ancestor of it. The task is marked `failed` with a `preflight_refused` event naming both SHAs, the lease is released, and no worker runs. Fix: `mm repo sync <repo>`. |
 
 Two more checks decide whether this worker should start *now*, beside the work
 already in flight (issue #97). Two briefs touched one server module concurrently
@@ -49,6 +49,15 @@ task row exists; a refusal creates nothing.
 requires `--reason`. Each
 accepted check is recorded on the task as a `preflight_accepted` event carrying
 the reason and the refusal it waved through. There is no blanket skip.
+
+Every fresh lease is moved onto its starting branch before the `lease` check:
+the `--base` / `--stack-on` branch when one is named, and otherwise the repo's
+default branch, fetched from its forge and `git reset --hard` onto. A reused pool
+slot is parked wherever its last task left it; on 2026-09-18 a default dispatch
+got a slot several commits behind a current base clone and was refused, because
+only `--base` and `--stack-on` ever moved a lease. The task's `base_sha` records
+the resulting HEAD. A repo with no forge on record keeps the lease where it was
+cut.
 
 ## A turn ending is not the same as finishing
 
