@@ -1,15 +1,19 @@
 # Middle Manager control-plane developer targets.
 # All Python runs go through uv, respecting versions pinned by pyproject/uv.lock.
 
-.PHONY: help fmt lint test test-live probe clean
+.PHONY: help hooks fmt lint test test-live probe clean
 
 help:
 	@echo "Targets:"
+	@echo "  make hooks      Enable the checked-in git hooks (gitleaks secret scan on commit)"
 	@echo "  make fmt        Format with ruff"
 	@echo "  make lint       Lint with ruff"
 	@echo "  make test       Run hermetic tests (no provider spawning)"
 	@echo "  make test-live  Run opt-in live probe tests (spawns Claude/Codex)"
 	@echo "  make probe      Run the live interrupt/resume probe matrix into .mm/provider-capabilities.json (machine-local)"
+
+hooks:
+	git config core.hooksPath .githooks
 
 fmt:
 	uv run ruff format .

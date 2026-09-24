@@ -276,6 +276,15 @@ make test-live   # opt-in: spawn real Claude/Codex probes
 make probe       # re-run the provider capability matrix
 ```
 
+### Secret scanning on commit
+
+Run `make hooks` once per checkout. It points git at `.githooks/`, whose
+`pre-commit` hook runs [gitleaks](https://github.com/gitleaks/gitleaks) over the
+staged changes and refuses any commit that adds a secret, naming the file, line
+and rule (install it with `brew install gitleaks`). A false positive belongs in
+`.gitleaks.toml`, with a comment saying why it is safe. `git commit --no-verify`
+skips the hook deliberately; use it only when you are sure.
+
 ---
 
 *Anyway. That's me. Clone the repo, open your harness, and tell me what you need.
