@@ -193,11 +193,15 @@ def _cmd_repo(args: argparse.Namespace) -> int:
             from middle_manager.environment import REPO_COLUMNS
 
             changes = {col: getattr(args, col, None) for col in REPO_COLUMNS}
-            asked = args.migrations_glob is not None or any(
-                value is not None for value in changes.values()
+            asked = (
+                args.migrations_glob is not None
+                or args.no_ci is not None
+                or any(value is not None for value in changes.values())
             )
             settings = (
-                set_settings(args.name, migrations_glob=args.migrations_glob, **changes)
+                set_settings(
+                    args.name, migrations_glob=args.migrations_glob, no_ci=args.no_ci, **changes
+                )
                 if asked
                 else get_settings(args.name)
             )
@@ -225,6 +229,8 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                 f"(branch {added.default_branch}, base {short_sha}, "
                 f"forge {added.forge_url})"
             )
+            for note in added.notes:
+                print(f"  {note}")
             return 0
         if args.repo_cmd == "list":
             repos = list_repos()
@@ -848,6 +854,11 @@ def _cmd_stack(args: argparse.Namespace) -> int:
             result = merge_stack(args.id, all_layers=args.all, layer_by_layer=args.layer_by_layer)
             for line in result.notes:
                 print(line)
+            for repaired in result.repaired:
+                print(
+                    f"task {repaired['task_id']}: PR #{repaired['pr']} updated onto the layer "
+                    "below it; CI re-running"
+                )
             for merged in result.merged:
                 print(
                     f"task {merged['task_id']}: PR #{merged['pr']} merged at "
@@ -1952,6 +1963,18 @@ def build_parser() -> argparse.ArgumentParser:
             "where this repo keeps database migrations, so dispatch and review can warn "
             "when two unmerged tasks add one off the same head; default "
             "**/alembic/versions/*.py, empty string restores it"
+        ),
+    )
+    rset.add_argument(
+        "--no-ci",
+        dest="no_ci",
+        nargs="?",
+        const="yes",
+        default=None,
+        metavar="yes|no",
+        help=(
+            "this repository has no CI, so `mm stack merge` may land a layer with no checks "
+            "at all (otherwise no checks means CI has not reported yet); `--no-ci no` clears it"
         ),
     )
     rset.add_argument(

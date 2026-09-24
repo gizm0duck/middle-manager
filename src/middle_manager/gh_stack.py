@@ -136,10 +136,15 @@ def repo_context(conn, task) -> RepoContext:
     )
 
 
-def _chain_layers(conn, task, ctx: RepoContext, *, upto: int | None) -> tuple[list[dict], str]:
+def _chain_layers(
+    conn, task, ctx: RepoContext, *, upto: int | None, stop_at_gap: bool = False
+) -> tuple[list[dict], str, str]:
     """The unmerged layers of a task's chain with their open pull requests, bottom-up.
 
-    Returns the layers and, when one of them cannot be linked, why not.
+    Returns the layers, why the chain cannot be linked (if it cannot), and — with
+    ``stop_at_gap`` — the layer the chain was cut at instead: a stack must be
+    contiguous, so everything below the first layer with no open pull request is
+    linked and the rest waits for its delivery.
     """
     chain = stacks._chain_for_task(conn, int(task["id"]))
     if upto is not None:
@@ -152,7 +157,9 @@ def _chain_layers(conn, task, ctx: RepoContext, *, upto: int | None) -> tuple[li
             continue
         task_id = int(row["id"])
         if not row["branch"]:
-            return layers, f"task {task_id} has no branch yet"
+            if stop_at_gap:
+                return layers, "", f"task {task_id} has no branch yet"
+            return layers, f"task {task_id} has no branch yet", ""
         pr = stacks.pull_request_for(
             row["branch"], cwd=row["worktree_path"] or ctx.cwd, slug=ctx.slug
         )
@@ -165,9 +172,10 @@ def _chain_layers(conn, task, ctx: RepoContext, *, upto: int | None) -> tuple[li
             or not isinstance(number, int)
             or not isinstance(url, str)
         ):
-            return layers, f"task {task_id} has no open pull request to put in the stack"
+            why = f"task {task_id} has no open pull request to put in the stack"
+            return (layers, "", why) if stop_at_gap else (layers, why, "")
         layers.append({"task_id": task_id, "pr": number, "url": url})
-    return layers, ""
+    return layers, "", ""
 
 
 def on_chain(conn, task, base: str | None, default_branch: str) -> bool:
@@ -180,16 +188,25 @@ def on_chain(conn, task, base: str | None, default_branch: str) -> bool:
     return base == parent["branch"]
 
 
-def link_chain(conn, task, *, upto: int | None = None, ctx: RepoContext | None = None) -> dict:
+def link_chain(
+    conn,
+    task,
+    *,
+    upto: int | None = None,
+    ctx: RepoContext | None = None,
+    stop_at_gap: bool = False,
+) -> dict:
     """Register a task's unmerged chain as one GitHub stack. Never raises.
 
     ``upto`` stops the chain at that task (delivery links up to the layer it just
-    opened). Fewer than two unmerged layers is no stack at all and records nothing;
-    anything else records a ``stack_linked`` or ``stack_link_failed`` event on
-    ``task``.
+    opened); ``stop_at_gap`` links up to the last layer with an open pull request
+    instead of refusing at the first one without (re-linking after an unstack must
+    not leave the stack dissolved). Fewer than two layers is no stack at all and
+    records nothing; anything else records a ``stack_linked`` or
+    ``stack_link_failed`` event on ``task``.
     """
     ctx = ctx or repo_context(conn, task)
-    layers, problem = _chain_layers(conn, task, ctx, upto=upto)
+    layers, problem, gap = _chain_layers(conn, task, ctx, upto=upto, stop_at_gap=stop_at_gap)
     outcome = {
         "task_id": int(task["id"]),
         "base": ctx.base,
@@ -199,6 +216,7 @@ def link_chain(conn, task, *, upto: int | None = None, ctx: RepoContext | None =
         "skipped": False,
         "stack": None,
         "detail": problem,
+        "stopped_at": gap or None,
     }
     if not problem and len(layers) < 2:
         outcome.update(skipped=True, detail="fewer than two unmerged layers; nothing to stack")
@@ -227,7 +245,8 @@ def describe_link(outcome: dict | None) -> str | None:
         return None
     prs = ", ".join(f"#{number}" for number in outcome.get("prs") or [])
     if outcome.get("linked"):
-        return f"linked {prs} as a GitHub stack on {outcome['base']}"
+        cut = f" (stopped below {outcome['stopped_at']})" if outcome.get("stopped_at") else ""
+        return f"linked {prs} as a GitHub stack on {outcome['base']}{cut}"
     return f"not linked as a GitHub stack: {outcome.get('detail')}"
 
 
@@ -348,7 +367,7 @@ def retarget(
     changed["unstacked"] = True
     fresh = store.get_task(conn, int(task["id"]))
     if on_chain(conn, fresh, new_base, ctx.base):
-        changed["relinked"] = link_chain(conn, fresh)
+        changed["relinked"] = link_chain(conn, fresh, stop_at_gap=True)
     else:
         changed["relinked"] = None
         changed["note"] = (

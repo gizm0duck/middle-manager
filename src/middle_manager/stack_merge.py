@@ -40,6 +40,8 @@ class StackMergeResult:
     #: "atomic" (one `gh stack merge`) or "layer-by-layer".
     mode: str = "atomic"
     notes: list[str] = field(default_factory=list)
+    #: Layers brought back into order with `gh pr update-branch` (nothing merged then).
+    repaired: list[dict] = field(default_factory=list)
 
 
 def _require_merge_authority() -> None:
@@ -149,7 +151,31 @@ def _not_green(checks: list[dict]) -> tuple[list[str], list[str]]:
     return sorted(red), sorted(running)
 
 
-def _blocked(layer, checks: list[dict]) -> str | None:
+def _repo_facts(conn, task) -> tuple[bool, str]:
+    """Whether the task's repo declared it has no CI, and the repo's name."""
+    from middle_manager import repos
+
+    if not task["repo_id"]:
+        return False, "<repo>"
+    row = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+    if row is None:
+        return False, "<repo>"
+    return repos.has_no_ci(row), row["name"]
+
+
+def _blocked(layer, checks: list[dict], *, no_ci: bool, repo: str) -> str | None:
+    """Why a layer may not merge yet, or None when its checks are green.
+
+    No checks at all is not green: on a repository with CI it means CI has not
+    registered its runs yet, and merging then lands untested work. Only a repository
+    declared to have no CI (`mm repo set <repo> --no-ci`) merges with none.
+    """
+    if not checks and not no_ci:
+        return (
+            f"task {layer.task_id} PR #{layer.pr_number} has no checks at all yet (CI may not "
+            f"have registered them); wait for them, or if {repo} has no CI run "
+            f"`mm repo set {repo} --no-ci`"
+        )
     red, running = _not_green(checks)
     parts = []
     if red:
@@ -196,6 +222,89 @@ def _record(result: StackMergeResult, layer, merged_sha: str, note: str) -> bool
 
 
 # --------------------------------------------------------------------------- #
+# Layers out of order
+# --------------------------------------------------------------------------- #
+
+#: What `gh stack merge` says when an upper layer no longer contains the one below:
+#: "Stack needs to be rebased: PR #159's branch is not a linear descendant of PR #157's".
+_OUT_OF_ORDER = re.compile(r"needs to be rebased|not a linear descendant", re.IGNORECASE)
+_NOT_DESCENDANT = re.compile(r"PR #(\d+)'s branch is not a linear descendant", re.IGNORECASE)
+
+
+def _behind(lower, upper, *, cwd: str | None, slug: str | None) -> bool:
+    """Does ``upper`` lack commits ``lower`` has — is it no longer stacked on it?
+
+    GitHub's ``mergeStateStatus`` says BEHIND when the pull request's base (the
+    layer below) has moved on without it; the compare API answers the same
+    question by commit and does not depend on branch protection. A compare that
+    cannot be read claims nothing: ``gh stack merge`` then says so itself.
+    """
+    if str(upper.pr_merge_state or "").upper() == "BEHIND":
+        return True
+    tool = stacks._pr_tool()
+    if tool is None or not slug or not lower.pr_head or not upper.pr_head:
+        return False
+    proc = stacks._run_forge(
+        [tool, "api", f"repos/{slug}/compare/{lower.pr_head}...{upper.pr_head}"], cwd=cwd
+    )
+    if proc.returncode != 0:
+        return False
+    try:
+        behind_by = json.loads(proc.stdout).get("behind_by")
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return isinstance(behind_by, int) and not isinstance(behind_by, bool) and behind_by > 0
+
+
+def _first_out_of_order(pending: list, *, cwd: str | None, slug: str | None) -> int | None:
+    for index in range(1, len(pending)):
+        if _behind(pending[index - 1], pending[index], cwd=cwd, slug=slug):
+            return index
+    return None
+
+
+def _repair_order(
+    result: StackMergeResult, identifier: int, pending: list, start: int, why: str, ctx
+) -> StackMergeResult:
+    """Bring layers ``start``.. back onto the layer below each, bottom-up, and stop.
+
+    ``gh pr update-branch`` merges each layer's base into it — a normal push, never a
+    force-push. Every layer above a repaired one is behind it afterwards, so all of
+    them are updated. Their CI then re-runs, which the running-checks guard waits
+    out on the next ``mm stack merge``.
+    """
+    tool = stacks._pr_tool()
+    updated: list = []
+    failure = None
+    for layer in pending[start:]:
+        if tool is None:
+            failure = "plain `gh` is unavailable"
+            break
+        argv = [tool, "pr", "update-branch", str(layer.pr_number)] + _repo_flag(ctx.slug)
+        proc = stacks._run_forge(argv, cwd=ctx.cwd)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "forge refused").strip()[:240]
+            failure = f"`gh pr update-branch {layer.pr_number}` failed: {detail}"
+            break
+        updated.append(layer)
+    names = ", ".join(f"task {layer.task_id} (PR #{layer.pr_number})" for layer in updated)
+    result.repaired = [{"task_id": layer.task_id, "pr": layer.pr_number} for layer in updated]
+    if failure:
+        result.stopped = (
+            f"the stack's layers are out of order ({why}); updated {names or 'no layer'} "
+            f"before {failure}. Nothing was merged"
+        )
+    else:
+        result.stopped = (
+            f"the stack's layers are out of order ({why}); updated layers {names} with "
+            "`gh pr update-branch` (a merge push, never a force-push). CI is re-running on "
+            f"them: run `mm stack merge {identifier}` again when they are green. "
+            "Nothing was merged"
+        )
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # The merge
 # --------------------------------------------------------------------------- #
 
@@ -206,9 +315,13 @@ def merge_stack(
     all_layers: bool = False,
     layer_by_layer: bool = False,
     sleep=time.sleep,
-    confirm_attempts: int = 10,
+    confirm_attempts: int = 120,
 ) -> StackMergeResult:
-    """Merge a stack: atomically with ``gh stack``, or layer by layer when asked or forced."""
+    """Merge a stack: atomically with ``gh stack``, or layer by layer when asked or forced.
+
+    A merge is confirmed on the forge every half second, ``confirm_attempts`` times
+    (a minute by default): a stack of several layers can take GitHub that long.
+    """
     _require_merge_authority()
     result = StackMergeResult(identifier)
     if not layer_by_layer:
@@ -233,6 +346,13 @@ def _merge_atomically(
     pending = [layer for layer in layers if not layer.recorded_merged]
     if not pending:
         return result
+    # Naming a layer whose upper layers have no pull request yet merges up to it.
+    named = next((i for i, layer in enumerate(pending) if layer.task_id == identifier), None)
+    if named is not None and any(layer.pr_number is None for layer in pending[named + 1 :]):
+        pending = pending[: named + 1]
+        result.notes.append(
+            f"merging up to task {identifier}: the layers above it have no pull request yet"
+        )
     for layer in pending:
         if layer.pr_number is None:
             result.stopped = f"task {layer.task_id} has no pull request; deliver that layer first"
@@ -260,6 +380,8 @@ def _merge_atomically(
         for row in stacks._chain_for_task(conn, int(top["id"]))
         if not row["merged_at"]
     ]
+    if int(top["id"]) in chain:
+        chain = chain[: chain.index(int(top["id"])) + 1]
     if chain != [layer.task_id for layer in pending]:
         result.stopped = (
             "the unmerged layers are not one chain ("
@@ -268,6 +390,20 @@ def _merge_atomically(
         )
         return result
     ctx = gh_stack.repo_context(conn, top)
+
+    # A bottom layer that took the default branch in (a repository that requires
+    # up-to-date branches) leaves every layer above it off the chain, and GitHub
+    # refuses the stack merge. Repair that first: the CI it re-runs is the wait.
+    out_of_order = _first_out_of_order(pending, cwd=ctx.cwd, slug=ctx.slug)
+    if out_of_order is not None:
+        lower, upper = pending[out_of_order - 1], pending[out_of_order]
+        why = (
+            f"PR #{upper.pr_number}'s branch no longer contains PR #{lower.pr_number}'s, "
+            "so it is not a linear descendant of it"
+        )
+        return _repair_order(result, identifier, pending, out_of_order, why, ctx)
+
+    no_ci, repo_name = _repo_facts(conn, top)
     blocked = []
     for layer in pending:
         try:
@@ -275,14 +411,14 @@ def _merge_atomically(
         except StackError as exc:
             result.stopped = f"task {layer.task_id}: {exc}; nothing was merged"
             return result
-        reason = _blocked(layer, checks)
+        reason = _blocked(layer, checks, no_ci=no_ci, repo=repo_name)
         if reason:
             blocked.append(reason)
     if blocked:
         result.stopped = "nothing was merged: " + "; ".join(blocked)
         return result
 
-    linked = gh_stack.link_chain(conn, top, ctx=ctx)
+    linked = gh_stack.link_chain(conn, top, upto=int(top["id"]), ctx=ctx)
     if not linked["linked"]:
         result.stopped = (
             "could not link the layers as a GitHub stack, so nothing was merged: "
@@ -294,6 +430,18 @@ def _merge_atomically(
     )
     call = gh_stack.merge(pending[-1].pr_number, cwd=ctx.cwd, slug=ctx.slug)
     if not call.ok:
+        if _OUT_OF_ORDER.search(call.detail):
+            named_pr = _NOT_DESCENDANT.search(call.detail)
+            start = next(
+                (
+                    i
+                    for i, layer in enumerate(pending)
+                    if i and named_pr and layer.pr_number == int(named_pr.group(1))
+                ),
+                1,
+            )
+            why = call.detail.splitlines()[0].strip()
+            return _repair_order(result, identifier, pending, start, why, ctx)
         result.stopped = f"the forge refused the stack merge, so nothing was merged: {call.detail}"
         return result
 
@@ -389,8 +537,10 @@ def _merge_layer_by_layer(
             result.stopped = f"task {layer.task_id} disappeared before merge"
             return result
         slug, default_branch, cwd = stacks._repo_context(conn, task)
+        no_ci, repo_name = _repo_facts(conn, task)
         try:
-            reason = _blocked(layer, layer_checks(layer.pr_number, cwd=cwd, slug=slug))
+            checks = layer_checks(layer.pr_number, cwd=cwd, slug=slug)
+            reason = _blocked(layer, checks, no_ci=no_ci, repo=repo_name)
         except StackError as exc:
             result.stopped = str(exc)
             return result

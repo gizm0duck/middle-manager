@@ -114,6 +114,11 @@ red or still-running check that stopped it. Do not merge layer by layer with
 `gh pr update-branch` and a CI run per layer (2026-09-23: five sequential CI runs
 for one stack); `--layer-by-layer` exists for when you have a reason, and say the
 reason. A repository with no branch protection is not a reason — the merge reads
-the full check rollup there. If a task in the stack is resumed or re-delivered
+the full check rollup there (and treats a layer with no checks at all as not yet
+green, unless `mm repo set <repo> --no-ci` says the repository has none). Layers
+out of order are not a reason either: when the bottom layer took `main` in and gh
+says a layer "is not a linear descendant" of the one below, `mm stack merge`
+updates the layers above with `gh pr update-branch` (never a force-push) and stops;
+run it again once their CI is green. If a task in the stack is resumed or re-delivered
 after a layer below merged, fetch and reset its worktree to the rebased remote
 branch first — never force-push a stale head over it.

@@ -44,6 +44,8 @@ class FakeGh:
                 "url": f"https://github.com/{SLUG}/pull/{number}",
                 "title": branch,
                 "isDraft": False,
+                "headRefOid": f"{number:040x}",
+                "mergeStateStatus": "CLEAN",
             }
         self.required: dict[int, subprocess.CompletedProcess | list] = {}
         self.rollup: dict[int, list] = {}
@@ -51,6 +53,9 @@ class FakeGh:
         self.stack_env: list[str | None] = []
         self.edit_refusals = 0
         self.link_output = "Created stack #7 with 4 PRs"
+        #: PR numbers whose branch no longer contains the layer below (compare: behind).
+        self.behind: set[int] = set()
+        self.merge_refusal: str | None = None
 
     def _by_number(self, number: int) -> dict:
         return next(pr for pr in self.prs.values() if pr["number"] == number)
@@ -58,6 +63,14 @@ class FakeGh:
     def forge(self, argv, *, cwd=None):
         self.calls.append(argv[1:])
         verb = argv[1:3]
+        if argv[1] == "api":
+            upper_head = argv[2].rsplit("...", 1)[1]
+            upper = next(pr for pr in self.prs.values() if pr["headRefOid"] == upper_head)
+            behind_by = 3 if upper["number"] in self.behind else 0
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"behind_by": behind_by}), "")
+        if verb == ["pr", "update-branch"]:
+            self.behind.discard(int(argv[3]))
+            return subprocess.CompletedProcess(argv, 0, "", "")
         if verb == ["pr", "view"] and "statusCheckRollup" in argv:
             rows = self.rollup.get(int(argv[3]), [])
             return subprocess.CompletedProcess(argv, 0, json.dumps({"statusCheckRollup": rows}), "")
@@ -106,6 +119,8 @@ class FakeGh:
         if verb == "unstack":
             return subprocess.CompletedProcess(argv, 0, "Stack removed on GitHub", "")
         if verb == "merge":
+            if self.merge_refusal:
+                return subprocess.CompletedProcess(argv, 1, "", self.merge_refusal)
             top = int(argv[3])
             for pr in self.prs.values():
                 if pr["state"] == "OPEN" and pr["number"] <= top:
@@ -342,9 +357,172 @@ def test_layer_by_layer_on_request_never_touches_gh_stack_merge(
     assert [item["task_id"] for item in result.merged] == ids
 
 
+def test_zero_checks_is_not_green_unless_the_repo_says_it_has_no_ci(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    """CI that has not registered its runs yet looks exactly like no CI at all."""
+    ids, branches = _stack(source_repo, 2)
+    fake = FakeGh(branches)
+    for number in (101, 102):
+        fake.required[number] = subprocess.CompletedProcess([], 1, "", NO_REQUIRED)
+    fake.rollup[101] = [{"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    _install(monkeypatch, fake)  # PR #102 has no checks at all
+
+    result = stack_merge.merge_stack(ids[0], sleep=_no_sleep)
+
+    assert fake.stack_calls("merge") == []
+    assert f"task {ids[1]} PR #102 has no checks at all yet" in result.stopped
+    assert "mm repo set source --no-ci" in result.stopped
+    assert f"task {ids[0]} PR #101" not in result.stopped, "the layer with a green check is fine"
+
+    repos.set_settings("source", no_ci="yes")
+    assert "CI: none" in repos.get_settings("source").describe()
+    result = stack_merge.merge_stack(ids[0], sleep=_no_sleep)
+    assert result.stopped is None, result.stopped
+    assert [item["task_id"] for item in result.merged] == ids
+
+
+def test_layers_out_of_order_are_updated_bottom_up_and_nothing_merges(
+    mm_home, source_repo, monkeypatch, capsys
+) -> None:
+    """2026-09-23: the bottom layer took main in, so no layer above descended from it."""
+    from middle_manager.cli import main
+
+    ids, branches = _stack(source_repo, 3)
+    fake = FakeGh(branches)
+    fake.behind = {102}  # layer 2 lacks the merge of main that landed on layer 1
+    _install(monkeypatch, fake)
+
+    assert main(["stack", "merge", str(ids[0])]) == 1
+    captured = capsys.readouterr()
+
+    updates = [call[:3] for call in fake.calls if call[:2] == ["pr", "update-branch"]]
+    assert updates == [["pr", "update-branch", "102"], ["pr", "update-branch", "103"]]
+    assert fake.stack_calls("link") == [] and fake.stack_calls("merge") == []
+    assert not [call for call in fake.calls if "push" in call], "never a force-push"
+    assert f"task {ids[1]}: PR #102 updated onto the layer below it; CI re-running" in (
+        captured.out
+    )
+    assert "not a linear descendant" in captured.err
+    assert f"run `mm stack merge {ids[0]}` again when they are green" in captured.err
+    assert all(not store.get_task(init_db(), task_id)["merged_sha"] for task_id in ids)
+
+
+def test_a_behind_merge_state_is_read_as_out_of_order_too(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 2)
+    fake = FakeGh(branches)
+    fake.prs[branches[1]]["mergeStateStatus"] = "BEHIND"
+    _install(monkeypatch, fake)
+
+    result = stack_merge.merge_stack(ids[0], sleep=_no_sleep)
+
+    assert [item["pr"] for item in result.repaired] == [102]
+    assert fake.stack_calls("merge") == []
+
+
+def test_gh_s_not_a_linear_descendant_refusal_is_repaired_from_the_layer_it_names(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 3)
+    fake = FakeGh(branches)
+    fake.merge_refusal = (
+        "Stack needs to be rebased: PR #103's branch is not a linear descendant of PR #102's branch"
+    )
+    _install(monkeypatch, fake)
+
+    result = stack_merge.merge_stack(ids[0], sleep=_no_sleep)
+
+    updates = [call[:3] for call in fake.calls if call[:2] == ["pr", "update-branch"]]
+    assert updates == [["pr", "update-branch", "103"]]
+    assert "Stack needs to be rebased" in result.stopped
+    assert f"run `mm stack merge {ids[0]}` again when they are green" in result.stopped
+    assert result.merged == []
+
+
+def test_merging_names_a_layer_merges_up_to_it_when_the_layers_above_have_no_pr(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 3)
+    fake = FakeGh(branches)
+    del fake.prs[branches[2]]  # the top layer has not been delivered yet
+    _install(monkeypatch, fake)
+
+    result = stack_merge.merge_stack(ids[1], sleep=_no_sleep)
+
+    assert result.stopped is None, result.stopped
+    assert fake.stack_calls("link")[0][4:] == [fake.prs[b]["url"] for b in branches[:2]]
+    assert fake.stack_calls("merge") == [["stack", "merge", "102", "--yes", "--merge"]]
+    assert [item["task_id"] for item in result.merged] == ids[:2]
+    assert any(f"merging up to task {ids[1]}" in note for note in result.notes)
+    assert not store.get_task(init_db(), ids[2])["merged_sha"]
+
+
+def test_merging_without_merge_authority_raises_and_touches_nothing(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 2)
+    cfg = MMConfig()
+    cfg.authority.merge = False
+    save_config(cfg)
+    fake = FakeGh(branches)
+    _install(monkeypatch, fake)
+
+    for layer_by_layer in (False, True):
+        with pytest.raises(stacks.StackError) as refused:
+            stack_merge.merge_stack(ids[0], layer_by_layer=layer_by_layer, sleep=_no_sleep)
+        assert "merge authority is off" in str(refused.value)
+    assert fake.stack_calls("merge") == [] and fake.stack_calls("link") == []
+    assert not [call for call in fake.calls if call[:2] == ["pr", "merge"]]
+
+
+def test_the_merge_is_confirmed_on_the_forge_for_up_to_a_minute(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 2)
+    fake = FakeGh(branches)
+    _install(monkeypatch, fake)
+    real_stack = fake.stack
+
+    def merge_that_never_shows(argv, *, cwd=None, slug=None):
+        if argv[2] == "merge":
+            fake.calls.append(argv[1:])
+            return subprocess.CompletedProcess(argv, 0, "merge queued", "")
+        return real_stack(argv, cwd=cwd, slug=slug)
+
+    monkeypatch.setattr(gh_stack, "_run", merge_that_never_shows)
+    slept: list[float] = []
+
+    result = stack_merge.merge_stack(ids[0], sleep=slept.append)
+
+    assert 59 <= sum(slept) <= 60
+    assert "has not returned a merge commit" in result.stopped
+
+
 # --------------------------------------------------------------------------- #
 # Retargeting a pull request that sits in a GitHub stack
 # --------------------------------------------------------------------------- #
+
+
+def test_after_an_unstack_the_chain_is_relinked_up_to_the_last_layer_with_an_open_pr(
+    mm_home, source_repo, monkeypatch
+) -> None:
+    ids, branches = _stack(source_repo, 4)
+    fake = FakeGh(branches)
+    del fake.prs[branches[3]]  # the top layer has no pull request yet
+    fake.edit_refusals = 1
+    _install(monkeypatch, fake)
+
+    result = stack_merge.merge_stack(ids[0], layer_by_layer=True, sleep=_no_sleep)
+
+    assert result.stopped is None, result.stopped
+    relink = fake.stack_calls("link")
+    assert len(relink) == 1
+    assert relink[0][4:] == [fake.prs[b]["url"] for b in branches[1:3]], "not dissolved"
+    relinked = result.retargeted[0]["relinked"]
+    assert relinked["linked"] is True
+    assert f"task {ids[3]} has no open pull request" in relinked["stopped_at"]
 
 
 def test_retargeting_a_stacked_pr_unstacks_retargets_and_links_again(
@@ -553,6 +731,19 @@ def test_link_passes_the_forge_default_even_when_origin_head_is_stale(
     gh_stack.link_chain(conn, store.get_task(conn, ids[1]))
 
     assert fake.stack_calls("link")[0][2:4] == ["--base", "main"]
+
+
+@pytest.mark.strict_forge
+def test_repo_add_prints_what_it_could_not_do_about_the_default_branch(
+    tmp_path, mm_home, capsys
+) -> None:
+    """The fixture keeps GitHub offline, so the forge's default cannot be read here."""
+    from conftest import make_git_repo
+    from middle_manager.cli import main
+
+    source = make_git_repo(tmp_path / "widgets")
+    assert main(["repo", "add", source, "--forge-url", f"https://github.com/{SLUG}"]) == 0
+    assert "could not read the forge's default branch" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

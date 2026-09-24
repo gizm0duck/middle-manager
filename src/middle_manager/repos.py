@@ -112,6 +112,7 @@ class AddedRepo:
     default_branch: str | None
     base_sha: str | None
     forge_url: str | None = None
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -289,11 +290,18 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
     # The forge names the default branch; the clone's HEAD is only whatever the
     # source had checked out.
     default_branch = forge_default_branch(str(dest), remote)
+    notes: list[str] = []
     if default_branch:
         if remote != "origin":
-            _git_ok(["fetch", "--quiet", remote, default_branch], cwd=str(dest))
-        point_remote_heads(str(dest), default_branch, [remote, "origin"])
+            rc, _out, err = _git_ok(["fetch", "--quiet", remote, default_branch], cwd=str(dest))
+            if rc != 0:
+                notes.append(f"could not fetch {remote}/{default_branch}: {err or 'git refused'}")
+        notes.extend(point_remote_heads(str(dest), default_branch, [remote, "origin"]))
     else:
+        notes.append(
+            "could not read the forge's default branch; recorded the clone's branch instead "
+            "(`mm repo sync` asks again)"
+        )
         try:
             default_branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=str(dest))
         except RepoError:
@@ -314,7 +322,9 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
     )
     # Seed per-repo memory so learnings about this repo persist across sessions.
     seed_repo_memory(repo_name, origin=source, default_branch=default_branch)
-    return AddedRepo(repo_name, source, str(dest), default_branch, base_sha, resolved_forge)
+    return AddedRepo(
+        repo_name, source, str(dest), default_branch, base_sha, resolved_forge, notes=notes
+    )
 
 
 def list_repos() -> list[dict]:
@@ -372,10 +382,17 @@ class RepoSettings:
     migrations_glob_is_default: bool
     # The environment block a worker is handed at dispatch (issue #60).
     environment: object = None
+    # No CI at all: `mm stack merge` may land a layer with no checks.
+    no_ci: bool = False
 
     def describe(self) -> str:
         origin = "the default" if self.migrations_glob_is_default else "set for this repo"
         lines = [f"{self.repo}: migrations live at {self.migrations_glob} ({origin})"]
+        lines.append(
+            "  CI: none (set with --no-ci; a stack layer with no checks may merge)"
+            if self.no_ci
+            else "  CI: expected (a stack layer with no checks at all does not merge)"
+        )
         if self.environment is not None:
             lines.extend(f"  {line}" for line in self.environment.describe())
         return "\n".join(lines)
@@ -392,11 +409,21 @@ def get_settings(name: str) -> RepoSettings:
         migrations_glob=glob,
         migrations_glob_is_default=glob == DEFAULT_MIGRATIONS_GLOB,
         environment=environment.for_repo(row),
+        no_ci=has_no_ci(row),
     )
 
 
+def has_no_ci(row) -> bool:
+    """Whether a registered repo was declared to have no CI (``mm repo set --no-ci``)."""
+    return bool(row["no_ci"]) if row is not None and "no_ci" in row.keys() else False  # noqa: SIM118
+
+
 def set_settings(
-    name: str, *, migrations_glob: str | None = None, **environment_fields: object
+    name: str,
+    *,
+    migrations_glob: str | None = None,
+    no_ci: str | bool | None = None,
+    **environment_fields: object,
 ) -> RepoSettings:
     """Configure a repo's settings. An empty string puts a field back on the default.
 
@@ -411,6 +438,8 @@ def set_settings(
     if migrations_glob is not None:
         store.update_repo_fields(conn, name, migrations_glob=migrations_glob.strip() or None)
     try:
+        if no_ci is not None:
+            store.update_repo_fields(conn, name, no_ci=1 if environment.parse_bool(no_ci) else None)
         environment.set_fields(conn, name, **environment_fields)
     except environment.RepoEnvironmentError as exc:
         raise RepoError(str(exc)) from exc

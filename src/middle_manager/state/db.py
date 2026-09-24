@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS repos (
     test_db_url_template TEXT,
     source_line_ceiling INTEGER,
     needs_elevated_localhost INTEGER,
+    -- Set when the repository has no CI at all, so `mm stack merge` may land a
+    -- layer that has no checks. Unset: no checks means CI has not reported yet.
+    no_ci INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -332,6 +335,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Where this repo's migrations live. Unset reads as the default glob, so
         # every already-registered repo gets the collision advisory for free.
         conn.execute("ALTER TABLE repos ADD COLUMN migrations_glob TEXT")
+    if "no_ci" not in repo_cols:
+        # A repository with no CI; unset keeps "no checks yet" from reading as green.
+        conn.execute("ALTER TABLE repos ADD COLUMN no_ci INTEGER")
     for col, kind in (
         ("compose_stack", "TEXT"),
         ("db_port_base", "INTEGER"),

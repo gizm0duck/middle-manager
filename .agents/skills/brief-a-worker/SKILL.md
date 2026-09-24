@@ -77,7 +77,9 @@ brief and the packet the worker receives after a steer.
   starting commit for the next layer is the previous task's lease branch, dispatched
   with `mm dispatch --stack-on <previous task id>` so the stack parent is recorded,
   `mm deliver` targets it and links the layers as a GitHub stack, and `mm stack merge`
-  lands the whole stack atomically in one CI pass. The brief still spells it out: `git fetch origin <branch>`
+  lands the whole stack atomically in one CI pass (repairing layers that fell out of
+  order with `gh pr update-branch` first — so a brief never tells a worker to rebase
+  or force-push a layer to fix stack order). The brief still spells it out: `git fetch origin <branch>`
   then `git reset --hard origin/<branch>` and the SHA the worker must see. Never
   "merge the base in" — a fresh worktree loses nothing and a merge fails when main
   has moved. Start from `origin/main` only for a bottom layer or an independent change.

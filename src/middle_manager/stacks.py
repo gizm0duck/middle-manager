@@ -340,7 +340,8 @@ def pull_request_for(
         "view",
         branch,
         "--json",
-        "number,baseRefName,state,isDraft,title,url,mergedAt,mergeCommit",
+        "number,baseRefName,state,isDraft,title,url,mergedAt,mergeCommit,headRefOid,"
+        "mergeStateStatus",
     ]
     if slug:
         argv += ["--repo", slug]
@@ -385,6 +386,10 @@ class Layer:
     pr_base: str | None = None
     pr_state: str | None = None
     pr_url: str | None = None
+    pr_head: str | None = None
+    #: GitHub's mergeStateStatus; BEHIND on an upper layer means it no longer
+    #: contains the layer below it.
+    pr_merge_state: str | None = None
     cascade_pending: bool | None = None
     recorded_merged: bool = False
     next_action: str | None = None
@@ -499,6 +504,8 @@ def stack_layers(identifier: int) -> list[Layer]:
                 "merged" if pr.get("mergedAt") or task["merged_at"] else pr.get("state")
             )
             layer.pr_url = pr.get("url")
+            layer.pr_head = pr.get("headRefOid")
+            layer.pr_merge_state = pr.get("mergeStateStatus")
             if expected_base:
                 layer.cascade_pending = layer.pr_base != expected_base
                 if layer.cascade_pending:
