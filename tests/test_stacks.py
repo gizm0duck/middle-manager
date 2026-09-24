@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from middle_manager import delivery, repos, stacks
+from middle_manager import delivery, repos, stack_merge, stacks
 from middle_manager.config import MMConfig, save_config
 from middle_manager.review import record_review
 from middle_manager.state import init_db, store
@@ -250,7 +250,7 @@ def test_stack_cli_renders_and_refuses_an_unknown_id(mm_home, monkeypatch, capsy
     assert "no task or run" in capsys.readouterr().err
 
 
-def test_native_stack_merge_retargets_then_stops_on_the_next_red_check(
+def test_layer_by_layer_stack_merge_retargets_then_stops_on_the_next_red_check(
     mm_home, source_repo, monkeypatch
 ) -> None:
     cfg = MMConfig()
@@ -339,7 +339,9 @@ def test_native_stack_merge_retargets_then_stops_on_the_next_red_check(
 
     monkeypatch.setattr(stacks, "_pr_tool", lambda: "gh")
     monkeypatch.setattr(stacks, "_run_forge", fake_forge)
-    result = stacks.merge_stack(bottom, all_layers=True, sleep=lambda _seconds: None)
+    result = stack_merge.merge_stack(
+        bottom, all_layers=True, layer_by_layer=True, sleep=lambda _seconds: None
+    )
 
     assert [item["task_id"] for item in result.merged] == [bottom]
     assert prs["stack/middle"]["baseRefName"] == "main"

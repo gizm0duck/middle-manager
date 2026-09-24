@@ -193,11 +193,15 @@ def _cmd_repo(args: argparse.Namespace) -> int:
             from middle_manager.environment import REPO_COLUMNS
 
             changes = {col: getattr(args, col, None) for col in REPO_COLUMNS}
-            asked = args.migrations_glob is not None or any(
-                value is not None for value in changes.values()
+            asked = (
+                args.migrations_glob is not None
+                or args.no_ci is not None
+                or any(value is not None for value in changes.values())
             )
             settings = (
-                set_settings(args.name, migrations_glob=args.migrations_glob, **changes)
+                set_settings(
+                    args.name, migrations_glob=args.migrations_glob, no_ci=args.no_ci, **changes
+                )
                 if asked
                 else get_settings(args.name)
             )
@@ -225,6 +229,8 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                 f"(branch {added.default_branch}, base {short_sha}, "
                 f"forge {added.forge_url})"
             )
+            for note in added.notes:
+                print(f"  {note}")
             return 0
         if args.repo_cmd == "list":
             repos = list_repos()
@@ -837,28 +843,37 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
 
 def _cmd_stack(args: argparse.Namespace) -> int:
     """Render, merge, or rebuild a native pull-request stack."""
-    from middle_manager.stacks import (
-        StackError,
-        merge_stack,
-        rebuild_layer,
-        render_stack,
-        stack_layers,
-    )
+    from middle_manager import compose
+    from middle_manager.stack_merge import merge_stack
+    from middle_manager.stacks import StackError, rebuild_layer, render_stack, stack_layers
 
     try:
         if args.command_or_id == "merge":
             if args.id is None:
                 raise StackError("merge needs a task id")
-            result = merge_stack(args.id, all_layers=args.all)
+            result = merge_stack(args.id, all_layers=args.all, layer_by_layer=args.layer_by_layer)
+            for line in result.notes:
+                print(line)
+            for repaired in result.repaired:
+                print(
+                    f"task {repaired['task_id']}: PR #{repaired['pr']} updated onto the layer "
+                    "below it; CI re-running"
+                )
             for merged in result.merged:
                 print(
                     f"task {merged['task_id']}: PR #{merged['pr']} merged at "
                     f"{merged['merge_commit'][:8]} and recorded"
                 )
+                torn_down = compose.describe(merged.get("compose"))
+                if torn_down:
+                    print(torn_down)
             for changed in result.retargeted:
+                unstacked = (
+                    " (unstacked from its GitHub stack first)" if changed.get("unstacked") else ""
+                )
                 print(
                     f"task {changed['task_id']}: PR #{changed['pr']} retargeted to "
-                    f"{changed['base']}"
+                    f"{changed['base']}{unstacked}"
                 )
             if result.stopped:
                 print(f"stack merge stopped: {result.stopped}", file=sys.stderr)
@@ -1951,6 +1966,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     rset.add_argument(
+        "--no-ci",
+        dest="no_ci",
+        nargs="?",
+        const="yes",
+        default=None,
+        metavar="yes|no",
+        help=(
+            "this repository has no CI, so `mm stack merge` may land a layer with no checks "
+            "at all (otherwise no checks means CI has not reported yet); `--no-ci no` clears it"
+        ),
+    )
+    rset.add_argument(
         "--db-url-template",
         dest="db_url_template",
         default=None,
@@ -2304,9 +2331,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stack.add_argument("id", nargs="?", type=int, help="task id for merge/rebuild")
     stack.add_argument(
+        "--layer-by-layer",
+        action="store_true",
+        help="with merge, merge the lowest layer natively and retarget the next instead of "
+        "one atomic `gh stack merge` (one CI run per layer; only when there is a reason)",
+    )
+    stack.add_argument(
         "--all",
         action="store_true",
-        help="with merge, continue upward until the stack is done or a required check is red",
+        help="when merging layer by layer (asked for, or because `gh stack` is missing), "
+        "continue upward until the stack is done or a check is red",
     )
     stack.add_argument("--json", action="store_true", help="machine-readable output")
     stack.set_defaults(func=_cmd_stack)

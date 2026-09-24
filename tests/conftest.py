@@ -48,6 +48,38 @@ def _fixture_repos_are_their_own_forge(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forge_default_branch_stays_offline(monkeypatch):
+    """Ask a local-path forge for its HEAD; never a real GitHub URL.
+
+    ``repo add`` and ``repo sync`` read the default branch from the forge with
+    ``git ls-remote``. The fixture repos are their own (local) forge, so that stays
+    offline; a test that registers a GitHub URL would otherwise reach the network.
+    """
+    from middle_manager import repos
+
+    real = repos.forge_default_branch
+
+    def forge_default_branch(local_path, remote):
+        if not repos.is_local_remote(repos.remote_url(local_path, remote)):
+            return None
+        return real(local_path, remote)
+
+    monkeypatch.setattr(repos, "forge_default_branch", forge_default_branch)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gh_stack(monkeypatch):
+    """The developer's installed ``gh stack`` must never run from the hermetic suite.
+
+    Without this a stacked delivery or ``mm stack merge`` would link and merge real
+    pull requests. Tests of the native path patch ``gh_stack._gh``/``gh_stack._run``.
+    """
+    from middle_manager import gh_stack
+
+    monkeypatch.setattr(gh_stack, "_gh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_dispatch_defaults_to_fake(request, monkeypatch):
     """A hermetic dispatch that names no provider means the fake one.
 
