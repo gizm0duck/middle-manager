@@ -79,11 +79,36 @@ def _repo_forges() -> list[dict]:
         from middle_manager.repos import list_repos
 
         return [
-            {"name": r["name"], "forge_url": r.get("forge_url"), "origin": r.get("origin")}
+            {
+                "name": r["name"],
+                "forge_url": r.get("forge_url"),
+                "origin": r.get("origin"),
+                "stale_heads": _stale_heads(r),
+            }
             for r in list_repos()
         ]
     except Exception:  # noqa: BLE001 - diagnostics must not crash
         return []
+
+
+def _stale_heads(repo: dict) -> dict:
+    """Remote HEADs in a base clone that name a branch other than the recorded default.
+
+    Read locally, never from the network. ``gh stack link`` without ``--base`` reads
+    ``origin/HEAD``; on 2026-09-23 it named a stale feature branch.
+    """
+    from middle_manager.repos import FORGE_REMOTE, remote_head
+
+    default = repo.get("default_branch")
+    path = repo.get("local_path")
+    if not default or not path:
+        return {}
+    stale = {}
+    for remote in ("origin", FORGE_REMOTE):
+        head = remote_head(path, remote)
+        if head and head != default:
+            stale[remote] = head
+    return stale
 
 
 def collect() -> dict:
@@ -166,6 +191,11 @@ def render_text(data: dict) -> str:
                 lines.append(
                     f"  {r['name']:<24} NO FORGE — deliver cannot open pull requests; "
                     "re-register it with `mm repo add <path> --forge-url <url>`"
+                )
+            for remote, head in (r.get("stale_heads") or {}).items():
+                lines.append(
+                    f"  {r['name']:<24} {remote}/HEAD names {head}, not the default branch "
+                    f"on record; run `mm repo sync {r['name']}`"
                 )
     db = data["state_db"]
     if db.get("present") and db.get("version") is not None:

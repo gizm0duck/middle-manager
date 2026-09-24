@@ -206,9 +206,12 @@ mismatched, or owned by another task, resume refuses and names the
 
 ## Cascade: a worktree whose branch was rewritten upstream
 
-A stack's upper branches are *rebased* when the layer below merges, so a task's
-worktree can be sitting on commits that no longer exist on its own branch. Both
-`mm resume` and `mm deliver` check for that first:
+A stack's upper branches are *rebased* when the layer below merges on its own, so a
+task's worktree can be sitting on commits that no longer exist on its own branch.
+(`mm stack merge` lands a whole stack in one atomic `gh stack merge`, so nothing is
+left above to cascade; this is what happens when a layer merges alone — by hand,
+or with `mm stack merge --layer-by-layer`.) Both `mm resume` and `mm deliver` check
+for that first:
 
 | What git says | What happens |
 | --- | --- |

@@ -332,7 +332,7 @@ def deliver(
         raise DeliveryError(
             f'refusing composition: task {task_id} "{task["title"]}" would carry commits '
             f"from another open task ({carried}). Keep the layer pull requests and merge them "
-            f"bottom-up with `mm stack merge {task_id}`."
+            f"as one stack with `mm stack merge {task_id}`."
         )
 
     # The gate: never ship work that was not reviewed at its current head.
@@ -349,6 +349,7 @@ def deliver(
 
     pr_url: str | None = None
     pr_exists = False
+    pr_created = False
     note = "pushed" if pushed else "no-op"
     if open_pr:
         tool = _pr_tool()
@@ -374,7 +375,7 @@ def deliver(
                 argv += ["--repo", forge_slug]
             proc = _run(argv, cwd=worktree)
             if proc.returncode == 0:
-                pr_exists = True
+                pr_exists = pr_created = True
                 pr_url = extract_pr_url(proc.stdout) or extract_pr_url(proc.stderr)
                 if pr_url is None:
                     pr_url = _lookup_pr_url(tool, branch, forge_slug, worktree)
@@ -396,6 +397,22 @@ def deliver(
                     pr_url = None
                     note = f"pushed; PR creation failed: {proc.stderr.strip()[:200]}"
 
+    # A stacked layer's pull request joins its GitHub stack; an explicit --base for
+    # one that already existed retargets it (unstacking first when GitHub insists).
+    # Neither can fail the delivery: the push and the pull request already happened.
+    stack = None
+    if pr_exists:
+        from middle_manager import gh_stack
+
+        stack = gh_stack.after_delivery(
+            conn,
+            task,
+            base=base,
+            retarget_to_base=explicit_base and not pr_created,
+            cwd=worktree,
+            slug=forge_slug,
+        )
+
     store.set_task_status(conn, task_id, "delivered")
     store.append_event(
         conn,
@@ -411,6 +428,7 @@ def deliver(
             "base": base,
             "base_note": base_note,
             "cascaded": cascaded,
+            "stack": stack,
         },
         run_id=task["run_id"],
         task_id=task_id,
@@ -418,6 +436,7 @@ def deliver(
     for extra in (
         cascaded["summary"] if cascaded else None,
         base_note,
+        *(stack["notes"] if stack else []),
     ):
         if extra:
             note = f"{note}; {extra}"

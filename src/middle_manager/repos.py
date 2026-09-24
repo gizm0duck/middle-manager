@@ -189,6 +189,54 @@ def ensure_forge_remote(local_path: str, forge_url: str | None) -> str:
     return FORGE_REMOTE
 
 
+def forge_default_branch(local_path: str, remote: str) -> str | None:
+    """The default branch the forge itself names, read from ``remote``'s own HEAD.
+
+    ``git ls-remote --symref`` asks the remote, not the clone: a base clone's
+    ``refs/remotes/origin/HEAD`` is whatever it was at clone time — for a clone of a
+    local checkout, the branch that checkout happened to be on — and on 2026-09-23
+    it still named ``feat/repo-picker`` when GitHub's default was ``main``. None
+    when the remote cannot be reached or names no HEAD.
+    """
+    proc = subprocess.run(
+        ["git", "ls-remote", "--symref", remote, "HEAD"],
+        cwd=local_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        ref, _sep, name = line.partition("\t")
+        if ref.startswith("ref: refs/heads/") and name.strip() == "HEAD":
+            return ref.removeprefix("ref: refs/heads/").strip() or None
+    return None
+
+
+def point_remote_heads(local_path: str, branch: str, remotes: list[str]) -> list[str]:
+    """Make each remote's ``HEAD`` in the base clone name ``branch``; notes for any that can't.
+
+    Tools that are not told a base read ``refs/remotes/origin/HEAD`` (``gh stack link``
+    did, and retargeted a stack's bottom pull request onto a stale feature branch).
+    """
+    notes = []
+    for remote in dict.fromkeys(remotes):
+        rc, _out, err = _git_ok(["remote", "set-head", remote, branch], cwd=local_path)
+        if rc != 0:
+            notes.append(f"could not point {remote}/HEAD at {branch}: {err or 'git refused'}")
+    return notes
+
+
+def remote_head(local_path: str, remote: str) -> str | None:
+    """The branch the base clone's ``refs/remotes/<remote>/HEAD`` names, if it has one."""
+    rc, out, _err = _git_ok(
+        ["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], cwd=local_path
+    )
+    return out.split("/", 1)[-1] if rc == 0 and out else None
+
+
 def upstream_remote(row) -> str:
     """The remote a registered repo's work actually travels through."""
     forge = row["forge_url"] if "forge_url" in row.keys() else None  # noqa: SIM118 - sqlite3.Row
@@ -236,13 +284,20 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
         raise RepoError(f"destination {dest} already exists")
 
     _git(["clone", "--quiet", source, str(dest)])
-    ensure_forge_remote(str(dest), resolved_forge)
+    remote = ensure_forge_remote(str(dest), resolved_forge)
 
-    default_branch: str | None
-    try:
-        default_branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=str(dest))
-    except RepoError:
-        default_branch = None
+    # The forge names the default branch; the clone's HEAD is only whatever the
+    # source had checked out.
+    default_branch = forge_default_branch(str(dest), remote)
+    if default_branch:
+        if remote != "origin":
+            _git_ok(["fetch", "--quiet", remote, default_branch], cwd=str(dest))
+        point_remote_heads(str(dest), default_branch, [remote, "origin"])
+    else:
+        try:
+            default_branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=str(dest))
+        except RepoError:
+            default_branch = None
     try:
         base_sha = _git(["rev-parse", "HEAD"], cwd=str(dest))
     except RepoError:
@@ -515,11 +570,24 @@ def sync_repo(name: str, *, clean_stray_mm: bool = False) -> SyncResult:
 
     remote = upstream_remote(row)
     _git(["fetch", "--quiet", "--prune", remote], cwd=local_path)
-    branch = _default_branch(row, remote)
+    forge_branch = forge_default_branch(local_path, remote)
+    branch = forge_branch or _default_branch(row, remote)
     base_sha, moved = _fast_forward(local_path, branch, remote)
     store.update_repo_base_sha(conn, name, base_sha)
+    notes: list[str] = []
     if row["default_branch"] != branch:
         store.update_repo_fields(conn, name, default_branch=branch)
+        if row["default_branch"]:
+            notes.append(
+                f"the forge's default branch is {branch}; the record said "
+                f"{row['default_branch']} and now follows the forge"
+            )
+    if forge_branch:
+        stale = {r: remote_head(local_path, r) for r in dict.fromkeys([remote, "origin"])}
+        notes.extend(point_remote_heads(local_path, branch, list(stale)))
+        for r, was in stale.items():
+            if was and was != branch and remote_head(local_path, r) == branch:
+                notes.append(f"{r}/HEAD named {was}; it now names {branch}, as the forge does")
 
     result = SyncResult(
         name=name,
@@ -529,6 +597,7 @@ def sync_repo(name: str, *, clean_stray_mm: bool = False) -> SyncResult:
         fast_forwarded=moved,
         remote=remote,
         already_current=not moved,
+        notes=notes,
     )
 
     stray = stray_mm_dir(local_path)

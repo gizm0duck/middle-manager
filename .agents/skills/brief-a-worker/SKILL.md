@@ -75,8 +75,9 @@ brief and the packet the worker receives after a steer.
 - **Exact starting commit, in commands.** Related changes in one repository are a
   **stack** by default (see the runtime contract, "Stacked pull requests"): the
   starting commit for the next layer is the previous task's lease branch, dispatched
-  with `mm dispatch --base <previous lease branch>` so the stack parent is recorded and
-  `mm deliver` targets it. The brief still spells it out: `git fetch origin <branch>`
+  with `mm dispatch --stack-on <previous task id>` so the stack parent is recorded,
+  `mm deliver` targets it and links the layers as a GitHub stack, and `mm stack merge`
+  lands the whole stack atomically in one CI pass. The brief still spells it out: `git fetch origin <branch>`
   then `git reset --hard origin/<branch>` and the SHA the worker must see. Never
   "merge the base in" — a fresh worktree loses nothing and a merge fails when main
   has moved. Start from `origin/main` only for a bottom layer or an independent change.
