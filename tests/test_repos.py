@@ -213,19 +213,67 @@ def test_only_a_plain_path_counts_as_a_local_remote() -> None:
         assert not repos.is_local_remote(elsewhere), elsewhere
 
 
+def _clone_forge_from(source: str, monkeypatch) -> list[list[str]]:
+    """Answer a clone of the (GitHub) forge from a local fixture; record what was cloned."""
+    real_git = repos._git
+    clones: list[list[str]] = []
+
+    def fake_git(args, cwd=None):
+        if args[:2] == ["clone", "--quiet"]:
+            clones.append(list(args))
+            real_git(["clone", "--quiet", source, args[-1]], cwd=cwd)
+            return real_git(["remote", "set-url", "origin", args[-2]], cwd=args[-1])
+        return real_git(args, cwd=cwd)
+
+    monkeypatch.setattr(repos, "_git", fake_git)
+    return clones
+
+
 @pytest.mark.strict_forge
-def test_add_from_a_path_takes_the_forge_from_that_path_s_origin(tmp_path, mm_home) -> None:
+def test_add_from_a_path_clones_the_forge_not_the_path(tmp_path, mm_home, monkeypatch) -> None:
+    """A local path only names the repository: the base clone comes from its forge, so
+    task branches are pushed to the forge and never into the person's checkout."""
     source = _make_source_repo(tmp_path / "source")
     subprocess.run(["git", "-C", source, "remote", "add", "origin", GITHUB_URL], check=True)
+    clones = _clone_forge_from(source, monkeypatch)
 
     added = repos.add_repo(source)
+    assert clones == [["clone", "--quiet", GITHUB_URL, added.local_path]]
     assert added.forge_url == GITHUB_URL
-    assert repos.list_repos()[0]["forge_url"] == GITHUB_URL
-    # The base clone's own origin is the local path, so the forge is reachable
-    # through a second remote that worktrees inherit.
-    assert repos.remote_url(added.local_path) == source
-    assert repos.remote_url(added.local_path, repos.FORGE_REMOTE) == GITHUB_URL
-    assert repos.upstream_remote(repos.list_repos()[0]) == repos.FORGE_REMOTE
+    assert added.origin == GITHUB_URL
+    assert repos.list_repos()[0]["origin"] == GITHUB_URL
+    assert repos.remote_url(added.local_path) == GITHUB_URL
+    assert repos.upstream_remote(repos.list_repos()[0]) == "origin"
+
+
+@pytest.mark.strict_forge
+def test_the_same_forge_repository_cannot_be_registered_twice(
+    tmp_path, mm_home, monkeypatch
+) -> None:
+    source = _make_source_repo(tmp_path / "source")
+    subprocess.run(["git", "-C", source, "remote", "add", "origin", GITHUB_URL], check=True)
+    _clone_forge_from(source, monkeypatch)
+    repos.add_repo(source)
+
+    with pytest.raises(repos.RepoError) as exc:
+        repos.add_repo(GITHUB_URL + ".git", name="papaya-infra-delivery")
+    assert "already registered as 'source'" in str(exc.value)
+
+
+def test_nothing_pushes_into_a_checkout_registered_without_a_forge(tmp_path, mm_home) -> None:
+    """A base clone whose origin is someone's checkout and that has no forge (a
+    registration from before the forge rule) is refused before any push, not pushed into."""
+    checkout = _make_source_repo(tmp_path / "checkout")
+    added = repos.add_repo(checkout)
+    conn = repos.init_db()
+    conn.execute("UPDATE repos SET forge_url = NULL")
+    conn.commit()
+
+    with pytest.raises(repos.RepoError) as exc:
+        repos.upstream_remote(repos.list_repos()[0])
+    assert "never writes into a checkout outside .mm/" in str(exc.value)
+    assert checkout in str(exc.value)
+    assert added.local_path not in str(exc.value)
 
 
 @pytest.mark.strict_forge
@@ -356,7 +404,7 @@ def test_delivery_pushes_and_opens_the_pr_on_the_registered_forge(
 
     delivery.deliver(task_id)
     push_argv = next(a for a in calls if a[:2] == ["git", "push"])
-    assert push_argv[2] == repos.FORGE_REMOTE
+    assert push_argv[2] == "origin"  # the base clone was cloned from the forge
     pr_argv = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
     assert pr_argv[pr_argv.index("--repo") + 1] == "Papaya-HQ/papaya-infra"
 

@@ -1,8 +1,10 @@
 """Repository registration (`mm repo add|list|sync`).
 
-Registers repositories as read-only base clones under ``.mm/repos/``. A remote
-URL is cloned; an existing local path is cloned locally so the base clone stays
-isolated from the user's working checkout. Task worktrees (M2) branch from these
+Registers repositories as read-only base clones under ``.mm/repos/``. The base
+clone is always cloned from the repository's forge: a local path is only a way to
+name the repository, read for its forge URL and never used as a remote, because a
+clone whose ``origin`` is the user's checkout pushes task branches into it
+(2026-09-24: a registration from 2026-09-02 did exactly that). Task worktrees (M2) branch from these
 bases via the worktree lease manager.
 
 ``sync`` is the command that keeps a base clone honest. It used to fetch and then
@@ -164,6 +166,8 @@ def _resolve_source(url_or_path: str) -> str:
 
 def remote_url(path: str, remote: str = "origin") -> str | None:
     """A git repository's URL for ``remote``, or None when it has none."""
+    if not os.path.isdir(path):
+        return None
     rc, out, _err = _git_ok(["remote", "get-url", remote], cwd=path)
     return out or None if rc == 0 else None
 
@@ -239,11 +243,45 @@ def remote_head(local_path: str, remote: str) -> str | None:
 
 
 def upstream_remote(row) -> str:
-    """The remote a registered repo's work actually travels through."""
+    """The remote a registered repo's work actually travels through, or a refusal.
+
+    Every fetch-for-delivery and every push resolves its remote here, so this is
+    where mm refuses to write into a checkout outside ``.mm/``: a remote that is a
+    path on this machine is allowed only when it is the repo's registered forge
+    (which the CLI accepts only as a forge URL).
+    """
     forge = row["forge_url"] if "forge_url" in row.keys() else None  # noqa: SIM118 - sqlite3.Row
-    if not forge:
-        return "origin"
-    return ensure_forge_remote(row["local_path"], forge)
+    remote = "origin" if not forge else ensure_forge_remote(row["local_path"], forge)
+    url = remote_url(row["local_path"], remote)
+    if is_local_remote(url) and not _same_remote(url, forge):
+        raise RepoError(
+            f"repo {row['name']!r} would push to {url}, a checkout on this machine, not a "
+            "forge. mm never writes into a checkout outside .mm/; register the repository "
+            "from its forge URL instead (`mm repo add https://github.com/<owner>/<repo>`)."
+        )
+    return remote
+
+
+def _same_remote(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return False
+    return _normalized(a) == _normalized(b)
+
+
+def _normalized(url: str) -> str:
+    if is_local_remote(url):
+        return os.path.abspath(os.path.expanduser(url))
+    return url.rstrip("/").removesuffix(".git")
+
+
+def _registered_under(conn, forge_url: str) -> str | None:
+    """The name another registration already uses for this forge repository, if any."""
+    slug = forge_slug(forge_url)
+    for row in store.list_repos(conn):
+        other = row["forge_url"] or row["origin"]
+        if (slug and forge_slug(other) == slug) or _same_remote(other, forge_url):
+            return row["name"]
+    return None
 
 
 def _resolve_forge_url(source: str, forge_url: str | None) -> str:
@@ -284,7 +322,13 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
     if dest.exists():
         raise RepoError(f"destination {dest} already exists")
 
-    _git(["clone", "--quiet", source, str(dest)])
+    taken = _registered_under(conn, resolved_forge)
+    if taken is not None:
+        raise RepoError(f"{resolved_forge} is already registered as {taken!r}")
+
+    # Clone from the forge, never from the local path: the clone's origin is where
+    # task branches are pushed.
+    _git(["clone", "--quiet", resolved_forge, str(dest)])
     remote = ensure_forge_remote(str(dest), resolved_forge)
 
     # The forge names the default branch; the clone's HEAD is only whatever the
@@ -314,16 +358,16 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
     store.add_repo(
         conn,
         name=repo_name,
-        origin=source,
+        origin=resolved_forge,
         local_path=str(dest),
         default_branch=default_branch,
         base_sha=base_sha,
         forge_url=resolved_forge,
     )
     # Seed per-repo memory so learnings about this repo persist across sessions.
-    seed_repo_memory(repo_name, origin=source, default_branch=default_branch)
+    seed_repo_memory(repo_name, origin=resolved_forge, default_branch=default_branch)
     return AddedRepo(
-        repo_name, source, str(dest), default_branch, base_sha, resolved_forge, notes=notes
+        repo_name, resolved_forge, str(dest), default_branch, base_sha, resolved_forge, notes=notes
     )
 
 

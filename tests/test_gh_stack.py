@@ -735,13 +735,21 @@ def test_link_passes_the_forge_default_even_when_origin_head_is_stale(
 
 @pytest.mark.strict_forge
 def test_repo_add_prints_what_it_could_not_do_about_the_default_branch(
-    tmp_path, mm_home, capsys
+    tmp_path, mm_home, capsys, monkeypatch
 ) -> None:
     """The fixture keeps GitHub offline, so the forge's default cannot be read here."""
     from conftest import make_git_repo
     from middle_manager.cli import main
 
     source = make_git_repo(tmp_path / "widgets")
+    real_git = repos._git
+
+    def clone_locally(args, cwd=None):  # the forge is GitHub; the clone stays offline
+        if args[:2] == ["clone", "--quiet"]:
+            return real_git(["clone", "--quiet", source, args[-1]], cwd=cwd)
+        return real_git(args, cwd=cwd)
+
+    monkeypatch.setattr(repos, "_git", clone_locally)
     assert main(["repo", "add", source, "--forge-url", f"https://github.com/{SLUG}"]) == 0
     assert "could not read the forge's default branch" in capsys.readouterr().out
 
