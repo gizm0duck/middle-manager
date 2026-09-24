@@ -67,6 +67,8 @@ class ClaudeAdapter(ProviderAdapter):
     def _common(self, argv: list[str], spec: TaskSpec) -> list[str]:
         if spec.model:
             argv += ["--model", spec.model]
+        if spec.reasoning:
+            argv += ["--effort", spec.reasoning]
         # acceptEdits auto-accepts file edits without a full permission bypass.
         argv += ["--permission-mode", "acceptEdits"]
         allowed, _source = effective_allowed_tools()

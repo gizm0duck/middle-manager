@@ -51,6 +51,14 @@ def test_claude_resume_uses_session() -> None:
     assert "--resume" in argv and "sid-9" in argv
 
 
+def test_claude_passes_reasoning_as_effort() -> None:
+    start = ClaudeAdapter().start(_spec("claude", model="opus", reasoning="medium"))
+    resume = ClaudeAdapter().resume(_spec("claude", resume_session_id="sid-9", reasoning="medium"))
+    for argv in (start, resume):
+        assert argv[argv.index("--effort") + 1] == "medium"
+    assert "--effort" not in ClaudeAdapter().start(_spec("claude", model="opus"))
+
+
 def test_claude_result_and_usage() -> None:
     ad = ClaudeAdapter()
     lines = [
