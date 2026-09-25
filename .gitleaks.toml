@@ -1,0 +1,8 @@
+# Secret scanning for the pre-commit hook in .githooks/pre-commit.
+# Extends gitleaks' default rules. Allowlist only values verified to be fake or
+# public, with the narrowest path or regex that covers them and a comment saying why.
+
+[extend]
+useDefault = true
+
+# No allowlist entries: a full scan of the tree finds nothing to suppress.
