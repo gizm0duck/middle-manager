@@ -222,6 +222,13 @@ def _cmd_repo(args: argparse.Namespace) -> int:
             print(settings.describe())
             return 0
         if args.repo_cmd == "add":
+            from middle_manager.repos import is_forge_url
+
+            if args.forge_url and not is_forge_url(args.forge_url):
+                raise RepoError(
+                    f"--forge-url must be a forge URL (https://github.com/<owner>/<repo>), "
+                    f"not {args.forge_url!r}"
+                )
             added = add_repo(args.url, name=args.name, forge_url=args.forge_url)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
             print(

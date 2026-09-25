@@ -223,9 +223,9 @@ def _same_repository(a: str, b: str) -> bool:
 def check_remote(origin: str | None, forge_url: str | None) -> None:
     """Refuse a base clone whose ``origin`` is a forge URL for another repository.
 
-    A local-path origin is a supported registration (the forge is then a second
-    remote, and the base is resolved from it), so it is not refused here; nor is
-    any other origin that is not a forge URL.
+    A local-path origin is refused by ``repos.upstream_remote`` unless it is the
+    registered forge itself; any other origin that is not a forge URL is not
+    refused here.
     """
     from middle_manager.repos import is_forge_url
 
@@ -475,7 +475,11 @@ def trust_checks(
 
     local = repo_row["local_path"]
     run("remote", lambda: check_remote(repos.remote_url(local), cell("forge_url")))
-    remote = repos.upstream_remote(repo_row)
+    try:
+        remote = repos.upstream_remote(repo_row)
+    except repos.RepoError as exc:
+        # Never overridable: the alternative is pushing into someone's checkout.
+        raise PreflightError(str(exc)) from exc
     trust.remote = remote
     default = cell("default_branch") or "main"
     run("base", lambda: fetch_remote(local, remote))

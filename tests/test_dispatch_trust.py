@@ -264,34 +264,21 @@ def spawned(monkeypatch):
     return built
 
 
-def test_a_lease_behind_its_origin_with_no_forge_is_refused_released_and_no_worker_runs(
+def test_a_repo_with_no_forge_whose_origin_is_a_checkout_is_refused_and_no_worker_runs(
     registered, server, spawned, tmp_path, capsys
 ) -> None:
-    """With a forge, a default lease is moved onto its main; with none it stays put."""
+    """With no forge, the only remote is the checkout it was cloned from: dispatch
+    refuses rather than lease a worktree whose branch would be pushed into it."""
     store.update_repo_fields(init_db(), registered.name, forge_url=None)
-    stale = _git(registered.local_path, "rev-parse", "HEAD")
-    ahead = _commit(registered.origin, "new.txt", "only on origin\n")
 
-    rc = _dispatch(
-        registered.name,
-        "--provider",
-        "fake",
-        brief_text=f"# Do it\n\nyou must see `{ahead}`.\n",
-        tmp=tmp_path,
-    )
+    rc = _dispatch(registered.name, "--provider", "fake", tmp=tmp_path)
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "dispatch refused" in err and "mm repo sync" in err
-    conn = init_db()
-    task = conn.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
-    assert task["status"] == "failed"
-    [refusal] = _events(task["id"], "preflight_refused")
-    assert refusal["check"] == "lease"
-    assert (refusal["expected"], refusal["actual"]) == (ahead, stale)
-    statuses = {row["status"] for row in conn.execute("SELECT status FROM leases")}
-    assert statuses == {"released"}
+    assert "never writes into a checkout outside .mm/" in err
+    assert registered.origin in err
     assert spawned == []
+    assert init_db().execute("SELECT COUNT(*) FROM leases").fetchone()[0] == 0
 
 
 def test_a_lease_at_the_wrong_commit_is_refused_by_the_supervisor_directly(
