@@ -90,7 +90,13 @@ brief and the packet the worker receives after a steer.
   the worker must fill: "Outside scope, required to build" and "Flagged, not done".
 - **The plan-note gate.** Require a `--phase plan` note (≤ 16 lines) before code that
   maps each Goal to the files that deliver it and names anything the plan would need
-  that Out of scope excludes. The section states exactly one of
+  that Out of scope excludes, and ends with a **Claims:** list — every load-bearing
+  fact the plan rests on, each with its source (`path:line`, or a command and its
+  result) — so the manager can fact-check it with `mm review plan`. Any "need your
+  ruling" question in the note states the evidence for its premise the same way. On
+  2026-09-25 a plan claimed a provider write skipped a consent gate; the claim was
+  relayed to the user for a ruling unchecked, and the gate did not apply there.
+  The section states exactly one of
   `blocking: stop after posting and wait for the manager's reply` or
   `non-blocking: post it, then proceed`; `mm brief lint` flags a plan note with
   neither. Four workers proceeded past a gate that never said whether to wait (tasks

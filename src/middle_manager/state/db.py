@@ -12,7 +12,7 @@ from pathlib import Path
 
 from middle_manager.paths import db_path
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -168,6 +168,23 @@ CREATE TABLE IF NOT EXISTS reviews (
     note TEXT,
     created_at TEXT NOT NULL
 );
+
+-- The manager's review of a worker's plan note, bound to that note's event id.
+-- ``checked`` is a JSON list of {claim, evidence}: what the manager verified,
+-- not what the worker asserted. ``delivered_at`` is set when a resume carried
+-- the message or findings to the worker.
+CREATE TABLE IF NOT EXISTS plan_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    progress_event_id INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    checked TEXT NOT NULL,
+    message TEXT,
+    findings TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plan_reviews_task ON plan_reviews(task_id, progress_event_id);
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,6 +377,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "note" not in review_cols:
         # The reviewer's own words, bound to the SHA they read; delivery quotes them.
         conn.execute("ALTER TABLE reviews ADD COLUMN note TEXT")
+    if "delivered_at" not in review_cols:
+        # When a resume carried a changes-requested review's findings to the worker
+        # (issue #102); unset means the worker has not been told yet.
+        conn.execute("ALTER TABLE reviews ADD COLUMN delivered_at TEXT")
     decision_cols = _column_names(conn, "decisions")
     for col in ("context", "invalidated_at"):
         if col not in decision_cols:

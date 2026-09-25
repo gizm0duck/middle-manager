@@ -921,12 +921,22 @@ def _cmd_lease(args: argparse.Namespace) -> int:
     return 0
 
 
+_FORCE_UNREVIEWED_HELP = (
+    "go past a plan note that has no `mm review plan` yet; the reason is recorded as an event"
+)
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from middle_manager.supervisor.client import SupervisorClient, SupervisorUnavailable
 
     client = SupervisorClient()
     try:
-        resp = client.resume_task(args.task_id, message=args.message, ends_at=args.ends_at)
+        resp = client.resume_task(
+            args.task_id,
+            message=args.message,
+            ends_at=args.ends_at,
+            force_unreviewed=args.force_unreviewed,
+        )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -956,7 +966,10 @@ def _cmd_steer(args: argparse.Namespace) -> int:
     client = SupervisorClient()
     try:
         resp = client.steer_task(
-            args.task_id, args.message, delivery="replace" if args.replace else "append"
+            args.task_id,
+            args.message,
+            delivery="replace" if args.replace else "append",
+            force_unreviewed=args.force_unreviewed,
         )
     except SupervisorUnavailable as exc:
         print(str(exc), file=sys.stderr)
@@ -1006,9 +1019,13 @@ def _cmd_review(args: argparse.Namespace) -> int:
         record_review,
     )
 
+    if args.review_cmd == "plan":
+        from middle_manager import plan_review_cli
+
+        return plan_review_cli.run(args)
     try:
         if args.review_cmd == "show":
-            from middle_manager import captures, progress
+            from middle_manager import captures, plan_review_cli, progress
             from middle_manager.state import init_db, store
 
             bundle = build_bundle(args.task_id)
@@ -1055,6 +1072,10 @@ def _cmd_review(args: argparse.Namespace) -> int:
             note = approval_note(args.task_id)
             if note:
                 print(f"note on the standing approval: {note}")
+                print()
+            plan_record = plan_review_cli.show_block(args.task_id)
+            if plan_record:
+                print(plan_record)
                 print()
             # Two unmerged tasks adding a migration off one revision is a red
             # migration graph after the second merge, and it is invisible in a
@@ -1242,12 +1263,13 @@ def _cmd_health(args: argparse.Namespace) -> int:
         if args.quiet_minutes is not None
         else health.quiet_threshold()
     )
-    from middle_manager import compose
+    from middle_manager import compose, plan_review
 
     entries = health.check(quiet_after=quiet_after)
     tools = health.claude_tool_profile()
     stacks = compose.prunable_stacks()
     dispatch = health.dispatch_snapshot()
+    plans = plan_review.all_awaiting()
     if args.json:
         print(
             json.dumps(
@@ -1256,12 +1278,15 @@ def _cmd_health(args: argparse.Namespace) -> int:
                     "claude_tools": tools,
                     "prunable_compose_stacks": stacks,
                     "dispatch": dispatch,
+                    "plans_awaiting_review": plans,
                 },
                 indent=2,
             )
         )
         return 0
     print(health.describe_claude_tools(tools))
+    for plan in plans:
+        print(f"plan awaiting review: {plan_review.describe_awaiting(plan)}")
     pool = dispatch["pool"]
     if pool["known"]:
         print(f"worktree pool: {pool['free_slots']} of {pool['total_slots']} slot(s) free")
@@ -2384,6 +2409,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override and persist the task's terminal phase (default: stored value)",
     )
+    resume.add_argument(
+        "--force-unreviewed",
+        dest="force_unreviewed",
+        default=None,
+        metavar="REASON",
+        help=_FORCE_UNREVIEWED_HELP,
+    )
     resume.set_defaults(func=_cmd_resume)
 
     steer = sub.add_parser("steer", help="steer a task (checkpoint or capability-gated interrupt)")
@@ -2396,6 +2428,13 @@ def build_parser() -> argparse.ArgumentParser:
             "when queued for a checkpoint, this message supersedes every message queued "
             "before it (default: queued messages are all delivered together, in order)"
         ),
+    )
+    steer.add_argument(
+        "--force-unreviewed",
+        dest="force_unreviewed",
+        default=None,
+        metavar="REASON",
+        help=_FORCE_UNREVIEWED_HELP,
     )
     steer.set_defaults(func=_cmd_steer)
 
@@ -2428,6 +2467,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "in the pull request `mm deliver` opens"
                 ),
             )
+    from middle_manager import plan_review_cli
+
+    plan_review_cli.add_parser(rvsub)
     review.set_defaults(func=_cmd_review)
 
     deliver = sub.add_parser("deliver", help="push and open a PR (requires approval at head)")

@@ -40,6 +40,10 @@ These are not style preferences — anything else is denied before it runs.
 - Push with exactly `git push origin HEAD:{branch}`.
 - **Do not try to open a pull request.** You have no `gh` and no forge
   credentials. Push your branch and stop; the manager opens the PR from it.
+- Your `--phase plan` note ends with **Claims:** — each load-bearing fact the plan
+  rests on, with its source (`path:line`, or the command you ran and its result).
+  The manager checks every one before approving. A question asking the manager to
+  rule must state the evidence for its premise the same way.
 
 If a command is denied, do not retry it in a different shape and do not silently
 skip the work it was for. Record it verbatim in your final report under a

@@ -245,6 +245,14 @@ def render_board(conn: sqlite3.Connection | None = None) -> str:
             )
     else:
         out.append("- nothing running")
+    from middle_manager import plan_review
+
+    plans = plan_review.all_awaiting(conn)
+    out += ["", "## Plans awaiting review"]
+    if plans:
+        out.extend(f"- {plan_review.describe_awaiting(p)}" for p in plans)
+    else:
+        out.append("- none")
     out += ["", "## Blocked / needs me"]
     if needs_me or blocked:
         for t in needs_me:
