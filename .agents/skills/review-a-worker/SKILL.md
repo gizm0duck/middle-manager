@@ -1,12 +1,14 @@
 ---
 name: review-a-worker
 description: >-
-  How to review a worker's finished work so nothing is approved in slices and
-  nothing is sent back on a wrong premise: read the full progress log before
+  How to review a worker's plan and its finished work so nothing is approved in
+  slices and nothing is sent back — or relayed to the user — on a wrong premise:
+  fact-check every load-bearing claim in the plan and record it with `mm review
+  plan`, read the full progress log before
   judging the report, review the exact head, run one consolidated rubric before
   approving anything, verify a spec claim before requesting a change, and know
   when a failing gate is a decision for the user rather than another round. Use at
-  every `mm review` and every CI failure on a delivered PR.
+  every plan note, every `mm review` and every CI failure on a delivered PR.
 user-invocable: false
 ---
 
@@ -16,6 +18,34 @@ The review gate is exact-head and it is the step that pays for itself: on the
 Radar milestone every change request fixed a real defect. What went wrong was the
 *order* and the *premise* — approving a slice before the whole rubric had run, and
 one checkpoint written from memory of the spec. This is the order.
+
+## Review the plan
+
+A worker's plan note is reviewed before the worker proceeds and before the user is
+asked anything about it. `mm resume` and `mm steer` refuse while the newest note is
+an unreviewed plan; `mm board` and `mm health` list the plans waiting on you.
+
+- **Never trust a worker's statement.** A plan is a set of claims about the code —
+  "this path skips the gate", "only X calls this", "the test already covers it". Each
+  load-bearing claim is checked against the source before you approve the plan,
+  relay it, or ask the user to rule on it: open the `path:line` it cites, run the
+  command, read the query result. The worker's "Claims:" list is where to start, not
+  a substitute for checking.
+- **A ruling request is a claim to check first.** When a worker asks you (or, through
+  you, the user) to rule on something, its premise is a claim. Verify it before you
+  pass the question on. On 2026-09-25 a plan claimed a provider write "SKIPS the
+  draft-then-confirm consent gate"; it was relayed to the user for a ruling, and the
+  gate only applies to hosted-agent writes. The question should never have reached
+  the user.
+- **Record what you checked** with `mm review plan <id>`: one `--checked "<claim> =>
+  <evidence>"` per claim, where the evidence is what you ran or read, then exactly one
+  of `--approve [--message ...]` or `--request-changes --findings <file>`. The command
+  refuses without a `--checked` entry. The message or findings reach the worker on
+  the next `mm resume`, which needs no `--message` of its own. `mm review show`
+  prints the record as a "Manager fact-check" block for the PR body.
+- `--force-unreviewed <reason>` on `mm resume` or `mm steer` exists for a plan you
+  genuinely cannot review yet; the reason goes on the record and into your own
+  performance review.
 
 ## 1. Read everything the worker filed, first
 

@@ -52,15 +52,37 @@ class SupervisorClient:
         )
 
     def resume_task(
-        self, task_id: int, message: str | None = None, ends_at: str | None = None
+        self,
+        task_id: int,
+        message: str | None = None,
+        ends_at: str | None = None,
+        force_unreviewed: str | None = None,
     ) -> dict:
         return self._call(
-            {"cmd": "resume_task", "task_id": task_id, "message": message, "ends_at": ends_at}
+            {
+                "cmd": "resume_task",
+                "task_id": task_id,
+                "message": message,
+                "ends_at": ends_at,
+                "force_unreviewed": force_unreviewed,
+            }
         )
 
-    def steer_task(self, task_id: int, message: str, delivery: str = "append") -> dict:
+    def steer_task(
+        self,
+        task_id: int,
+        message: str,
+        delivery: str = "append",
+        force_unreviewed: str | None = None,
+    ) -> dict:
         return self._call(
-            {"cmd": "steer_task", "task_id": task_id, "message": message, "delivery": delivery}
+            {
+                "cmd": "steer_task",
+                "task_id": task_id,
+                "message": message,
+                "delivery": delivery,
+                "force_unreviewed": force_unreviewed,
+            }
         )
 
     def answer_question(

@@ -259,6 +259,7 @@ class SupervisorServer:
                         int(request["task_id"]),
                         request.get("message"),
                         ends_at=request.get("ends_at"),
+                        force_unreviewed=request.get("force_unreviewed"),
                     ),
                 }
             if cmd == "steer_task":
@@ -268,6 +269,7 @@ class SupervisorServer:
                         int(request["task_id"]),
                         request["message"],
                         delivery=request.get("delivery") or "append",
+                        force_unreviewed=request.get("force_unreviewed"),
                     ),
                 }
             if cmd == "answer_question":

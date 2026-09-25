@@ -426,10 +426,18 @@ When the user gives you an objective:
 5. **Review the approach early; don't just wait for the diff.** Each worker reports
    `mm progress <task_id> --phase plan --note …` *before* implementing (and
    `implement|test|review|blocked|done` as it goes). Read the plan while course is still
-   cheap to change — `mm task <id>` or `mm memory show --repo <name>` — and if it's
-   heading the wrong way, **course-correct with `mm steer <task_id> --message ...`** (or
-   `mm resume <task_id> --message ...`) instead of letting it finish and rejecting the
-   finished diff. The supervisor raises `plan_missing` when a worker runs past the grace
+   cheap to change — `mm task <id>` or `mm memory show --repo <name>` — and **fact-check
+   it: never trust a worker's statement.** The plan ends with a "Claims:" list, each
+   with a source; open every load-bearing one before you approve, relay, or ask the
+   user to rule on it, then record what you checked with `mm review plan <task_id>
+   --checked "<claim> => <evidence>" ... --approve [--message ...]` (or
+   `--request-changes --findings <file>`). Until you do, `mm resume` and `mm steer`
+   refuse (`--force-unreviewed <reason>` goes on the record), and `mm board` / `mm
+   health` list the plan as awaiting review. A plain `mm resume <task_id>` then
+   delivers the review; if it's heading the wrong way, **course-correct** with the
+   review's findings, `mm steer <task_id> --message ...`, or `mm resume <task_id>
+   --message ...` instead of letting it finish and rejecting the finished diff. A resume
+   after `mm review request-changes` carries the findings to the worker on its own. The supervisor raises `plan_missing` when a worker runs past the grace
    period without a plan and `worker_quiet` when one goes silent; both are actionable
    events (`mm run`), and `mm health` shows the team on demand. Steering injects
    mid-flight where the capability matrix proves it, and checkpoints at the next resume

@@ -260,9 +260,12 @@ def worker_context(name: str, *, task_id: int | None = None, ends_at: str = "don
     return (
         "Report progress with `mm progress` (structured, visible to your manager):\n"
         f"- BEFORE you start implementing: `mm progress {tid} --phase plan --note "
-        '"<your intended approach in one or two sentences>"`. Your manager reviews the '
-        "plan early and may steer you if the approach is off; a task that runs without a "
-        "plan gets flagged.\n"
+        '"<your intended approach in one or two sentences>"`. End the note with a '
+        '"Claims:" list of every load-bearing fact the plan rests on, each with its source '
+        "(path:line, or the command you ran and what it showed); your manager fact-checks "
+        "each one before approving. A question asking the manager to rule states the "
+        "evidence for its premise the same way. Your manager reviews the plan early and may "
+        "steer you if the approach is off; a task that runs without a plan gets flagged.\n"
         f"- As you go: `mm progress {tid} --phase implement|test|review --note "
         '"<what you did / what\'s next>"`; if you are stuck: `--phase blocked --note '
         '"<why>"`. Keep notes short. If a course-correction arrives, adjust and report it.\n'

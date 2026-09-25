@@ -780,6 +780,8 @@ class Supervisor:
         *,
         continuation: dict | None = None,
         ends_at: str | None = None,
+        force_unreviewed: str | None = None,
+        plan_gate: bool = True,
     ) -> dict:
         """Resume a task's provider session (blocked-worker resume / checkpoint steer).
 
@@ -788,11 +790,17 @@ class Supervisor:
         before the runner thread starts. That event is the durable proof of
         consumption (issue #71): a steer or answer counts as delivered when, and
         only when, a launch carrying it was recorded.
+
+        ``plan_gate`` refuses a resume while the newest note is an unreviewed plan
+        (see :mod:`middle_manager.plan_review`); the supervisor's own continuations,
+        which deliver something already accepted, pass it off.
         """
         conn = init_db()
         task = store.get_task(conn, task_id)
         if task is None:
             raise SupervisorError(f"task {task_id} not found")
+        if plan_gate:
+            _require_plan_reviewed(conn, task_id, force_unreviewed, via="resume")
         from middle_manager import environment
 
         resolved_ends_at = ends_at or (
@@ -855,6 +863,11 @@ class Supervisor:
             recorded = turn_end.latest_stop_verdict(conn, task_id)
             if recorded is not None and task["status"] == turn_end.WORKER_STOPPED:
                 message = recorded.resume_message()
+        # Review feedback the worker has not heard yet rides this resume: a bare
+        # resume after request-changes used to send nothing at all (issue #102).
+        from middle_manager import plan_review
+
+        message, feedback = plan_review.compose_message(conn, task_id, message)
         # The worktree may be gone: a failed worker's pristine lease is handed
         # back, and a prune can take a slot. The task is still resumable, so it
         # gets its checkout back before anything tries to run in it (issue #58).
@@ -932,11 +945,14 @@ class Supervisor:
                 "status": "in_progress",
                 "scope_preserved": scope_preserved,
                 "ends_at": ends_at,
+                "plan_reviews_delivered": feedback.plan_review_ids,
+                "reviews_delivered": feedback.review_ids,
                 **(continuation or {}),
             },
             run_id=task["run_id"],
             task_id=task_id,
         )
+        plan_review.mark_delivered(conn, feedback)
         self._bind(execution, task_id)
         thread.start()
         return {
@@ -1043,7 +1059,14 @@ class Supervisor:
         )
         return payload
 
-    def steer_task(self, task_id: int, message: str, *, delivery: str = "append") -> dict:
+    def steer_task(
+        self,
+        task_id: int,
+        message: str,
+        *,
+        delivery: str = "append",
+        force_unreviewed: str | None = None,
+    ) -> dict:
         """Steer a task.
 
         Interrupt steering is offered only when the provider/version proves it
@@ -1061,6 +1084,7 @@ class Supervisor:
         task = store.get_task(conn, task_id)
         if task is None:
             raise SupervisorError(f"task {task_id} not found")
+        _require_plan_reviewed(conn, task_id, force_unreviewed, via="steer")
         provider = task["provider"] or "fake"
         if provider in ("claude", "codex"):
             # A steer that interrupts a turn promises to resume it. Revalidate
@@ -1080,7 +1104,7 @@ class Supervisor:
             return {
                 "mode": "resume",
                 "note": "no live worker turn; resumed the session with the steer",
-                **self.resume_task(task_id, message),
+                **self.resume_task(task_id, message, plan_gate=False),
             }
 
         if can_interrupt:
@@ -1221,7 +1245,12 @@ class Supervisor:
             task_id=task_id,
         )
         try:
-            self.resume_task(task_id, message, continuation={"steer_events": [int(queued or 0)]})
+            self.resume_task(
+                task_id,
+                message,
+                continuation={"steer_events": [int(queued or 0)]},
+                plan_gate=False,
+            )
         except Exception as exc:  # noqa: BLE001 - a failed resume is visible in events
             # No worker is running now, and saying `in_progress` would claim one
             # is. The message stays queued; the next free slot retries it.
@@ -1322,6 +1351,7 @@ class Supervisor:
                 task_id,
                 message,
                 continuation={"steer_events": ids, "superseded_steer_events": dropped},
+                plan_gate=False,
             )
         except Exception as exc:  # noqa: BLE001 - the refusal is recorded, not raised
             return self._defer_continuation(
@@ -1414,7 +1444,7 @@ class Supervisor:
         """Resume a blocked task with a stored decision's answer; consumed only on launch."""
         continuation = {"answered_question": question, "decision_id": decision_id}
         try:
-            self.resume_task(task_id, answer, continuation=continuation)
+            self.resume_task(task_id, answer, continuation=continuation, plan_gate=False)
         except Exception as exc:  # noqa: BLE001 - recorded, and retried later
             return self._defer_continuation(
                 conn,
@@ -1624,7 +1654,7 @@ class Supervisor:
             rationale=rationale,
             context=_task_context(conn, task_id),
         )
-        resumed = self.resume_task(task_id, answer)
+        resumed = self.resume_task(task_id, answer, plan_gate=False)
         return {"task_id": task_id, "decision_id": decision_id, **resumed}
 
     # ------------------------------------------------------------------ #
@@ -1763,6 +1793,15 @@ def _self_contained(conn, task, message: str | None) -> tuple[str | None, bool]:
     if not scope:
         return message, False
     return f"{message}\n\n{scope}", True
+
+
+def _require_plan_reviewed(conn, task_id: int, force_reason: str | None, *, via: str) -> None:
+    from middle_manager import plan_review
+
+    try:
+        plan_review.require_reviewed(conn, task_id, force_reason=force_reason, via=via)
+    except plan_review.PlanReviewError as exc:
+        raise SupervisorError(str(exc)) from exc
 
 
 def _preview(message: object, width: int = 72) -> str:
