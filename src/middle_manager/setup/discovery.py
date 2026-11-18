@@ -113,13 +113,32 @@ def detect_companion(name: str) -> Tool:
     return Tool(name, "companion", path, _version([path, "--version"]), None, True, detail)
 
 
+def detect_twg() -> Tool:
+    """The TWG CLI, resolved as the Bitbucket forge resolves it: config, PATH, ~/.local/bin."""
+    from middle_manager import forge
+
+    path = forge.twg_bin()
+    if not path:
+        return Tool("twg", "requirement", None, None, None, False, forge.INSTALL_HINT)
+    return Tool("twg", "requirement", path, _version([path, "--version"]), None, True)
+
+
+def _forge_requirement() -> Tool:
+    """The forge CLI this install delivers through: ``gh``, or ``twg`` when set to Bitbucket."""
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        return detect_twg()
+    return detect_requirement("gh", ["gh", "--version"], "install the GitHub CLI")
+
+
 def discover() -> dict[str, list[dict]]:
     harnesses = [detect_claude(), detect_codex()]
     requirements = [
         detect_requirement("git", ["git", "--version"], "install Git"),
         detect_requirement("python3", ["python3", "--version"], "install Python 3.12+"),
         detect_requirement("node", ["node", "--version"], "install Node 22+"),
-        detect_requirement("gh", ["gh", "--version"], "install the GitHub CLI"),
+        _forge_requirement(),
         detect_requirement("uv", ["uv", "--version"], "install uv"),
     ]
     companions = [

@@ -48,6 +48,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         f"concurrency {cfg.worker.max_concurrent}; posture "
         f"{cfg.cost_posture}"
     )
+    if cfg.forge.kind != "github":
+        print(f"forge {cfg.forge.kind} (twg); check access with `mm doctor`")
     if not args.skip_tools:
         print("provisioning companion tools (treehouse, lavish-axi, gh-axi)…")
         _print_provision(_provision(force=False))
@@ -105,6 +107,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
                 f"ceiling {cfg.worker.max_model}@{cfg.worker.max_reasoning}, "
                 f"concurrency {cfg.worker.max_concurrent}"
             )
+            return 0
+        if args.config_cmd == "forge":
+            from middle_manager.setup.wizard import config_forge
+
+            cfg = config_forge(args.kind, args.twg_path)
+            tool = "twg bb" if cfg.forge.kind == "bitbucket" else "gh"
+            print(f"forge: {cfg.forge.kind} ({tool})")
             return 0
         if args.config_cmd == "authority":
             overrides: dict = {}
@@ -226,8 +235,9 @@ def _cmd_repo(args: argparse.Namespace) -> int:
 
             if args.forge_url and not is_forge_url(args.forge_url):
                 raise RepoError(
-                    f"--forge-url must be a forge URL (https://github.com/<owner>/<repo>), "
-                    f"not {args.forge_url!r}"
+                    f"--forge-url must be a forge URL (https://github.com/<owner>/<repo>, or "
+                    "https://bitbucket.org/<workspace>/<repo> once `mm config forge --forge "
+                    f"bitbucket` is set), not {args.forge_url!r}"
                 )
             added = add_repo(args.url, name=args.name, forge_url=args.forge_url)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
@@ -1844,6 +1854,8 @@ def _collect_overrides(args: argparse.Namespace) -> dict:
         "worker_default_reasoning",
         "worker_max_concurrent",
         "cost_posture",
+        "forge",
+        "twg_path",
     )
     return {k: getattr(args, k) for k in keys if getattr(args, k, None) is not None}
 
@@ -1859,6 +1871,22 @@ def _add_profile_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--worker-default-reasoning", dest="worker_default_reasoning")
     parser.add_argument("--worker-max-concurrent", dest="worker_max_concurrent", type=int)
     parser.add_argument("--cost-posture", dest="cost_posture")
+
+
+def _add_forge_flags(parser: argparse.ArgumentParser, *, dest: str) -> None:
+    parser.add_argument(
+        "--forge",
+        dest=dest,
+        choices=["github", "bitbucket"],
+        default=None,
+        help="code host: github uses gh (the default); bitbucket uses Atlassian's `twg bb`",
+    )
+    parser.add_argument(
+        "--twg-path",
+        dest="twg_path",
+        default=None,
+        help="the twg executable, when it is not on PATH or in ~/.local/bin",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1884,6 +1912,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not provision companion tools during setup",
     )
     _add_profile_flags(setup)
+    _add_forge_flags(setup, dest="forge")
     setup.set_defaults(func=_cmd_setup)
 
     tools = sub.add_parser("tools", help="provision and inspect companion tools")
@@ -1899,6 +1928,10 @@ def build_parser() -> argparse.ArgumentParser:
     csub.add_parser("show", help="print the current config")
     models = csub.add_parser("models", help="rerun discovery and change model profiles")
     _add_profile_flags(models)
+    forge_cfg = csub.add_parser(
+        "forge", help="choose the code host: GitHub through gh (default) or Bitbucket through twg"
+    )
+    _add_forge_flags(forge_cfg, dest="kind")
     authority = csub.add_parser("authority", help="change standing authority")
     authority.add_argument(
         "--allow-merge",

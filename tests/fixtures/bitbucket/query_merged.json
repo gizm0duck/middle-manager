@@ -1,0 +1,136 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket pull-requests query",
+ "data": [
+  {
+   "type": "pullrequest",
+   "id": 244,
+   "title": "[Renovate] Update dependency prettier to v3.10.1",
+   "state": "MERGED",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2026-11-17T12:04:05.032572+00:00",
+   "updated_on": "2026-11-17T22:17:28.733962+00:00",
+   "merge_commit": {
+    "hash": "eb9abdfb6407",
+    "type": "commit"
+   },
+   "source": {
+    "branch": {
+     "name": "renovate/prettier-3.x"
+    },
+    "commit": {
+     "hash": "74ccd187f498",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "5fb6a7da47c2",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/244"
+    }
+   }
+  },
+  {
+   "type": "pullrequest",
+   "id": 242,
+   "title": "[Renovate] Update forge monorepo",
+   "state": "MERGED",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2026-11-14T00:55:18.930871+00:00",
+   "updated_on": "2026-11-15T22:47:56.776548+00:00",
+   "merge_commit": {
+    "hash": "5fb6a7da47c2",
+    "type": "commit"
+   },
+   "source": {
+    "branch": {
+     "name": "renovate/forge-monorepo"
+    },
+    "commit": {
+     "hash": "1c0a28e973d4",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "a580c842057b",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/242"
+    }
+   }
+  },
+  {
+   "type": "pullrequest",
+   "id": 241,
+   "title": "[Renovate] Update typescript-eslint monorepo to v8.72.2",
+   "state": "MERGED",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2026-11-14T00:55:14.769749+00:00",
+   "updated_on": "2026-11-15T22:44:19.766468+00:00",
+   "merge_commit": {
+    "hash": "a580c842057b",
+    "type": "commit"
+   },
+   "source": {
+    "branch": {
+     "name": "renovate/typescript-eslint-monorepo"
+    },
+    "commit": {
+     "hash": "0d7268b4d7de",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "d1d806018e34",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/241"
+    }
+   }
+  }
+ ],
+ "meta": {}
+}

@@ -262,7 +262,9 @@ quietly; do not narrate the steps or report diagnostics.
    environment isn't ready, run `./bin/install` yourself (idempotent, safe to
    rerun) and re-check.
 2. **Missing prerequisites you can't fix.** A few things need the user: `uv`,
-   `git`, Node, `gh`, and a signed-in harness (`claude` / `codex`). If one is
+   `git`, Node, the forge CLI (`gh`, or `twg` when `mm config show` says
+   `[forge] kind = "bitbucket"`, signed in with `twg login` + `twg setup
+   bitbucket` by the user), and a signed-in harness (`claude` / `codex`). If one is
    genuinely missing, that's the *one* time preflight speaks up — name the single
    thing to install/sign into, plainly, and stop until it's handled.
 3. **Config.** If none exists, configure it yourself (see below). If it exists,
@@ -549,6 +551,9 @@ that see one slice with no context.
   then it is `mm stack merge <task_id> --layer-by-layer`. It also falls back to
   that, with one line saying so, when `gh stack` is not installed — install it
   (`gh extension install github/gh-stack`) rather than living with the fallback. A
+  **Bitbucket has no native stacks:** on an install configured for Bitbucket
+  every stack merges layer by layer (one CI run per layer) and `mm stack merge`
+  says so; see the `bitbucket-twg` skill. A
   layer delivered *after* the one below it merged targets `main` itself (a merged
   branch is no base for a new pull request), and `mm deliver` says that in its
   result.
@@ -676,6 +681,13 @@ not (see `mm doctor`):
   is the rich review surface described above.
 - **gh / gh-axi** deliver pull requests; `mm deliver` prefers `gh-axi` when
   present. You never handle forge credentials — delivery does.
+- **twg** (Atlassian's TWG CLI, `twg bb`) replaces `gh` only on an install
+  explicitly configured for Bitbucket Cloud (`mm setup --forge bitbucket` or
+  `mm config forge --forge bitbucket`; GitHub is the default). It is not
+  provisioned: the user installs it and signs in (`twg login`, `twg setup
+  bitbucket`), and `mm doctor` reports whether Bitbucket access is ready. Never
+  ask for or pass its tokens. The `bitbucket-twg` skill covers the command map and
+  how Bitbucket differs from GitHub.
 
 `mm setup` provisions these into `.mm/tools/` (verified against the pins in
 `tools.lock`) unless `--skip-tools` was passed; `mm tools install [--force]`

@@ -1,0 +1,127 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket pull-requests query",
+ "data": [
+  {
+   "type": "pullrequest",
+   "id": 157,
+   "title": "[Renovate] Update dependency eslint to v10",
+   "state": "OPEN",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2026-02-07T13:20:01.551945+00:00",
+   "updated_on": "2026-11-17T12:10:09.245070+00:00",
+   "merge_commit": null,
+   "source": {
+    "branch": {
+     "name": "renovate/major-eslint-monorepo"
+    },
+    "commit": {
+     "hash": "5ee7714e6259",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "eb9abdfb6407",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/157"
+    }
+   }
+  },
+  {
+   "type": "pullrequest",
+   "id": 19,
+   "title": "[Renovate] Update react monorepo (major)",
+   "state": "OPEN",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2025-07-29T07:23:41.133363+00:00",
+   "updated_on": "2026-11-16T22:52:45.056933+00:00",
+   "merge_commit": null,
+   "source": {
+    "branch": {
+     "name": "renovate/major-react-monorepo"
+    },
+    "commit": {
+     "hash": "bd394e858634",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "eb9abdfb6407",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/19"
+    }
+   }
+  },
+  {
+   "type": "pullrequest",
+   "id": 237,
+   "title": "[Renovate] Update Node.js to v26",
+   "state": "OPEN",
+   "draft": false,
+   "close_source_branch": true,
+   "created_on": "2026-10-29T02:38:09.507558+00:00",
+   "updated_on": "2026-11-16T07:34:57.462113+00:00",
+   "merge_commit": null,
+   "source": {
+    "branch": {
+     "name": "renovate/node-26.x"
+    },
+    "commit": {
+     "hash": "49f3b57d59e8",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "destination": {
+    "branch": {
+     "name": "main"
+    },
+    "commit": {
+     "hash": "eb9abdfb6407",
+     "type": "commit"
+    },
+    "repository": {
+     "full_name": "atlassian/forge-bitbucket-related-prs"
+    }
+   },
+   "links": {
+    "html": {
+     "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/237"
+    }
+   }
+  }
+ ],
+ "meta": {}
+}

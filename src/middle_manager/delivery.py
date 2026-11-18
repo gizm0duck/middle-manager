@@ -1,9 +1,10 @@
-"""GitHub delivery, gated by the exact-HEAD review.
+"""Pull-request delivery, gated by the exact-HEAD review.
 
 Delivery is the only path that leaves the machine, so it is the most conservative
 step: it refuses unless an approved review is bound to the worktree's current
 head. Push uses plain git (works against any origin); PR creation uses ``gh``
-(preferred: ``gh-axi`` when present) and is skippable for local fixtures.
+(preferred: ``gh-axi`` when present), or ``twg bb`` on an install configured for
+Bitbucket (see :mod:`middle_manager.forge`), and is skippable for local fixtures.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from middle_manager import compose
+from middle_manager import compose, forge
 from middle_manager.companions import pr_tool
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
 from middle_manager.state import init_db, store
@@ -29,7 +30,9 @@ _SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}\Z")
 #: prints exactly the URL; ``gh-axi`` prints a structured record followed by
 #: help lines, so the last line of stdout was "Run `gh-axi pr checks 72 ...` to
 #: monitor CI" and that string was persisted as the PR URL of #72 (issue #73).
-_PR_URL_RE = re.compile(r"https?://[^\s`'\"<>()]+/(?:pull|pulls|pr|merge_requests)/\d+")
+_PR_URL_RE = re.compile(
+    r"https?://[^\s`'\"<>()]+/(?:pull|pulls|pr|merge_requests|pull-requests)/\d+"
+)
 
 
 @dataclass
@@ -351,7 +354,22 @@ def deliver(
     pr_exists = False
     pr_created = False
     note = "pushed" if pushed else "no-op"
-    if open_pr:
+    if open_pr and forge.is_bitbucket():
+        opened = forge.open_pr(
+            branch=branch,
+            base=base,
+            title=title or task["title"],
+            body=_pr_body(task_id, head, body_file),
+            slug=forge_slug,
+            cwd=worktree,
+        )
+        pr_exists, pr_created, pr_url, note = (
+            opened["exists"],
+            opened["created"],
+            opened["url"],
+            opened["note"],
+        )
+    elif open_pr:
         tool = _pr_tool()
         if tool is None:
             note = "pushed; no gh/gh-axi found, PR not opened"

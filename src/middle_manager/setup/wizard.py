@@ -9,9 +9,11 @@ authenticated harnesses.
 from __future__ import annotations
 
 from middle_manager.config import (
+    FORGES,
     REASONING_LEVELS,
     Authority,
     ConfigError,
+    ForgePolicy,
     ManagerProfile,
     MMConfig,
     WorkerCeiling,
@@ -31,6 +33,22 @@ def _choose(prompt: str, options: list[str], default: str) -> str:
         if raw in options:
             return raw
         print(f"  please choose one of: {opts}")
+
+
+def _forge_policy(kind: str, twg_path: str | None) -> ForgePolicy:
+    """The forge to configure. Bitbucket needs a ``twg`` it can actually run."""
+    if kind not in FORGES:
+        raise ConfigError(f"forge must be one of {FORGES}")
+    policy = ForgePolicy(kind=kind, twg_path=twg_path or "")
+    if kind == "bitbucket":
+        from middle_manager import forge
+
+        found = forge._executable(policy.twg_path) if policy.twg_path else None
+        if policy.twg_path and found is None:
+            raise ConfigError(f"--twg-path {policy.twg_path} is not an executable")
+        if found is None and forge.twg_bin() is None:
+            raise ConfigError(f"forge bitbucket needs the TWG CLI: {forge.INSTALL_HINT}")
+    return policy
 
 
 def build_config(overrides: dict) -> MMConfig:
@@ -73,6 +91,7 @@ def build_config(overrides: dict) -> MMConfig:
         authority=Authority(
             merge=bool(overrides.get("allow_merge", False)),
         ),
+        forge=_forge_policy(overrides.get("forge", "github"), overrides.get("twg_path")),
     )
     cfg.validate()
     return cfg
@@ -104,6 +123,10 @@ def run_setup(non_interactive: bool = False, overrides: dict | None = None) -> M
             "worker_max_reasoning",
             _choose("Max worker reasoning", list(REASONING_LEVELS), "medium"),
         )
+        if "forge" not in overrides:
+            overrides["forge"] = _choose(
+                "Code host (github uses gh; bitbucket uses twg bb)", list(FORGES), "github"
+            )
 
     cfg = build_config(overrides)
     save_config(cfg)
@@ -145,6 +168,16 @@ def config_models(overrides: dict) -> MMConfig:
             current.cost_posture = overrides["cost_posture"]
         current.validate()
         cfg = current
+    save_config(cfg)
+    return cfg
+
+
+def config_forge(kind: str | None, twg_path: str | None) -> MMConfig:
+    """`mm config forge` — choose GitHub (gh) or Bitbucket (twg) for an existing install."""
+    cfg = load_config()
+    cfg.forge = _forge_policy(
+        kind or cfg.forge.kind, cfg.forge.twg_path if twg_path is None else twg_path
+    )
     save_config(cfg)
     return cfg
 

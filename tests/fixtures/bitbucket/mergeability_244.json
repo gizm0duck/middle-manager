@@ -1,0 +1,14 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket pull-requests mergeability",
+ "data": [
+  {
+   "type": "pullrequest_state_check",
+   "status": "FAILED",
+   "required": true,
+   "blocking": true,
+   "state": "MERGED"
+  }
+ ],
+ "meta": {}
+}

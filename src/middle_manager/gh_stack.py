@@ -65,7 +65,14 @@ def _run(argv: list[str], *, cwd: str | None, slug: str | None) -> subprocess.Co
 
 
 def available() -> bool:
-    """Whether ``gh stack`` answers at all. gh exits non-zero for an unknown command."""
+    """Whether ``gh stack`` answers at all. gh exits non-zero for an unknown command.
+
+    Never on a Bitbucket install: Bitbucket has no native stacks.
+    """
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        return False
     tool = _gh()
     if tool is None:
         return False
@@ -279,6 +286,8 @@ def after_delivery(
     parent whose pull request targets the layer below is then linked, with every
     unmerged layer beneath it, as one GitHub stack.
     """
+    from middle_manager import forge
+
     out: dict = {"retargeted": None, "link": None, "notes": []}
     if retarget_to_base and base and task["branch"]:
         pr = stacks.pull_request_for(task["branch"], cwd=cwd, slug=slug)
@@ -307,6 +316,9 @@ def after_delivery(
                     return out
     parent_id = task["stacked_on_task"] if "stacked_on_task" in task.keys() else None  # noqa: SIM118
     if not parent_id:
+        return out
+    if forge.is_bitbucket():
+        out["notes"].append(f"{forge.NO_STACKS}; this stack merges layer by layer")
         return out
     ctx = repo_context(conn, task)
     if not on_chain(conn, task, base, ctx.base):
@@ -337,6 +349,13 @@ def retarget(
     pull request), the base changed, and the chain linked again — when the new base
     is still where this layer sits in its stack.
     """
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        failed = forge.retarget(pr_number, new_base, cwd=cwd, slug=slug)
+        if failed:
+            raise stacks.StackError(f"retargeting PR #{pr_number} to {new_base} failed: {failed}")
+        return {"task_id": int(task["id"]), "pr": pr_number, "base": new_base, "unstacked": False}
     tool = stacks._pr_tool()
     if tool is None:
         raise stacks.StackError("cannot retarget a pull request because plain `gh` is unavailable")

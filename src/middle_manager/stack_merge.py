@@ -130,7 +130,18 @@ def rollup_checks(pr_number: int, *, cwd: str | None, slug: str | None = None) -
 
 
 def layer_checks(pr_number: int, *, cwd: str | None, slug: str | None = None) -> list[dict]:
-    """The checks that decide whether a layer may merge: required, else the whole rollup."""
+    """The checks that decide whether a layer may merge: required, else the whole rollup.
+
+    On Bitbucket: the build statuses on the head commit, plus every merge check
+    Bitbucket reports as blocking (``pull-requests mergeability``).
+    """
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        rows = forge.checks(pr_number, cwd=cwd, slug=slug)
+        if rows is None:
+            raise StackError(f"could not read the build statuses on PR #{pr_number}")
+        return rows
     rows = required_checks(pr_number, cwd=cwd, slug=slug)
     return rows or rollup_checks(pr_number, cwd=cwd, slug=slug)
 
@@ -322,9 +333,13 @@ def merge_stack(
     A merge is confirmed on the forge every half second, ``confirm_attempts`` times
     (a minute by default): a stack of several layers can take GitHub that long.
     """
+    from middle_manager import forge
+
     _require_merge_authority()
     result = StackMergeResult(identifier)
-    if not layer_by_layer:
+    if not layer_by_layer and forge.is_bitbucket():
+        result.notes.append(f"{forge.NO_STACKS}, so this stack merges layer by layer")
+    elif not layer_by_layer:
         if gh_stack.available():
             return _merge_atomically(
                 identifier, result, sleep=sleep, confirm_attempts=confirm_attempts
@@ -478,7 +493,9 @@ def _merge_atomically(
 
 
 def _retarget_children(conn, task, *, new_base: str) -> list[dict]:
-    if stacks._pr_tool() is None:
+    from middle_manager import forge
+
+    if not forge.is_bitbucket() and stacks._pr_tool() is None:
         raise StackError("cannot retarget child pull requests because plain `gh` is unavailable")
     slug, _default, parent_cwd = stacks._repo_context(conn, task)
     changed = []
@@ -506,6 +523,24 @@ def _retarget_children(conn, task, *, new_base: str) -> list[dict]:
         except StackError as exc:
             raise StackError(f"PR #{number} merged below it, but {exc}") from exc
     return changed
+
+
+def _merge_one(pr_number: int, *, cwd: str | None, slug: str | None) -> str | None:
+    """Merge one pull request with a merge commit. Returns why it was not merged, or None."""
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        failed = forge.merge(pr_number, cwd=cwd, slug=slug)
+        return f"forge refused PR #{pr_number}: {failed}" if failed else None
+    tool = stacks._pr_tool()
+    if tool is None:
+        return "cannot merge because plain `gh` is unavailable"
+    argv = [tool, "pr", "merge", str(pr_number), "--merge"] + _repo_flag(slug)
+    proc = stacks._run_forge(argv, cwd=cwd)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "forge refused").strip()[:240]
+        return f"forge refused PR #{pr_number}: {detail}"
+    return None
 
 
 def _merge_layer_by_layer(
@@ -547,15 +582,9 @@ def _merge_layer_by_layer(
         if reason:
             result.stopped = reason
             return result
-        tool = stacks._pr_tool()
-        if tool is None:
-            result.stopped = "cannot merge because plain `gh` is unavailable"
-            return result
-        argv = [tool, "pr", "merge", str(layer.pr_number), "--merge"] + _repo_flag(slug)
-        proc = stacks._run_forge(argv, cwd=cwd)
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "forge refused").strip()[:240]
-            result.stopped = f"forge refused PR #{layer.pr_number}: {detail}"
+        refused = _merge_one(layer.pr_number, cwd=cwd, slug=slug)
+        if refused:
+            result.stopped = refused
             return result
         merged_sha = None
         for attempt in range(confirm_attempts):

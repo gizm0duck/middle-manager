@@ -331,6 +331,10 @@ def pull_request_for(
     Everything a layer view needs from the forge comes from here, so a machine
     without ``gh`` renders the stack from local state instead of failing.
     """
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        return forge.pull_request_for(branch, cwd=cwd, slug=slug)
     tool = _pr_tool()
     if tool is None:
         return None

@@ -70,18 +70,27 @@ class RepoError(Exception):
 
 
 def forge_slug(url: str | None) -> str | None:
-    """``owner/name`` for a GitHub URL, else None. This is what ``gh --repo`` wants."""
+    """``owner/name`` for a GitHub URL, else None. This is what ``gh --repo`` wants.
+
+    An install explicitly configured for Bitbucket also reads bitbucket.org URLs as
+    ``workspace/repo`` (what ``twg bb --workspace --repo`` wants); otherwise they are
+    no forge at all, exactly as before.
+    """
     if not url:
         return None
     for pattern in _FORGE_URL_PATTERNS:
         match = pattern.match(url.strip())
         if match:
             return f"{match.group('owner')}/{match.group('name')}"
+    from middle_manager import forge
+
+    if forge.bitbucket_slug(url) and forge.is_bitbucket():
+        return forge.bitbucket_slug(url)
     return None
 
 
 def is_forge_url(url: str | None) -> bool:
-    """True for a GitHub URL (https or ssh) — somewhere a pull request can be opened."""
+    """True where a pull request can be opened: GitHub, or Bitbucket when configured for it."""
     return forge_slug(url) is not None
 
 

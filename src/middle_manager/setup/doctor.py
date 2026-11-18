@@ -121,10 +121,11 @@ def collect() -> dict:
             cfg_status["valid"] = True
             cfg_status["manager"] = f"{cfg.manager.provider}/{cfg.manager.model}"
             cfg_status["worker_ceiling"] = f"{cfg.worker.provider}/{cfg.worker.max_model}"
+            cfg_status["forge"] = cfg.forge.kind
         except ConfigError as exc:
             cfg_status["valid"] = False
             cfg_status["error"] = str(exc)
-    return {
+    data = {
         "mm_home": str(home),
         "config": cfg_status,
         "state_db": _schema_status(),
@@ -133,6 +134,11 @@ def collect() -> dict:
         "capability_drift": _capability_drift(report),
         "repos": _repo_forges(),
     }
+    if cfg_status.get("forge") == "bitbucket":
+        from middle_manager import forge
+
+        data["bitbucket"] = forge.doctor_status()
+    return data
 
 
 def render_text(data: dict) -> str:
@@ -166,6 +172,19 @@ def render_text(data: dict) -> str:
     for c in data["environment"]["companions"]:
         mark = "present" if c["available"] else "not provisioned"
         lines.append(f"  {c['name']:<12} [{mark}]")
+    bitbucket = data.get("bitbucket")
+    if bitbucket:
+        lines.append("")
+        lines.append("Bitbucket (twg):")
+        if not bitbucket.get("available"):
+            lines.append(f"  twg      [MISSING] — {bitbucket.get('hint')}")
+        elif bitbucket.get("bitbucket_ok"):
+            lines.append(f"  twg      [ok] {bitbucket.get('path')} — Bitbucket access ready")
+        else:
+            lines.append(
+                f"  twg      [NOT READY] {bitbucket.get('path')} — Bitbucket access is "
+                f"{bitbucket.get('bitbucket_status')}; {bitbucket.get('hint')}"
+            )
     drift = data.get("capability_drift", [])
     if drift:
         lines.append("")

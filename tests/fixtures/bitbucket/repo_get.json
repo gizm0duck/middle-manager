@@ -1,0 +1,16 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket repo get",
+ "data": {
+  "type": "repository",
+  "full_name": "atlassian/forge-bitbucket-related-prs",
+  "name": "forge-bitbucket-related-prs",
+  "slug": "forge-bitbucket-related-prs",
+  "mainbranch": {
+   "name": "main",
+   "type": "branch"
+  },
+  "is_private": false
+ },
+ "meta": {}
+}
