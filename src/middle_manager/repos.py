@@ -19,6 +19,7 @@ hand.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -124,6 +125,8 @@ class AddedRepo:
     base_sha: str | None
     forge_url: str | None = None
     notes: list[str] = field(default_factory=list)
+    #: Cone directories of a sparse checkout; None is a full checkout.
+    sparse_paths: list[str] | None = None
 
 
 @dataclass
@@ -318,7 +321,144 @@ def _resolve_forge_url(source: str, forge_url: str | None) -> str:
     )
 
 
-def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = None) -> AddedRepo:
+# --------------------------------------------------------------------------- #
+# Sparse checkout
+# --------------------------------------------------------------------------- #
+
+#: How a sparse repository's base clone is cloned: blobs arrive on demand, so a
+#: large repository costs only the directories it materializes. Best-effort: a
+#: source that cannot filter falls back to a plain ``--sparse`` clone.
+SPARSE_CLONE_FLAGS = ("--filter=blob:none", "--sparse")
+
+
+def normalize_sparse_paths(paths: list[str] | None) -> list[str] | None:
+    """Validated cone directories, or None for a full checkout.
+
+    An empty list is valid: cone mode with only the repository's root files.
+    """
+    if paths is None:
+        return None
+    cleaned: list[str] = []
+    for raw in paths:
+        text = (raw or "").strip()
+        path = text.strip("/")
+        if not path or text.startswith("/") or os.path.isabs(text):
+            raise RepoError(
+                f"--sparse wants directories inside the repo, like src/app; got {raw!r}"
+            )
+        if any(part in ("..", ".") for part in path.split("/")):
+            raise RepoError(f"--sparse directories cannot contain '..' or '.'; got {raw!r}")
+        if path not in cleaned:
+            cleaned.append(path)
+    return cleaned
+
+
+def sparse_paths_of(row) -> list[str] | None:
+    """A registered repo's sparse cone directories, or None for a full checkout."""
+    if row is None or "sparse_paths" not in row.keys():  # noqa: SIM118
+        return None
+    raw = row["sparse_paths"]
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return [str(item) for item in value] if isinstance(value, list) else None
+
+
+def describe_sparse(paths: list[str] | None) -> str:
+    if paths is None:
+        return "full checkout"
+    return "sparse: " + (", ".join(paths) if paths else "root files only")
+
+
+def apply_sparse(path: str, paths: list[str]) -> str | None:
+    """Put a checkout in cone mode on exactly ``paths``. Returns why it failed, or None.
+
+    Idempotent, so a reused pool worktree gets the same answer every time. The
+    result is read back: a checkout that is not sparse on these paths afterwards is
+    a failure, never a silent full checkout.
+    """
+    proc = subprocess.run(
+        ["git", "-C", path, "sparse-checkout", "set", "--cone", "--", *paths],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return f"git sparse-checkout set failed: {(proc.stderr or proc.stdout).strip()[:240]}"
+    return verify_sparse(path, paths)
+
+
+def verify_sparse(path: str, paths: list[str]) -> str | None:
+    """Why ``path`` is not sparse on exactly ``paths``, or None when it is."""
+    enabled = subprocess.run(
+        ["git", "-C", path, "config", "--get", "core.sparseCheckout"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if enabled != "true":
+        return "sparse checkout is not enabled; the whole repository is checked out"
+    listed = subprocess.run(
+        ["git", "-C", path, "sparse-checkout", "list"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    have = sorted(line.strip() for line in listed.stdout.splitlines() if line.strip())
+    if listed.returncode != 0 or have != sorted(paths):
+        return f"sparse directories are {have or 'root files only'}, expected {sorted(paths)}"
+    return None
+
+
+def disable_sparse(path: str) -> str | None:
+    """Turn a checkout back into a full one. Returns why it failed, or None."""
+    proc = subprocess.run(
+        ["git", "-C", path, "sparse-checkout", "disable"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return f"git sparse-checkout disable failed: {(proc.stderr or proc.stdout).strip()[:240]}"
+    return None
+
+
+def _clone(source: str, dest: Path, sparse: list[str] | None, notes: list[str]) -> None:
+    """Clone the base clone; a sparse one filtered and in cone mode on ``sparse``."""
+    if sparse is None:
+        _git(["clone", "--quiet", source, str(dest)])
+        return
+    rc, _out, err = _git_ok(["clone", "--quiet", *SPARSE_CLONE_FLAGS, source, str(dest)])
+    if rc != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        _git(["clone", "--quiet", "--sparse", source, str(dest)])
+        notes.append(
+            "partial clone refused by the source; cloned in full history with a sparse "
+            f"checkout instead ({err or 'git refused --filter'})"
+        )
+    elif "filter" in err.lower() and "ignor" in err.lower():
+        notes.append("the source cannot filter blobs; sparse checkout only, no partial clone")
+    failed = apply_sparse(str(dest), sparse)
+    if failed:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RepoError(f"could not make the base clone sparse: {failed}")
+    notes.append(f"{describe_sparse(sparse)} (workers widen with `git sparse-checkout add <dir>`)")
+
+
+def add_repo(
+    url_or_path: str,
+    name: str | None = None,
+    forge_url: str | None = None,
+    sparse: list[str] | None = None,
+) -> AddedRepo:
+    """Register a repository. ``sparse`` (cone directories) makes it a sparse checkout.
+
+    ``sparse=None`` is a full clone, exactly as before; ``[]`` is root files only.
+    """
+    sparse = normalize_sparse_paths(sparse)
     ensure_layout()
     conn = init_db()
     repo_name = name or derive_name(url_or_path)
@@ -337,13 +477,13 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
 
     # Clone from the forge, never from the local path: the clone's origin is where
     # task branches are pushed.
-    _git(["clone", "--quiet", resolved_forge, str(dest)])
+    notes: list[str] = []
+    _clone(resolved_forge, dest, sparse, notes)
     remote = ensure_forge_remote(str(dest), resolved_forge)
 
     # The forge names the default branch; the clone's HEAD is only whatever the
     # source had checked out.
     default_branch = forge_default_branch(str(dest), remote)
-    notes: list[str] = []
     if default_branch:
         if remote != "origin":
             rc, _out, err = _git_ok(["fetch", "--quiet", remote, default_branch], cwd=str(dest))
@@ -372,11 +512,19 @@ def add_repo(url_or_path: str, name: str | None = None, forge_url: str | None = 
         default_branch=default_branch,
         base_sha=base_sha,
         forge_url=resolved_forge,
+        sparse_paths=json.dumps(sparse) if sparse is not None else None,
     )
     # Seed per-repo memory so learnings about this repo persist across sessions.
     seed_repo_memory(repo_name, origin=resolved_forge, default_branch=default_branch)
     return AddedRepo(
-        repo_name, resolved_forge, str(dest), default_branch, base_sha, resolved_forge, notes=notes
+        repo_name,
+        resolved_forge,
+        str(dest),
+        default_branch,
+        base_sha,
+        resolved_forge,
+        notes=notes,
+        sparse_paths=sparse,
     )
 
 
@@ -437,10 +585,15 @@ class RepoSettings:
     environment: object = None
     # No CI at all: `mm stack merge` may land a layer with no checks.
     no_ci: bool = False
+    # Cone directories of a sparse checkout; None is a full checkout.
+    sparse_paths: list[str] | None = None
+    # What changing the sparse setting did to the base clone, when it was changed.
+    notes: list[str] = field(default_factory=list)
 
     def describe(self) -> str:
         origin = "the default" if self.migrations_glob_is_default else "set for this repo"
         lines = [f"{self.repo}: migrations live at {self.migrations_glob} ({origin})"]
+        lines.append(f"  checkout: {describe_sparse(self.sparse_paths)}")
         lines.append(
             "  CI: none (set with --no-ci; a stack layer with no checks may merge)"
             if self.no_ci
@@ -448,6 +601,7 @@ class RepoSettings:
         )
         if self.environment is not None:
             lines.extend(f"  {line}" for line in self.environment.describe())
+        lines.extend(f"  {note}" for note in self.notes)
         return "\n".join(lines)
 
 
@@ -463,6 +617,7 @@ def get_settings(name: str) -> RepoSettings:
         migrations_glob_is_default=glob == DEFAULT_MIGRATIONS_GLOB,
         environment=environment.for_repo(row),
         no_ci=has_no_ci(row),
+        sparse_paths=sparse_paths_of(row),
     )
 
 
@@ -497,6 +652,29 @@ def set_settings(
     except environment.RepoEnvironmentError as exc:
         raise RepoError(str(exc)) from exc
     return get_settings(name)
+
+
+def set_sparse(name: str, paths: list[str] | None) -> RepoSettings:
+    """Make a registered repo sparse on ``paths`` (``[]``: root files only) or full (None).
+
+    The base clone changes now; every worktree leased afterwards follows it (a
+    pooled worktree is re-applied on each lease). Worktrees already leased keep the
+    checkout they have.
+    """
+    paths = normalize_sparse_paths(paths)
+    conn, row = _require_repo(name)
+    local = row["local_path"]
+    failed = apply_sparse(local, paths) if paths is not None else disable_sparse(local)
+    if failed:
+        raise RepoError(f"{name}: base clone unchanged in the record: {failed}")
+    store.update_repo_fields(
+        conn, name, sparse_paths=json.dumps(paths) if paths is not None else None
+    )
+    settings = get_settings(name)
+    settings.notes.append(
+        f"base clone is now a {describe_sparse(paths)}; worktrees leased from here on follow it"
+    )
+    return settings
 
 
 def set_provision(

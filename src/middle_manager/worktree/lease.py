@@ -47,6 +47,9 @@ class Lease:
     worktree_path: str
     base_sha: str | None
     backend: str
+    #: Set when a sparse repository's worktree could not be made sparse: the worker
+    #: then has more of the repository than it should, and dispatch says so.
+    sparse_warning: str | None = None
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -125,6 +128,7 @@ class LeaseManager:
         task_id: int | None = None,
         branch_prefix: str = "mm",
         branch: str | None = None,
+        sparse_paths: list[str] | None = None,
     ) -> Lease:
         """Lease a fresh worktree; a fresh branch unless ``branch`` names the task's own.
 
@@ -133,10 +137,17 @@ class LeaseManager:
         the rebuilt checkout is put on it — the existing local branch when the
         base clone still has one, a new branch at the clone's head otherwise.
         The caller moves it to the right commit afterwards.
+
+        ``sparse_paths`` (a sparse repository's cone directories) makes the worktree
+        sparse on exactly those; None is a full checkout, exactly as before. A
+        worktree that could not be made sparse is still handed out, with
+        ``sparse_warning`` saying why.
         """
         if self.backend == "treehouse":
-            return self._acquire_treehouse(repo_path, repo_id, task_id, branch_prefix, branch)
-        return self._acquire_git(repo_path, repo_id, task_id, branch_prefix, branch)
+            return self._acquire_treehouse(
+                repo_path, repo_id, task_id, branch_prefix, branch, sparse_paths
+            )
+        return self._acquire_git(repo_path, repo_id, task_id, branch_prefix, branch, sparse_paths)
 
     def _acquire_git(
         self,
@@ -145,6 +156,7 @@ class LeaseManager:
         task_id: int | None,
         branch_prefix: str,
         branch: str | None,
+        sparse_paths: list[str] | None = None,
     ) -> Lease:
         lease_id = uuid.uuid4().hex[:12]
         pool = worktree_pools_dir()
@@ -152,12 +164,25 @@ class LeaseManager:
         worktree_path = str(pool / lease_id)
 
         base_sha = _git(["rev-parse", "HEAD"], cwd=repo_path)
+        # A sparse repository's worktree is created empty, made sparse, and only
+        # then checked out, so a large repository is never materialized in full.
+        no_checkout = ["--no-checkout"] if sparse_paths is not None else []
         if branch and _branch_exists(repo_path, branch):
-            _git(["worktree", "add", "-q", worktree_path, branch], cwd=repo_path)
+            _git(["worktree", "add", "-q", *no_checkout, worktree_path, branch], cwd=repo_path)
         else:
             branch = branch or f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id}"
-            _git(["worktree", "add", "-q", "-b", branch, worktree_path, "HEAD"], cwd=repo_path)
-        return self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
+            _git(
+                ["worktree", "add", "-q", *no_checkout, "-b", branch, worktree_path, "HEAD"],
+                cwd=repo_path,
+            )
+        warning = None
+        if sparse_paths is not None:
+            warning = _make_sparse(worktree_path, sparse_paths)
+            # The empty worktree's index and files come from HEAD, inside the cone.
+            _git(["read-tree", "-mu", "HEAD"], cwd=worktree_path)
+        lease = self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
+        lease.sparse_warning = warning
+        return lease
 
     def _acquire_treehouse(
         self,
@@ -166,6 +191,7 @@ class LeaseManager:
         task_id: int | None,
         branch_prefix: str,
         branch: str | None,
+        sparse_paths: list[str] | None = None,
     ) -> Lease:
         holder = f"mm-task-{task_id or 'adhoc'}"
         out = _run_treehouse(_th_acquire_argv(holder), cwd=repo_path)
@@ -180,7 +206,14 @@ class LeaseManager:
         else:
             branch = branch or f"{branch_prefix}/task-{task_id or 'adhoc'}-{lease_id[:12]}"
             _git(["switch", "-c", branch], cwd=worktree_path)
-        return self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
+        # A pooled worktree is reused across tasks and repo settings, so it follows
+        # the repository's current sparse setting on every lease. git (2.36+) copies
+        # the base clone's sparse patterns into a new worktree, but a reused one
+        # keeps whatever it had, so the setting is applied (or removed) each time.
+        warning = _treehouse_sparse(worktree_path, sparse_paths)
+        lease = self._record(lease_id, repo_id, task_id, branch, worktree_path, base_sha)
+        lease.sparse_warning = warning
+        return lease
 
     def _record(
         self,
@@ -235,6 +268,42 @@ class LeaseManager:
     def is_dirty(self, lease: Lease) -> bool:
         out = _git(["status", "--porcelain"], cwd=lease.worktree_path)
         return bool(out.strip())
+
+
+def _make_sparse(worktree_path: str, sparse_paths: list[str]) -> str | None:
+    """Make a worktree sparse; the reason it is not, as a dispatch warning, or None."""
+    from middle_manager.repos import apply_sparse
+
+    failed = apply_sparse(worktree_path, sparse_paths)
+    if failed:
+        return (
+            f"this repository is sparse but worktree {worktree_path} is not: {failed}. "
+            "The worker sees more of the repository than configured."
+        )
+    return None
+
+
+def _treehouse_sparse(worktree_path: str, sparse_paths: list[str] | None) -> str | None:
+    """Bring a pooled worktree in line with its repository's sparse setting."""
+    if sparse_paths is not None:
+        return _make_sparse(worktree_path, sparse_paths)
+    enabled = subprocess.run(
+        ["git", "-C", worktree_path, "config", "--get", "core.sparseCheckout"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if enabled != "true":
+        return None
+    from middle_manager.repos import disable_sparse
+
+    failed = disable_sparse(worktree_path)
+    if failed:
+        return (
+            f"pooled worktree {worktree_path} is still sparse from an earlier task, but this "
+            f"repository is a full checkout: {failed}. The worker is missing files."
+        )
+    return None
 
 
 def _branch_exists(repo_path: str, branch: str) -> bool:
