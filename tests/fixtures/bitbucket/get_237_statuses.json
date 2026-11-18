@@ -1,0 +1,86 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket pull-requests get",
+ "data": {
+  "type": "pullrequest",
+  "id": 237,
+  "title": "[Renovate] Update Node.js to v26",
+  "state": "OPEN",
+  "draft": false,
+  "close_source_branch": true,
+  "created_on": "2026-10-29T02:38:09.507558+00:00",
+  "updated_on": "2026-11-16T07:34:57.462113+00:00",
+  "merge_commit": null,
+  "source": {
+   "branch": {
+    "name": "renovate/node-26.x"
+   },
+   "commit": {
+    "hash": "49f3b57d59e8",
+    "type": "commit"
+   },
+   "repository": {
+    "full_name": "atlassian/forge-bitbucket-related-prs"
+   }
+  },
+  "destination": {
+   "branch": {
+    "name": "main"
+   },
+   "commit": {
+    "hash": "eb9abdfb6407",
+    "type": "commit"
+   },
+   "repository": {
+    "full_name": "atlassian/forge-bitbucket-related-prs"
+   }
+  },
+  "links": {
+   "html": {
+    "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/237"
+   }
+  },
+  "_statuses": [
+   {
+    "key": "renovate/stability-days",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "renovate/stability-days",
+    "url": "https://docs.renovatebot.com/key-concepts/minimum-release-age/",
+    "created_on": "2026-11-16T07:29:06.119508+00:00",
+    "updated_on": "2026-11-16T07:29:06.119522+00:00",
+    "commit": {
+     "hash": "49f3b57d59e8cf1384a09ebe7036b5e3e965676f",
+     "type": "commit"
+    }
+   },
+   {
+    "key": "default",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "Pipeline - default",
+    "url": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pipelines/results/1206",
+    "created_on": "2026-11-16T07:29:22.644163+00:00",
+    "updated_on": "2026-11-16T07:31:00.674597+00:00",
+    "commit": {
+     "hash": "49f3b57d59e8cf1384a09ebe7036b5e3e965676f",
+     "type": "commit"
+    }
+   },
+   {
+    "key": "custom:trust-greenlight-pipeline",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "Pipeline - custom: trust-greenlight-pipeline",
+    "url": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pipelines/results/1207",
+    "created_on": "2026-11-16T07:29:32.894359+00:00",
+    "updated_on": "2026-11-16T07:34:57.453943+00:00",
+    "commit": {
+     "hash": "49f3b57d59e8cf1384a09ebe7036b5e3e965676f",
+     "type": "commit"
+    }
+   }
+  ]
+ },
+ "meta": {}
+}

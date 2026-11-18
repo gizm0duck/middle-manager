@@ -26,7 +26,12 @@ hands authentication steps back to the user.
    behalf.
 4. When at least one harness is authenticated, run `mm setup`. Offer only the
    harnesses `mm doctor` reports as usable. Setup collects the manager profile
-   and the hard worker ceiling and writes `.mm/config.toml`.
+   and the hard worker ceiling and writes `.mm/config.toml`. It also asks for the
+   code host: `github` (`gh`, the default) or `bitbucket` (Atlassian's `twg bb`).
+   Choose Bitbucket only when the user asks for it (`--forge bitbucket`, plus
+   `--twg-path` when `twg` is not on `PATH` or in `~/.local/bin`); then `mm doctor`
+   shows whether Bitbucket access is ready, and if not, hand the user `twg login`
+   and `twg setup bitbucket`. Never handle their tokens.
 5. Register work with `mm repo add <url-or-path>`, then confirm with
    `mm repo list` and `mm status`.
 

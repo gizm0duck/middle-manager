@@ -138,6 +138,10 @@ def _lookup_pr(branch: str, cwd: str | None) -> dict[str, Any]:
     unknown = {"known": False, "pr": None, "ci": "unknown", "failing": []}
     if cwd is None:
         return unknown
+    from middle_manager import forge
+
+    if forge.is_bitbucket():
+        return forge.lookup(branch, cwd)
     code, out = _run_gh(
         [
             "pr",

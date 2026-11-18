@@ -1,0 +1,89 @@
+{
+ "apiVersion": "v2",
+ "command": "bitbucket pull-requests get",
+ "data": {
+  "type": "pullrequest",
+  "id": 244,
+  "title": "[Renovate] Update dependency prettier to v3.10.1",
+  "state": "MERGED",
+  "draft": false,
+  "close_source_branch": true,
+  "created_on": "2026-11-17T12:04:05.032572+00:00",
+  "updated_on": "2026-11-17T22:17:28.733962+00:00",
+  "merge_commit": {
+   "hash": "eb9abdfb6407",
+   "type": "commit"
+  },
+  "source": {
+   "branch": {
+    "name": "renovate/prettier-3.x"
+   },
+   "commit": {
+    "hash": "74ccd187f498",
+    "type": "commit"
+   },
+   "repository": {
+    "full_name": "atlassian/forge-bitbucket-related-prs"
+   }
+  },
+  "destination": {
+   "branch": {
+    "name": "main"
+   },
+   "commit": {
+    "hash": "5fb6a7da47c2",
+    "type": "commit"
+   },
+   "repository": {
+    "full_name": "atlassian/forge-bitbucket-related-prs"
+   }
+  },
+  "links": {
+   "html": {
+    "href": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pull-requests/244"
+   }
+  },
+  "_statuses": [
+   {
+    "key": "renovate/stability-days",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "renovate/stability-days",
+    "url": "https://docs.renovatebot.com/key-concepts/minimum-release-age/",
+    "created_on": "2026-11-16T07:28:52.304057+00:00",
+    "updated_on": "2026-11-16T07:28:52.304070+00:00",
+    "commit": {
+     "hash": "74ccd187f498fe5dcba382d388e34b8b70281973",
+     "type": "commit"
+    }
+   },
+   {
+    "key": "default",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "Pipeline - default",
+    "url": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pipelines/results/1203",
+    "created_on": "2026-11-16T07:29:09.979736+00:00",
+    "updated_on": "2026-11-16T07:30:54.410138+00:00",
+    "commit": {
+     "hash": "74ccd187f498fe5dcba382d388e34b8b70281973",
+     "type": "commit"
+    }
+   },
+   {
+    "key": "custom:trust-greenlight-pipeline",
+    "type": "build",
+    "state": "SUCCESSFUL",
+    "name": "Pipeline - custom: trust-greenlight-pipeline",
+    "url": "https://bitbucket.org/atlassian/forge-bitbucket-related-prs/pipelines/results/1210",
+    "created_on": "2026-11-17T12:04:32.578188+00:00",
+    "updated_on": "2026-11-17T12:09:39.437626+00:00",
+    "commit": {
+     "hash": "74ccd187f498fe5dcba382d388e34b8b70281973",
+     "type": "commit"
+    }
+   }
+  ]
+ },
+ "meta": {}
+}

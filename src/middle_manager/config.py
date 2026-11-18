@@ -21,6 +21,7 @@ from middle_manager.paths import config_path
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 COST_POSTURES = ("lean", "balanced", "quality")
 PROVIDERS = ("claude", "codex")
+FORGES = ("github", "bitbucket")
 
 
 class ConfigError(Exception):
@@ -146,6 +147,19 @@ class UsagePolicy:
 
 
 @dataclass
+class ForgePolicy:
+    """Which code host delivery, the heartbeat and stack merges talk to.
+
+    ``github`` (``gh``) is the default. ``bitbucket`` drives Atlassian's ``twg``
+    CLI and is used only when set explicitly; ``twg_path`` pins the executable for
+    processes whose ``PATH`` does not reach it. See :mod:`middle_manager.forge`.
+    """
+
+    kind: str = "github"
+    twg_path: str = ""
+
+
+@dataclass
 class MMConfig:
     manager: ManagerProfile = field(default_factory=ManagerProfile)
     worker: WorkerCeiling = field(default_factory=WorkerCeiling)
@@ -156,6 +170,7 @@ class MMConfig:
     health: HealthPolicy = field(default_factory=HealthPolicy)
     usage: UsagePolicy = field(default_factory=UsagePolicy)
     claude: ClaudeProfile = field(default_factory=ClaudeProfile)
+    forge: ForgePolicy = field(default_factory=ForgePolicy)
 
     def validate(self) -> None:
         if self.manager.provider not in PROVIDERS:
@@ -227,6 +242,10 @@ class MMConfig:
             value = getattr(self.usage, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ConfigError(f"usage.{name} must be a positive integer")
+        if self.forge.kind not in FORGES:
+            raise ConfigError(f"forge.kind must be one of {FORGES}")
+        if not isinstance(self.forge.twg_path, str):
+            raise ConfigError("forge.twg_path must be a path string (empty for PATH lookup)")
         if not isinstance(self.claude.allowed_tools, list):
             raise ConfigError("claude.allowed_tools must be a list of tool patterns")
         for pattern in self.claude.allowed_tools:
@@ -237,7 +256,7 @@ class MMConfig:
                 )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "manager": asdict(self.manager),
             "worker": asdict(self.worker),
             "cost_posture": self.cost_posture,
@@ -248,6 +267,11 @@ class MMConfig:
             "usage": asdict(self.usage),
             "claude": asdict(self.claude),
         }
+        # Written only when it differs from the default, so a GitHub install's
+        # config is exactly what it was before forges were configurable.
+        if self.forge != ForgePolicy():
+            data["forge"] = asdict(self.forge)
+        return data
 
 
 def _from_dict(data: dict) -> MMConfig:
@@ -266,6 +290,7 @@ def _from_dict(data: dict) -> MMConfig:
         health=HealthPolicy(**data.get("health", {})),
         usage=UsagePolicy(**data.get("usage", {})),
         claude=ClaudeProfile(**data.get("claude", {})),
+        forge=ForgePolicy(**data.get("forge", {})),
     )
     return cfg
 
