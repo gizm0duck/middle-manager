@@ -277,6 +277,10 @@ That block is generated from the branch the task actually leased, so it is alway
 right and always identical. Repeating it by hand in a brief is how it drifts.
 Codex workers have a real shell and are deliberately not given the block.
 
+A repo registered with `--sparse` hands the worker a sparse worktree holding only its
+directories; when the task reaches past them, the brief says so and the worker runs
+`git sparse-checkout add <dir>` in its own worktree (never edit the base clone).
+
 ## 8. Before you send it
 
 `test -s` the file; `mm brief lint` it (the four outcome sections, and the defect

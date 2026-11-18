@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS repos (
     -- Set when the repository has no CI at all, so `mm stack merge` may land a
     -- layer that has no checks. Unset: no checks means CI has not reported yet.
     no_ci INTEGER,
+    -- Sparse checkout: a JSON list of cone directories the base clone and every
+    -- leased worktree materialize (an empty list is root files only). NULL: the
+    -- whole repository, as before.
+    sparse_paths TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -355,6 +359,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "no_ci" not in repo_cols:
         # A repository with no CI; unset keeps "no checks yet" from reading as green.
         conn.execute("ALTER TABLE repos ADD COLUMN no_ci INTEGER")
+    if "sparse_paths" not in repo_cols:
+        # Sparse checkout for a large repository; unset is a full checkout.
+        conn.execute("ALTER TABLE repos ADD COLUMN sparse_paths TEXT")
     for col, kind in (
         ("compose_stack", "TEXT"),
         ("db_port_base", "INTEGER"),

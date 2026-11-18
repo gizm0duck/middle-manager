@@ -30,14 +30,16 @@ def add_repo(
     default_branch: str | None,
     base_sha: str | None,
     forge_url: str | None = None,
+    sparse_paths: str | None = None,
 ) -> int:
     cur = conn.execute(
         """
         INSERT INTO repos
-            (name, origin, local_path, default_branch, base_sha, forge_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (name, origin, local_path, default_branch, base_sha, forge_url, sparse_paths,
+             created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (name, origin, local_path, default_branch, base_sha, forge_url, _now()),
+        (name, origin, local_path, default_branch, base_sha, forge_url, sparse_paths, _now()),
     )
     conn.commit()
     return int(cur.lastrowid)

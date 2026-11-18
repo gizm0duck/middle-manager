@@ -140,6 +140,13 @@ def _lease_worktree_for_branch(conn, branch: str) -> str | None:
     return row["worktree_path"] if row is not None and row["worktree_path"] else None
 
 
+def _sparse_paths(repo_row) -> list[str] | None:
+    """A sparse repository's cone directories for its worktrees; None for a full checkout."""
+    from middle_manager.repos import sparse_paths_of
+
+    return sparse_paths_of(repo_row)
+
+
 class Supervisor:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -392,6 +399,7 @@ class Supervisor:
                 repo_path=repo_row["local_path"],
                 repo_id=repo_row["id"],
                 task_id=task_id,
+                sparse_paths=_sparse_paths(repo_row),
             )
         except LeaseError as exc:
             store.set_task_status(conn, task_id, "failed")
@@ -403,6 +411,16 @@ class Supervisor:
                 task_id=task_id,
             )
             raise SupervisorError(f"task {task_id}: no worktree lease: {exc}") from exc
+        if lease.sparse_warning:
+            # A sparse repo's worktree that is not sparse still works, but it is never
+            # silent: the event is durable and dispatch prints it.
+            store.append_event(
+                conn,
+                kind="warning",
+                payload={"task_id": task_id, "summary": lease.sparse_warning},
+                run_id=run_id,
+                task_id=task_id,
+            )
         base_sha = lease.base_sha
         # Stacked work starts from the exact tip of the branch it builds on, not
         # from the repo's base. A worker cannot be redirected after it starts,
@@ -646,6 +664,7 @@ class Supervisor:
             "routing": routing,
             "prior_attempt": prior.task_id if prior is not None else None,
             "ends_at": ends_at,
+            "sparse_advisory": lease.sparse_warning,
         }
 
     def _route_and_enforce(
@@ -999,7 +1018,11 @@ class Supervisor:
         kept_locally = bool(branch) and _branch_exists(local, branch)
         try:
             lease = LeaseManager().acquire(
-                repo_path=local, repo_id=repo_row["id"], task_id=task_id, branch=branch
+                repo_path=local,
+                repo_id=repo_row["id"],
+                task_id=task_id,
+                branch=branch,
+                sparse_paths=_sparse_paths(repo_row),
             )
         except LeaseError as exc:
             raise SupervisorError(

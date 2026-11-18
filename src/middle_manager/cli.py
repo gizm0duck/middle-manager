@@ -189,18 +189,23 @@ def _cmd_repo(args: argparse.Namespace) -> int:
     from middle_manager.repos import (
         RepoError,
         add_repo,
+        describe_sparse,
         get_provision,
         get_settings,
         list_repos,
         set_provision,
         set_settings,
+        set_sparse,
         sync_repo,
     )
+    from middle_manager.repos import sparse_paths_of as repo_sparse_paths
 
     try:
         if args.repo_cmd == "set":
             from middle_manager.environment import REPO_COLUMNS
 
+            if args.sparse is not None and args.no_sparse:
+                raise RepoError("--sparse and --no-sparse contradict each other; pick one")
             changes = {col: getattr(args, col, None) for col in REPO_COLUMNS}
             asked = (
                 args.migrations_glob is not None
@@ -214,6 +219,8 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                 if asked
                 else get_settings(args.name)
             )
+            if args.sparse is not None or args.no_sparse:
+                settings = set_sparse(args.name, None if args.no_sparse else args.sparse)
             print(settings.describe())
             return 0
         if args.repo_cmd == "provision":
@@ -239,7 +246,7 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                     "https://bitbucket.org/<workspace>/<repo> once `mm config forge --forge "
                     f"bitbucket` is set), not {args.forge_url!r}"
                 )
-            added = add_repo(args.url, name=args.name, forge_url=args.forge_url)
+            added = add_repo(args.url, name=args.name, forge_url=args.forge_url, sparse=args.sparse)
             short_sha = added.base_sha[:8] if added.base_sha else "?"
             print(
                 f"registered {added.name} from {added.origin} "
@@ -257,9 +264,11 @@ def _cmd_repo(args: argparse.Namespace) -> int:
             for r in repos:
                 sha = (r.get("base_sha") or "?")[:8]
                 forge = r.get("forge_url") or "NO FORGE — deliver cannot open PRs"
+                sparse = repo_sparse_paths(r)
                 print(
                     f"{r['name']:<24} {r['default_branch'] or '?':<12} {sha}  "
                     f"{r['origin']}  ->  {forge}"
+                    + (f"  [{describe_sparse(sparse)}]" if sparse is not None else "")
                 )
             return 0
         if args.repo_cmd == "sync":
@@ -586,6 +595,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     for advisory in ("migration_advisory", "overlap_advisory"):
         if resp.get(advisory):
             print(resp[advisory])
+    if resp.get("sparse_advisory"):
+        print(f"WARNING: {resp['sparse_advisory']}")
     if resp.get("compose_project"):
         port = f" on port {resp['db_port']}" if resp.get("db_port") else ""
         print(
@@ -1981,6 +1992,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     add.add_argument("--name", default=None, help="override the derived name")
+    add.add_argument(
+        "--sparse",
+        nargs="*",
+        default=None,
+        metavar="DIR",
+        help=(
+            "large repo: a partial, sparse (cone-mode) clone that materializes only these "
+            "directories, in the base clone and every worker worktree; bare --sparse is "
+            "root files only. Workers widen with `git sparse-checkout add <dir>`"
+        ),
+    )
     rsub.add_parser("list", help="list registered repositories")
     sync = rsub.add_parser(
         "sync",
@@ -2020,6 +2042,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="per-repo settings (no flags: show what is configured)",
     )
     rset.add_argument("name", help="registered repository name")
+    rset.add_argument(
+        "--sparse",
+        nargs="*",
+        default=None,
+        metavar="DIR",
+        help=(
+            "make the base clone a sparse (cone-mode) checkout of these directories "
+            "(bare: root files only); worktrees leased from now on follow it"
+        ),
+    )
+    rset.add_argument(
+        "--no-sparse",
+        dest="no_sparse",
+        action="store_true",
+        help="turn sparse checkout off: the base clone and new worktrees get the whole repo",
+    )
     rset.add_argument(
         "--migrations-glob",
         dest="migrations_glob",
