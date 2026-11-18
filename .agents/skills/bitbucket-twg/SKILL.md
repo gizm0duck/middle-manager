@@ -108,8 +108,9 @@ uv run .agents/skills/bitbucket-twg/scripts/twg_pr_state.py --repo WORKSPACE/REP
   default strategy may be squash, and a squash rewrites the commits the next layer
   is built on. `--wait` returns either an async task record
   (`{"task_status": "SUCCESS", "merge_result": <PR>}`) or
-  `{"ok": true, "status": "merged", "pullRequest": <PR>}`. Read the merged PR from
-  whichever one you get.
+  `{"ok": true, "action": "merge", "status": "merged", "pullRequest": <the id you
+  passed>, "data": <PR>}`. Read the merged PR from `merge_result` or `data`, whichever
+  one you get. `pullRequest` there is only the id echoed back.
 - **No mergedAt.** A merged PR has no merge timestamp; `updated_on` is the closest.
 
 ## Troubleshooting
