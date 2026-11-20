@@ -246,7 +246,13 @@ def _cmd_repo(args: argparse.Namespace) -> int:
                     "https://bitbucket.org/<workspace>/<repo> once `mm config forge --forge "
                     f"bitbucket` is set), not {args.forge_url!r}"
                 )
-            added = add_repo(args.url, name=args.name, forge_url=args.forge_url, sparse=args.sparse)
+            added = add_repo(
+                args.url,
+                name=args.name,
+                forge_url=args.forge_url,
+                sparse=args.sparse,
+                depth=args.depth,
+            )
             short_sha = added.base_sha[:8] if added.base_sha else "?"
             print(
                 f"registered {added.name} from {added.origin} "
@@ -2001,6 +2007,16 @@ def build_parser() -> argparse.ArgumentParser:
             "large repo: a partial, sparse (cone-mode) clone that materializes only these "
             "directories, in the base clone and every worker worktree; bare --sparse is "
             "root files only. Workers widen with `git sparse-checkout add <dir>`"
+        ),
+    )
+    add.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "huge repo: a shallow clone of the default branch's last N commits (--depth 1 is "
+            "the latest commit only) instead of its full history; combine with --sparse"
         ),
     )
     rsub.add_parser("list", help="list registered repositories")

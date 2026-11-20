@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from middle_manager import compose, forge
+from middle_manager import compose, forge, repos
 from middle_manager.companions import pr_tool
 from middle_manager.review import ReviewError, head_sha, is_approved_at_head
 from middle_manager.state import init_db, store
@@ -174,7 +174,10 @@ def composition_tasks(conn, task, *, remote: str, base: str | None, head: str) -
     base_sha = _resolved_ref(worktree, f"{remote}/{base_name}", base_name, task["base_sha"])
     if not base_sha:
         return []
-    proposed = set(_git_lines(worktree, "rev-list", f"{base_sha}..{head}"))
+    # A shallow root is the clone's own boundary, not anyone's work, and its patch
+    # is the whole tree (see ``repos.shallow_roots``).
+    roots = repos.shallow_roots(worktree)
+    proposed = set(_git_lines(worktree, "rev-list", f"{base_sha}..{head}")) - roots
     if not proposed:
         return []
     rows = conn.execute(
@@ -213,6 +216,7 @@ def composition_tasks(conn, task, *, remote: str, base: str | None, head: str) -
             default_branch=default_branch,
             delivering=int(task["id"]),
         )
+        own_commits -= roots
         shared_shas = proposed & own_commits
         copied = own_commits - shared_shas
         if copied:
@@ -233,6 +237,14 @@ def composition_tasks(conn, task, *, remote: str, base: str | None, head: str) -
                 }
             )
     return conflicts
+
+
+def _default_branch(conn, task) -> str:
+    if task["repo_id"]:
+        repo = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo is not None and repo["default_branch"]:
+            return repo["default_branch"]
+    return "main"
 
 
 def _pr_tool() -> str | None:
@@ -345,6 +357,7 @@ def deliver(
 
     pushed = False
     if push:
+        repos.prepare_shallow_push(worktree, remote, [base or _default_branch(conn, task), branch])
         proc = _run(["git", "push", remote, f"HEAD:{branch}"], cwd=worktree)
         if proc.returncode != 0:
             raise DeliveryError(f"git push failed: {proc.stderr.strip()}")

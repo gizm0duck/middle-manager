@@ -105,7 +105,9 @@ def _start_from_branch(
             ["git", "-C", worktree_path, *args], capture_output=True, text=True, check=False
         )
 
-    fetched = git("fetch", "--quiet", remote, branch)
+    from middle_manager.repos import shallow_fetch_args
+
+    fetched = git("fetch", "--quiet", *shallow_fetch_args(worktree_path), remote, branch)
     if fetched.returncode == 0:
         target, source = "FETCH_HEAD", f"{remote}/{branch}"
     elif git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
@@ -122,7 +124,10 @@ def _start_from_branch(
             f"{fetched.stderr.strip()[:200]}; and no local branch {branch!r} exists in the "
             "base clone either"
         )
-    reset = git("reset", "--hard", "--quiet", target)
+    # `--` ends the revisions: a repository can track a file named like a ref
+    # (some repositories track a file named FETCH_HEAD), and without it git
+    # refuses the reset as ambiguous.
+    reset = git("reset", "--hard", "--quiet", target, "--")
     if reset.returncode != 0:
         raise SupervisorError(
             f"cannot start from {branch!r}: git reset --hard onto {source} failed: "
@@ -1043,13 +1048,22 @@ class Supervisor:
             started_from = f"branch {branch} at {head[:8]} (kept in the base clone)"
         elif branch:
             remote = _repos.upstream_remote(repo_row)
-            fetched = git("fetch", "--quiet", remote, branch).returncode == 0
-            if fetched and git("reset", "--hard", "--quiet", "FETCH_HEAD").returncode == 0:
+            fetched = (
+                git(
+                    "fetch",
+                    "--quiet",
+                    *_repos.shallow_fetch_args(lease.worktree_path),
+                    remote,
+                    branch,
+                ).returncode
+                == 0
+            )
+            if fetched and git("reset", "--hard", "--quiet", "FETCH_HEAD", "--").returncode == 0:
                 head = git("rev-parse", "HEAD").stdout.strip()
                 started_from = f"branch {branch} at {head[:8]} (from {remote})"
         if started_from is None:
             base = task["base_sha"] or lease.base_sha
-            reset = git("reset", "--hard", "--quiet", base)
+            reset = git("reset", "--hard", "--quiet", base, "--")
             if reset.returncode != 0:
                 raise SupervisorError(
                     f"task {task_id}: rebuilt a worktree but could not move it onto the base "

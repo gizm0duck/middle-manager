@@ -260,6 +260,14 @@ def push_lease_branch(conn, task_id: int) -> PushResult:
         ["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     )
     sha = head.stdout.strip() if head.returncode == 0 else None
+    from middle_manager import repos
+
+    default_branch = "main"
+    if task["repo_id"]:
+        repo = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
+        if repo is not None and repo["default_branch"]:
+            default_branch = repo["default_branch"]
+    repos.prepare_shallow_push(worktree, remote, [default_branch, branch])
     proc = subprocess.run(
         ["git", "-C", worktree, "push", remote, f"HEAD:{branch}"],
         capture_output=True,

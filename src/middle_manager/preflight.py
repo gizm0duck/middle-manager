@@ -249,7 +249,9 @@ def starting_sha(text: str) -> str | None:
 
 def fetch_remote(local_path: str, remote: str) -> None:
     """The one fetch dispatch makes, so the base is judged against the remote's today."""
-    fetched = _git(local_path, "fetch", "--quiet", remote)
+    from middle_manager.repos import shallow_fetch_args
+
+    fetched = _git(local_path, "fetch", "--quiet", *shallow_fetch_args(local_path), remote)
     if fetched.returncode != 0:
         raise PreflightError(
             f"`git fetch {remote}` failed in the base clone {local_path}: "
@@ -531,7 +533,9 @@ def _forge_head(local_path: str, remote: str, branch: str) -> str | None:
         return None
     sha = words[0]
     if _commit(local_path, sha) is None:
-        _git(local_path, "fetch", "--quiet", remote, branch)
+        from middle_manager.repos import shallow_fetch_args
+
+        _git(local_path, "fetch", "--quiet", *shallow_fetch_args(local_path), remote, branch)
     return sha
 
 
