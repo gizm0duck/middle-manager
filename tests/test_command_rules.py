@@ -161,3 +161,14 @@ def test_dispatch_gives_a_claude_worker_the_rules_naming_its_real_branch(
 def test_dispatch_leaves_a_codex_worker_prompt_alone(server, source_repo, monkeypatch):
     spec = _capture_dispatch(server, source_repo, monkeypatch, "codex")
     assert HEADING not in CodexAdapter().worker_prompt(spec)
+
+
+def test_the_suite_timeout_is_one_the_claude_tool_allows(monkeypatch) -> None:
+    from middle_manager.providers.claude import ClaudeAdapter
+    from middle_manager.providers.command_rules import GATE_TIMEOUT_MS
+
+    assert f"{GATE_TIMEOUT_MS} ms" in command_rules("claude", "mm/task-1")
+    monkeypatch.delenv("BASH_MAX_TIMEOUT_MS", raising=False)
+    assert ClaudeAdapter().child_env()["BASH_MAX_TIMEOUT_MS"] == str(GATE_TIMEOUT_MS)
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", str(GATE_TIMEOUT_MS * 2))
+    assert ClaudeAdapter().child_env()["BASH_MAX_TIMEOUT_MS"] == str(GATE_TIMEOUT_MS * 2)

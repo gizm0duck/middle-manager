@@ -18,6 +18,12 @@ from __future__ import annotations
 
 HEADING = "Command rules for this environment"
 
+#: The timeout a worker gives its verification suite. Claude Code's Bash tool caps a
+#: command at 10 minutes unless ``BASH_MAX_TIMEOUT_MS`` raises it, so the Claude
+#: adapter launches workers with this as that cap (see ``ClaudeAdapter.child_env``).
+#: Before that, the rule asked for 20 minutes and the tool quietly cut the suite at 10.
+GATE_TIMEOUT_MS = 1_200_000
+
 _CLAUDE_RULES = """\
 ## Command rules for this environment
 
@@ -34,7 +40,7 @@ These are not style preferences — anything else is denied before it runs.
   tool, not a shell redirect.
 - `cd` is its own call. Never prefix another command with it.
 - Run the authoritative verification suite **in the foreground**, with a timeout of
-  at least 20 minutes (1200000 ms) — never as a background task. A backgrounded
+  {timeout_ms} ms ({timeout_minutes} minutes) — never as a background task. A backgrounded
   command is killed when your turn ends, so a suite you left running in the
   background never finished and its result is worthless.
 - Push with exactly `git push origin HEAD:{branch}`.
@@ -73,5 +79,9 @@ def command_rules(provider: str, branch: str | None = None, environment: str | N
     block = (environment or "").strip()
     if provider != "claude":
         return f"{block}\n" if block else ""
-    rules = _CLAUDE_RULES.format(branch=branch or "<your task branch>")
+    rules = _CLAUDE_RULES.format(
+        branch=branch or "<your task branch>",
+        timeout_ms=GATE_TIMEOUT_MS,
+        timeout_minutes=GATE_TIMEOUT_MS // 60_000,
+    )
     return f"{rules}\n{block}\n" if block else rules

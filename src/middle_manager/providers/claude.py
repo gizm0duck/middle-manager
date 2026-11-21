@@ -22,7 +22,7 @@ from middle_manager.providers.capability import (
     allows_interrupt_steer,
     capabilities_for,
 )
-from middle_manager.providers.command_rules import command_rules
+from middle_manager.providers.command_rules import GATE_TIMEOUT_MS, command_rules
 
 ALLOWED_TOOLS_ENV = "MM_CLAUDE_ALLOWED_TOOLS"
 
@@ -82,6 +82,21 @@ refuses the rerun, record it under "Flagged, not done" as for any denied command
 
 class ClaudeAdapter(ProviderAdapter):
     name = "claude"
+
+    def child_env(self) -> dict[str, str]:
+        """The worker's environment, with Bash allowed to run as long as the rules say.
+
+        Claude Code caps a Bash command at 10 minutes unless ``BASH_MAX_TIMEOUT_MS``
+        raises it. The command rules tell a worker to run its suite with a
+        ``GATE_TIMEOUT_MS`` timeout. A user's own higher cap is kept.
+        """
+        env = dict(os.environ)
+        try:
+            current = int(env.get("BASH_MAX_TIMEOUT_MS", "0"))
+        except ValueError:
+            current = 0
+        env["BASH_MAX_TIMEOUT_MS"] = str(max(current, GATE_TIMEOUT_MS))
+        return env
 
     def probe(self) -> dict:
         return capabilities_for("claude")
