@@ -135,10 +135,15 @@ so in its first paragraph. "Faster" or "fewer prompts" is never the reason.
 make contribution-check BASE=origin/main
 ```
 
-This runs ruff lint and the format check, the hermetic test suite, the test
-collection check, `mm hygiene check` over every commit and message since `BASE`,
-and gitleaks over the same commits. It must pass on the exact head you push.
-Paste the summary into Verification.
+This runs ruff lint and the format check, the test collection check, the test
+files the branch adds or changes, `mm hygiene check` over every commit and message
+since `BASE`, and gitleaks over the same commits. It must pass on the exact head
+you push. Paste the summary into Verification.
+
+The whole suite is slow, and one of its tests is load-sensitive, so it isn't the
+default. When a change reaches past the files its tests cover (a shared helper,
+the supervisor, the state schema), name the other test files that exercise it with
+`TESTS="tests/a.py tests/b.py"`, or run `TESTS=all`, and say which you ran.
 
 ## Reviewing someone else's pull request
 

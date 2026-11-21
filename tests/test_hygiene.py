@@ -126,6 +126,7 @@ def test_emails_and_home_paths_are_private_anywhere(checkout) -> None:
         "ask jane.doe@othercorp.io\n"  # hygiene: allow
         "log at /Users/jdoe/work/tool.log\n"  # hygiene: allow
         "co-author noreply@anthropic.com, see /Users/me/project and dev@example.com\n"
+        "trailers no-reply@agents.invalid.io and 123+bot@users.noreply.github.com\n"
         "remote git@github.com:owner/repo.git, fixture ci@build.test\n",
     )
 

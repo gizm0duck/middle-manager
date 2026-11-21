@@ -6,7 +6,7 @@
 help:
 	@echo "Targets:"
 	@echo "  make hooks      Enable the checked-in git hooks (gitleaks secret scan and mm hygiene check on commit; needs gitleaks)"
-	@echo "  make contribution-check BASE=origin/main  The gate a pull request to mm must pass"
+	@echo "  make contribution-check BASE=origin/main  The gate a pull request to mm must pass (TESTS=all for the whole suite)"
 	@echo "  make fmt        Format with ruff"
 	@echo "  make lint       Lint with ruff"
 	@echo "  make test       Run hermetic tests (no provider spawning)"
@@ -18,13 +18,25 @@ hooks:
 
 # The gate every pull request to Middle Manager passes, run by authors before opening
 # one and by maintainers before merging (see .agents/skills/improve-middle-manager).
+# It runs the test files the branch adds or changes; TESTS=all runs the whole suite,
+# and TESTS="tests/a.py tests/b.py" names them.
 BASE ?= origin/main
+TESTS ?= changed
 contribution-check:
 	@command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks is required to contribute (brew install gitleaks)"; exit 1; }
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run pytest --collect-only -q >/dev/null
-	uv run pytest
+	@if [ "$(TESTS)" = "all" ]; then \
+		uv run pytest; \
+	else \
+		files="$(TESTS)"; \
+		if [ "$$files" = "changed" ]; then \
+			files="$$(git diff --name-only --diff-filter=d $(BASE)...HEAD -- 'tests/test_*.py' | tr '\n' ' ')"; \
+		fi; \
+		if [ -n "$$files" ]; then echo "uv run pytest -q $$files"; uv run pytest -q $$files; \
+		else echo "contribution-check: no test files changed; name them with TESTS=... or run TESTS=all"; fi; \
+	fi
 	./bin/mm hygiene check --range $(BASE)..HEAD
 	gitleaks git --log-opts="$(BASE)..HEAD" --redact --no-banner
 	@echo "contribution-check: passed for $$(git rev-parse --short HEAD) against $(BASE)"

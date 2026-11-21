@@ -37,15 +37,17 @@ from middle_manager.paths import db_path, mm_home
 #: the host itself is not.
 PUBLIC_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "sr.ht")
 
-#: Email domains that are placeholders or no-reply addresses, never a person.
+#: Email domains that are placeholders, never a person.
 ALLOWED_EMAIL_DOMAINS = (
     "example.com",
     "example.org",
     "example.net",
-    "anthropic.com",
-    "users.noreply.github.com",
     "localhost",
 )
+
+#: A no-reply address (an agent's co-author trailer, a forge's commit email) is a
+#: system, not a person, whichever vendor it belongs to.
+_NO_REPLY = re.compile(r"(?:^|[.+-])no-?reply(?:$|[.+-])")
 
 #: Top-level domains reserved for examples and tests (RFC 2606).
 RESERVED_TLDS = ("test", "example", "invalid", "localhost")
@@ -215,6 +217,8 @@ def scan_lines(lines: list[tuple[str, int, str]], terms: list[Term]) -> list[Fin
             domain = match.group(1).lower()
             user = match.group(0).split("@", 1)[0].lower()
             if user in SSH_USERS or domain.rsplit(".", 1)[-1] in RESERVED_TLDS:
+                continue
+            if _NO_REPLY.search(user) or any(_NO_REPLY.search(p) for p in domain.split(".")):
                 continue
             if not any(domain == d or domain.endswith("." + d) for d in ALLOWED_EMAIL_DOMAINS):
                 findings.append(Finding(where, number, match.group(0), "an email address"))
