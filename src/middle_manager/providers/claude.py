@@ -48,6 +48,36 @@ def effective_allowed_tools() -> tuple[list[str], str]:
         return list(default_claude_allowed_tools()), "built-in default profile"
 
 
+def worker_permission_mode() -> str:
+    """The `--permission-mode` Claude workers launch with (`claude.permission_mode`).
+
+    Without a readable config the answer is the default, acceptEdits: a different
+    mode is something a user chose, never something a broken config file implies.
+    """
+    try:
+        return load_config().claude.permission_mode
+    except ConfigError:
+        return "acceptEdits"
+
+
+#: Added to the command rules for an auto-mode worker. Commands still run in Claude
+#: Code's sandbox, which blocks the SSH agent, writes outside the worktree (the
+#: base clone's git objects, MM_HOME) and the macOS lookup uv makes at startup.
+#: Each command that needs them is rerun outside the sandbox, one at a time, and the
+#: auto-mode reviewer approves or refuses it.
+AUTO_MODE_RULES = """\
+## Sandbox (auto mode)
+
+Commands run in Claude Code's sandbox and an auto-mode reviewer approves each one.
+The sandbox blocks the SSH agent, writes outside your worktree, and some macOS
+system calls. When a command fails because of it, rerun that same command once with
+`dangerouslyDisableSandbox: true`. Typical signs are "Operation not permitted",
+"Permission denied (publickey)", or a uv panic in system-configuration. Expect this
+for `git fetch`, `git push`, `git commit`, `mm progress` and `uv`. If the reviewer
+refuses it, record it under "Flagged, not done" as for any denied command.
+"""
+
+
 class ClaudeAdapter(ProviderAdapter):
     name = "claude"
 
@@ -62,6 +92,8 @@ class ClaudeAdapter(ProviderAdapter):
         every time.
         """
         rules = command_rules(self.name, spec.branch, environment=spec.environment)
+        if worker_permission_mode() == "auto":
+            rules = f"{rules}\n{AUTO_MODE_RULES}"
         return f"{rules}\n---\n\n{super().worker_prompt(spec)}"
 
     def _common(self, argv: list[str], spec: TaskSpec) -> list[str]:
@@ -69,8 +101,9 @@ class ClaudeAdapter(ProviderAdapter):
             argv += ["--model", spec.model]
         if spec.reasoning:
             argv += ["--effort", spec.reasoning]
-        # acceptEdits auto-accepts file edits without a full permission bypass.
-        argv += ["--permission-mode", "acceptEdits"]
+        # acceptEdits auto-accepts file edits without a full permission bypass; auto
+        # hands each command to Claude Code's auto-mode reviewer. Never a bypass mode.
+        argv += ["--permission-mode", worker_permission_mode()]
         allowed, _source = effective_allowed_tools()
         if allowed:
             argv += ["--allowedTools", ",".join(allowed)]

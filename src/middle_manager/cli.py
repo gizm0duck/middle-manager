@@ -132,10 +132,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
                 cfg.claude.allowed_tools = [
                     part.strip() for part in args.allowed_tools.split(",") if part.strip()
                 ]
+            if args.permission_mode is not None:
+                cfg.claude.permission_mode = args.permission_mode
             save_config(cfg)
             from middle_manager import health as _health
 
             print(_health.describe_claude_tools(_health.claude_tool_profile()))
+            print(f"claude worker permission mode: {cfg.claude.permission_mode}")
             return 0
         if args.config_cmd == "health":
             from middle_manager.config import save_config
@@ -1970,6 +1973,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     claude_cfg.add_argument(
         "--reset", action="store_true", help="restore the documented default profile"
+    )
+    claude_cfg.add_argument(
+        "--permission-mode",
+        dest="permission_mode",
+        choices=("acceptEdits", "auto"),
+        default=None,
+        help="how a Claude worker's commands are approved (default acceptEdits, which relies "
+        "on the allowlist). auto hands each command to Claude Code's auto-mode reviewer; use "
+        "it where a managed policy (allowManagedPermissionRulesOnly) makes Claude Code ignore "
+        "--allowedTools",
     )
 
     health_cfg = csub.add_parser("health", help="change the worker quiet threshold")

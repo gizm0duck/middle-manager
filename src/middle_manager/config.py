@@ -21,6 +21,8 @@ from middle_manager.paths import config_path
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 COST_POSTURES = ("lean", "balanced", "quality")
 PROVIDERS = ("claude", "codex")
+#: Permission modes a Claude worker may launch with. Never a bypass mode.
+CLAUDE_PERMISSION_MODES = ("acceptEdits", "auto")
 FORGES = ("github", "bitbucket")
 
 
@@ -125,6 +127,18 @@ class ClaudeProfile:
     """Settings that shape a Claude worker's session."""
 
     allowed_tools: list[str] = field(default_factory=default_claude_allowed_tools)
+    #: The `--permission-mode` a worker launches with. `acceptEdits` relies on
+    #: `allowed_tools`; `auto` lets Claude Code's auto-mode reviewer approve each
+    #: command instead. Use `auto` where a managed policy sets
+    #: allowManagedPermissionRulesOnly: Claude Code then ignores `--allowedTools`
+    #: outright, and under acceptEdits a headless worker is denied every command
+    #: that isn't read-only, `git commit` and `mm progress` included (2026-11-18,
+    #: Claude Code 2.1.327).
+    permission_mode: str = "acceptEdits"
+
+
+def _claude_profile(raw: dict) -> ClaudeProfile:
+    return ClaudeProfile(**raw)
 
 
 @dataclass
@@ -246,6 +260,11 @@ class MMConfig:
             raise ConfigError(f"forge.kind must be one of {FORGES}")
         if not isinstance(self.forge.twg_path, str):
             raise ConfigError("forge.twg_path must be a path string (empty for PATH lookup)")
+        if self.claude.permission_mode not in CLAUDE_PERMISSION_MODES:
+            raise ConfigError(
+                f"claude.permission_mode must be one of {list(CLAUDE_PERMISSION_MODES)}; "
+                f"got {self.claude.permission_mode!r}"
+            )
         if not isinstance(self.claude.allowed_tools, list):
             raise ConfigError("claude.allowed_tools must be a list of tool patterns")
         for pattern in self.claude.allowed_tools:
@@ -289,7 +308,7 @@ def _from_dict(data: dict) -> MMConfig:
         assessments=AssessmentPolicy(**data.get("assessments", {})),
         health=HealthPolicy(**data.get("health", {})),
         usage=UsagePolicy(**data.get("usage", {})),
-        claude=ClaudeProfile(**data.get("claude", {})),
+        claude=_claude_profile(data.get("claude", {})),
         forge=ForgePolicy(**data.get("forge", {})),
     )
     return cfg

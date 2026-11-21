@@ -256,3 +256,44 @@ def test_config_claude_sets_and_resets_the_profile(configured, capsys):
 
     assert main(["config", "claude", "--reset"]) == 0
     assert load_config().claude.allowed_tools == default_claude_allowed_tools()
+
+
+# --------------------------------------------------------------------------- #
+# The worker permission mode (claude.permission_mode)
+# --------------------------------------------------------------------------- #
+
+
+def _mode(argv: list[str]) -> str:
+    return argv[argv.index("--permission-mode") + 1]
+
+
+def test_workers_launch_in_accept_edits_by_default(configured):
+    adapter = ClaudeAdapter()
+    assert _mode(adapter.start(_spec())) == "acceptEdits"
+    assert "dangerouslyDisableSandbox" not in adapter.worker_prompt(_spec())
+
+
+def test_auto_mode_launches_auto_and_tells_the_worker_about_the_sandbox(configured, capsys):
+    assert main(["config", "claude", "--permission-mode", "auto"]) == 0
+    assert "claude worker permission mode: auto" in capsys.readouterr().out
+    assert load_config().claude.permission_mode == "auto"
+
+    adapter = ClaudeAdapter()
+    argv = adapter.start(_spec())
+    assert _mode(argv) == "auto"
+    assert _allowed_tools_arg(argv) == ",".join(default_claude_allowed_tools())
+    assert "dangerouslyDisableSandbox: true" in adapter.worker_prompt(_spec())
+
+    assert main(["config", "claude", "--permission-mode", "acceptEdits"]) == 0
+    assert _mode(ClaudeAdapter().start(_spec())) == "acceptEdits"
+
+
+def test_a_bypass_mode_is_refused(configured):
+    cfg = load_config()
+    cfg.claude.permission_mode = "bypassPermissions"
+    with pytest.raises(ConfigError, match="permission_mode"):
+        save_config(cfg)
+
+
+def test_an_unreadable_config_never_changes_the_mode(mm_home):
+    assert _mode(ClaudeAdapter().start(_spec())) == "acceptEdits"

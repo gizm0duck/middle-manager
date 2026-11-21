@@ -157,6 +157,7 @@ mm doctor                              # harnesses, capability-matrix drift, sch
 mm setup --non-interactive --manager-provider claude --worker-provider codex
 mm config assessments --completed-runs 5 --max-days 14 --cooldown-days 7
 mm config claude --reset                # restore the documented worker tool profile
+mm config claude --permission-mode auto # when a managed policy ignores the worker tool allowlist
 mm tools install                       # download/verify pinned companions (setup does this)
 mm tools status                        # treehouse / lavish-axi / gh-axi availability
 mm repo add https://github.com/you/your-repo
