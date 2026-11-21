@@ -517,8 +517,7 @@ def render(
         env, task_id=task_id, compose_project=compose_project, db_port=db_port
     )
     if env.local_gate:
-        assignments = " ".join(f"{key}={shlex.quote(value)}" for key, value in resolved.items())
-        lines.append(f"- **Exact local gate:** `{assignments} {env.local_gate}`")
+        lines.append(_exact_gate_line(env.local_gate, resolved))
     if compose_project:
         port_text = (
             f" and host port **{db_port}** (`{env.db_port_variable}`)"
@@ -570,8 +569,9 @@ def render(
         )
     if env.source_line_ceiling:
         lines.append(
-            f"- **Source ceiling:** no source file may exceed {env.source_line_ceiling} lines; "
-            "run the repository's harness check before the local gate."
+            f"- **Source ceiling:** no file you add or change may end above "
+            f"{env.source_line_ceiling} lines (check with `wc -l <file>`). A file already above "
+            "it at your base is not yours to split, but it must not grow."
         )
     if env.push_hook_runs_full_suite:
         target = f"`{branch}`" if branch else "your lease branch"
@@ -598,6 +598,30 @@ def render(
             "- **Review handoff:** commit, do not push, and " + finish_instruction(task_id, ends_at)
         )
     return "\n".join(lines) + "\n"
+
+
+def _exact_gate_line(gate: str, resolved: dict[str, str]) -> str:
+    """The local gate as commands a worker can run exactly as written.
+
+    The line used to prefix the gate with inline ``KEY=value`` assignments and
+    keep its ``&&`` chain, which is the one form a Claude worker's command rules
+    deny. Five of the twenty reflections after 2026-09-18 said so. Every one of
+    those variables is already set in the worker's process (``spec.process_env``),
+    so the line names them instead, and a chain becomes one command per step.
+    """
+    steps = [step.strip() for step in gate.split("&&") if step.strip()]
+    if len(steps) > 1:
+        numbered = " ".join(f"{n}. `{step}`" for n, step in enumerate(steps, start=1))
+        line = (
+            "- **Exact local gate:** run each step as its own command, in order, and stop "
+            f"at the first that fails: {numbered}"
+        )
+    else:
+        line = f"- **Exact local gate:** `{steps[0] if steps else gate}`"
+    if resolved:
+        values = ", ".join(f"`{key}={shlex.quote(value)}`" for key, value in resolved.items())
+        line += f". Already set in your environment, so never type them inline: {values}"
+    return line + "."
 
 
 def evidence_path_for(repo_row, worktree: str | None) -> str | None:
