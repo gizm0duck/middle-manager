@@ -239,14 +239,6 @@ def composition_tasks(conn, task, *, remote: str, base: str | None, head: str) -
     return conflicts
 
 
-def _default_branch(conn, task) -> str:
-    if task["repo_id"]:
-        repo = conn.execute("SELECT * FROM repos WHERE id = ?", (task["repo_id"],)).fetchone()
-        if repo is not None and repo["default_branch"]:
-            return repo["default_branch"]
-    return "main"
-
-
 def _pr_tool() -> str | None:
     # One resolver for both directions: see ``companions.pr_tool``.
     return pr_tool()
@@ -357,7 +349,9 @@ def deliver(
 
     pushed = False
     if push:
-        repos.prepare_shallow_push(worktree, remote, [base or _default_branch(conn, task), branch])
+        repos.prepare_shallow_push(
+            worktree, remote, [base or repos.recorded_default_branch(conn, task["repo_id"]), branch]
+        )
         proc = _run(["git", "push", remote, f"HEAD:{branch}"], cwd=worktree)
         if proc.returncode != 0:
             raise DeliveryError(f"git push failed: {proc.stderr.strip()}")

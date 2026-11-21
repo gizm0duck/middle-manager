@@ -32,7 +32,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 
-from middle_manager.repos import shallow_fetch_args
+from middle_manager.repos import fetch_branch
 from middle_manager.state import init_db, store
 
 
@@ -95,13 +95,8 @@ def branch_state(worktree: str, branch: str, remote: str = "origin") -> BranchSt
     rc, local = _git(worktree, "rev-parse", "HEAD")
     if rc != 0:
         raise StackError(f"{worktree} is not a readable git worktree")
-    fetched, _out = _git(
-        worktree, "fetch", "--quiet", *shallow_fetch_args(worktree), remote, branch
-    )
-    if fetched != 0:
-        return BranchState(branch=branch, remote=remote, local_sha=local, remote_sha=None)
-    rc, remote_sha = _git(worktree, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
-    if rc != 0 or not remote_sha:
+    remote_sha, _why = fetch_branch(worktree, remote, branch)
+    if not remote_sha:
         return BranchState(branch=branch, remote=remote, local_sha=local, remote_sha=None)
     rc, behind_out = _git(worktree, "rev-list", "--count", f"{local}..{remote_sha}")
     behind = int(behind_out) if rc == 0 and behind_out.isdigit() else 0
@@ -226,19 +221,9 @@ def refresh_stacked_base(conn, task) -> str | None:
     parent = store.get_task(conn, int(parent_id))
     if parent is None or parent["merged_sha"]:
         return None
-    fetched, _out = _git(
-        worktree,
-        "fetch",
-        "--quiet",
-        *shallow_fetch_args(worktree),
-        push_remote(conn, task),
-        parent_branch,
-    )
-    if fetched != 0:
-        return None
-    rc, parent_head = _git(worktree, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+    parent_head, _why = fetch_branch(worktree, push_remote(conn, task), parent_branch)
     recorded = task["base_sha"] or ""
-    if rc != 0 or not parent_head or parent_head == recorded:
+    if not parent_head or parent_head == recorded:
         return None
     contains, _out = _git(worktree, "merge-base", "--is-ancestor", parent_head, "HEAD")
     if contains != 0:

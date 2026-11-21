@@ -105,11 +105,11 @@ def _start_from_branch(
             ["git", "-C", worktree_path, *args], capture_output=True, text=True, check=False
         )
 
-    from middle_manager.repos import shallow_fetch_args
+    from middle_manager.repos import fetch_branch
 
-    fetched = git("fetch", "--quiet", *shallow_fetch_args(worktree_path), remote, branch)
-    if fetched.returncode == 0:
-        target, source = "FETCH_HEAD", f"{remote}/{branch}"
+    fetched, fetch_error = fetch_branch(worktree_path, remote, branch)
+    if fetched:
+        target, source = fetched, f"{remote}/{branch}"
     elif git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
         target, source = f"refs/heads/{branch}", f"the local branch {branch}"
     elif (
@@ -121,7 +121,7 @@ def _start_from_branch(
     else:
         raise SupervisorError(
             f"cannot start from {branch!r}: git fetch {remote} {branch} failed: "
-            f"{fetched.stderr.strip()[:200]}; and no local branch {branch!r} exists in the "
+            f"{fetch_error.strip()[:200]}; and no local branch {branch!r} exists in the "
             "base clone either"
         )
     # `--` ends the revisions: a repository can track a file named like a ref
@@ -1048,17 +1048,8 @@ class Supervisor:
             started_from = f"branch {branch} at {head[:8]} (kept in the base clone)"
         elif branch:
             remote = _repos.upstream_remote(repo_row)
-            fetched = (
-                git(
-                    "fetch",
-                    "--quiet",
-                    *_repos.shallow_fetch_args(lease.worktree_path),
-                    remote,
-                    branch,
-                ).returncode
-                == 0
-            )
-            if fetched and git("reset", "--hard", "--quiet", "FETCH_HEAD", "--").returncode == 0:
+            fetched, _why = _repos.fetch_branch(lease.worktree_path, remote, branch)
+            if fetched and git("reset", "--hard", "--quiet", fetched, "--").returncode == 0:
                 head = git("rev-parse", "HEAD").stdout.strip()
                 started_from = f"branch {branch} at {head[:8]} (from {remote})"
         if started_from is None:

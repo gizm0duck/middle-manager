@@ -231,22 +231,15 @@ def _verification(notes: list[dict], approval: str, head: str) -> str:
     return _cap("\n\n".join(parts), VERIFICATION_CAP)
 
 
-def _default_branch(conn: sqlite3.Connection, repo_id: int | None) -> str:
-    if repo_id is None:
-        return "main"
-    row = conn.execute("SELECT default_branch FROM repos WHERE id = ?", (repo_id,)).fetchone()
-    if row is None:
-        return "main"
-    return (row["default_branch"] or "main").strip() or "main"
-
-
 def _stack(conn: sqlite3.Connection, task: sqlite3.Row) -> str:
     stacked_on = ""
     if "stacked_on" in task.keys():  # noqa: SIM118 - sqlite3.Row: `in` scans values
         stacked_on = (task["stacked_on"] or "").strip()
     # A task dispatched with `--base main` records the default branch as its
     # starting point. That is the bottom of a stack, not a layer above one.
-    if stacked_on == _default_branch(conn, task["repo_id"]):
+    from middle_manager.repos import recorded_default_branch
+
+    if stacked_on == recorded_default_branch(conn, task["repo_id"]):
         stacked_on = ""
     if stacked_on:
         lead = (

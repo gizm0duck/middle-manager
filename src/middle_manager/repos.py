@@ -475,22 +475,141 @@ def _describe_depth(depth: int) -> str:
     )
 
 
-def shallow_fetch_args(path: str) -> list[str]:
-    """``["--depth", "1"]`` when ``path`` is a shallow clone, else ``[]``.
-
-    A plain ``git fetch`` in a shallow clone can pull in much of the history the
-    shallow clone exists to avoid: on 2026-11-18 ``mm repo sync`` of a shallow
-    large monorepo ran over 15 minutes before it was stopped, while
-    ``git fetch --depth 1 origin master`` took 5 seconds. Every fetch mm makes
-    against a shallow base clone (or a worktree of one, which shares its shallow
-    file) keeps it shallow.
-    """
+def is_shallow(path: str) -> bool:
+    """Whether ``path`` is a shallow clone, or a worktree of one (they share its shallow file)."""
     proc = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--is-shallow-repository"],
         capture_output=True,
         text=True,
     )
-    return ["--depth", "1"] if proc.returncode == 0 and proc.stdout.strip() == "true" else []
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def shallow_fetch_args(path: str) -> list[str]:
+    """``["--depth", "1"]`` for a fetch of the default branch's tip in a shallow clone.
+
+    The base clone only needs the default branch's latest commit, and a plain
+    ``git fetch`` there can walk far back into the history the clone exists to avoid:
+    on 2026-11-18 ``git fetch --depth 1`` of a large monorepo's default branch took 5
+    seconds. Only the default branch is fetched this way. Any other branch goes
+    through :func:`fetch_branch`, because a depth on a branch whose history is
+    already here cuts that history off. Always follow the fetch with
+    :func:`reconnect_shallow`. ``[]`` for a full clone.
+    """
+    return ["--depth", "1"] if is_shallow(path) else []
+
+
+def _shallow_file(path: str) -> Path | None:
+    rc, rel, _err = _git_ok(["rev-parse", "--git-path", "shallow"], cwd=path)
+    if rc != 0 or not rel:
+        return None
+    return Path(rel) if Path(rel).is_absolute() else Path(path) / rel
+
+
+def reconnect_shallow(path: str) -> list[str]:
+    """Clear the shallow mark from every commit whose parents are all here. Returns them.
+
+    git marks the deepest commit of every depth-limited fetch as shallow, even when
+    its parents are already in the clone, and even when that commit was here before
+    the fetch. From then on git hides those parents, for every worktree of the
+    clone: a branch's own history ends at that commit, ``merge-base`` finds nothing,
+    and the commit's patch is the whole tree. A mark is only right where the parents
+    are actually missing, so every other mark is removed. Best effort: when another
+    git process holds the shallow file's lock, nothing is changed.
+    """
+    shallow_file = _shallow_file(path)
+    if shallow_file is None or not shallow_file.exists():
+        return []
+    marked = [line.strip() for line in shallow_file.read_text().split() if line.strip()]
+    connected = [sha for sha in marked if _parents_present(path, sha)]
+    if not connected:
+        return []
+    lock = shallow_file.with_name(shallow_file.name + ".lock")
+    try:
+        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        return []
+    try:
+        kept = [sha for sha in marked if sha not in connected]
+        os.write(fd, "".join(f"{sha}\n" for sha in kept).encode())
+        os.close(fd)
+        if kept:
+            os.replace(lock, shallow_file)
+        else:
+            lock.unlink()
+            shallow_file.unlink()
+    except OSError:
+        lock.unlink(missing_ok=True)
+        return []
+    return connected
+
+
+def _parents_present(path: str, sha: str) -> bool:
+    """Whether every parent of ``sha`` is in the local object store (its raw object, no grafts)."""
+    rc, raw, _err = _git_ok(["cat-file", "commit", sha], cwd=path)
+    if rc != 0:
+        return False
+    parents = []
+    for line in raw.splitlines():
+        if not line:
+            break
+        if line.startswith("parent "):
+            parents.append(line.split()[1])
+    return bool(parents) and all(_has_commit_locally(path, parent) for parent in parents)
+
+
+#: The depths :func:`fetch_branch` tries, in order, to reach history the clone holds.
+CONNECT_DEPTHS = (8, 64, 256)
+
+
+def fetch_branch(path: str, remote: str, branch: str) -> tuple[str | None, str]:
+    """Fetch ``branch`` from ``remote`` and return ``(its tip, "")``, or ``(None, why)``.
+
+    A full clone gets a plain fetch, exactly as before. A shallow clone needs more
+    care, because neither plain fetch is right for it:
+
+    - a ``--depth`` cuts off history that is already here. A task's own branch, a
+      stack's parent and a lease branch are all built on commits the clone holds, and
+      once their history is cut a stack can't find its merge base and delivery's
+      carry check sees no commits at all;
+    - a plain fetch of a branch that forks below the clone's shallow boundary pulls
+      in that branch's entire history.
+
+    So a tip that is already here isn't fetched at all. Otherwise the branch is
+    fetched at growing depths (:data:`CONNECT_DEPTHS`) until its new commits reach
+    commits the clone holds, and :func:`reconnect_shallow` joins them up. A branch
+    that is still not connected at the deepest try forks too far below the boundary.
+    It stays cut there, as its own fresh starting point.
+    """
+    if not Path(path).is_dir():
+        return None, f"{path} is not a directory"
+    if not is_shallow(path):
+        rc, _out, err = _git_ok(["fetch", "--quiet", remote, branch], cwd=path)
+        if rc != 0:
+            return None, err or f"git fetch {remote} {branch} failed"
+        rc, sha, err = _git_ok(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"], path)
+        return (sha, "") if rc == 0 and sha else (None, err or "FETCH_HEAD is not a commit")
+    rc, out, err = _git_ok(["ls-remote", remote, f"refs/heads/{branch}"], cwd=path)
+    if rc != 0:
+        return None, err or f"git ls-remote {remote} failed"
+    words = out.split()
+    if not words:
+        return None, f"{remote} has no branch {branch!r}"
+    sha = words[0]
+    if _has_commit_locally(path, sha):
+        return sha, ""
+    before = shallow_roots(path)
+    for depth in CONNECT_DEPTHS:
+        rc, _out, err = _git_ok(
+            ["fetch", "--quiet", "--no-tags", f"--depth={depth}", remote, f"refs/heads/{branch}"],
+            cwd=path,
+        )
+        if rc != 0:
+            return None, err or f"git fetch {remote} {branch} failed"
+        reconnect_shallow(path)
+        if not shallow_roots(path) - before:
+            break
+    return sha, ""
 
 
 def shallow_roots(path: str) -> set[str]:
@@ -502,12 +621,11 @@ def shallow_roots(path: str) -> set[str]:
     monorepo's base commit for exactly that reason. Empty for a
     full clone.
     """
-    if not shallow_fetch_args(path):
+    if not is_shallow(path):
         return set()
-    rc, rel, _err = _git_ok(["rev-parse", "--git-path", "shallow"], cwd=path)
-    if rc != 0 or not rel:
+    shallow_file = _shallow_file(path)
+    if shallow_file is None:
         return set()
-    shallow_file = Path(rel) if Path(rel).is_absolute() else Path(path) / rel
     try:
         lines = shallow_file.read_text().split()
     except OSError:
@@ -539,7 +657,7 @@ def prepare_shallow_push(
     current tip fetched right before the push, the same push is 20 objects. Fetches
     stay shallow and filtered. Returns the branches it fetched. No-op for a full clone.
     """
-    if not shallow_fetch_args(path):
+    if not is_shallow(path):
         return []
     wanted = [b for b in dict.fromkeys(branches) if b]
     fetched: list[str] = []
@@ -570,6 +688,7 @@ def prepare_shallow_push(
         )
         if rc != 0:
             return fetched
+        reconnect_shallow(path)
         fetched.extend(b for b in missing if b not in fetched)
     return fetched
 
@@ -584,7 +703,7 @@ def align_shallow_remote(local_path: str, remote: str, branch: str) -> None:
     with file contents: on 2026-11-18 that ran 25 minutes on
     a large monorepo before it was stopped. No-op for a full clone.
     """
-    if not shallow_fetch_args(local_path):
+    if not is_shallow(local_path):
         return
     _git(
         [
@@ -598,6 +717,16 @@ def align_shallow_remote(local_path: str, remote: str, branch: str) -> None:
     if rc == 0 and flt and remote != "origin":
         _git(["config", f"remote.{remote}.promisor", "true"], cwd=local_path)
         _git(["config", f"remote.{remote}.partialclonefilter", flt], cwd=local_path)
+
+
+def recorded_default_branch(conn, repo_id: int | None) -> str:
+    """The default branch mm recorded for a registered repository; ``main`` when unknown."""
+    if repo_id is None:
+        return "main"
+    row = conn.execute("SELECT default_branch FROM repos WHERE id = ?", (repo_id,)).fetchone()
+    if row is None:
+        return "main"
+    return (row["default_branch"] or "main").strip() or "main"
 
 
 def normalize_depth(depth: int | None) -> int | None:
@@ -654,6 +783,7 @@ def add_repo(
                 ["fetch", "--quiet", *shallow_fetch_args(str(dest)), remote, default_branch],
                 cwd=str(dest),
             )
+            reconnect_shallow(str(dest))
             if rc != 0:
                 notes.append(f"could not fetch {remote}/{default_branch}: {err or 'git refused'}")
         notes.extend(point_remote_heads(str(dest), default_branch, [remote, "origin"]))
@@ -956,7 +1086,7 @@ def _fast_forward(
     if before == target:
         return target, False
 
-    if shallow_fetch_args(local_path):
+    if is_shallow(local_path):
         return _move_shallow(local_path, branch, remote, target, before, recorded, current_branch)
 
     if current_rc == 0 and current_branch == branch:
@@ -965,10 +1095,7 @@ def _fast_forward(
         # Not checked out here: update the ref directly. `git fetch <remote>
         # <branch>:<branch>` is fast-forward-only for a branch that is not HEAD,
         # so a diverged base clone fails instead of being rewritten.
-        rc, _out, err = _git_ok(
-            ["fetch", "--quiet", *shallow_fetch_args(local_path), remote, f"{branch}:{branch}"],
-            local_path,
-        )
+        rc, _out, err = _git_ok(["fetch", "--quiet", remote, f"{branch}:{branch}"], local_path)
     if rc != 0:
         raise RepoError(
             f"the base clone's {branch!r} cannot fast-forward to {remote}/{branch} "
@@ -1039,6 +1166,7 @@ def sync_repo(name: str, *, clean_stray_mm: bool = False) -> SyncResult:
     if row["default_branch"]:
         align_shallow_remote(local_path, remote, row["default_branch"])
     _git(["fetch", "--quiet", "--prune", *shallow_fetch_args(local_path), remote], cwd=local_path)
+    reconnect_shallow(local_path)
     forge_branch = forge_default_branch(local_path, remote)
     branch = forge_branch or _default_branch(row, remote)
     base_sha, moved = _fast_forward(local_path, branch, remote, recorded=previous)

@@ -161,7 +161,9 @@ def test_fetches_against_a_shallow_clone_stay_shallow(mm_home, deep_repo, monkey
     result = repos.sync_repo("deep")
     assert result.base_sha == _git(deep_repo, "rev-parse", "HEAD")
     assert _git(shallow.local_path, "rev-parse", "--is-shallow-repository") == "true"
-    assert _git(shallow.local_path, "rev-list", "--count", "HEAD") == "1"
+    # The new tip, joined to the commit the clone already held, and nothing older.
+    assert _git(shallow.local_path, "rev-list", "--count", "HEAD") == "2"
+    assert repos.shallow_roots(shallow.local_path) == {shallow.base_sha}
 
 
 def test_a_shallow_base_clone_with_local_commits_is_not_moved(
@@ -278,3 +280,83 @@ def test_the_carry_check_never_diffs_a_shallow_root(mm_home, monkeypatch) -> Non
     task = store.get_task(conn, task_id)
     assert delivery.composition_tasks(conn, task, remote="origin", base="main", head="h") == []
     assert diffed and all("root" not in commits for commits in diffed)
+
+
+# --------------------------------------------------------------------------- #
+# Fetching a branch keeps the history the clone already holds
+# --------------------------------------------------------------------------- #
+
+
+def _task_branch(clone: str, branch: str, *names: str) -> str:
+    _git(clone, "checkout", "-qb", branch)
+    for name in names:
+        _advance(clone, name)
+    _git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+    return _git(clone, "rev-parse", "HEAD")
+
+
+def test_a_branch_whose_tip_is_here_is_not_fetched_or_cut(deep_repo, tmp_path) -> None:
+    """A depth fetch of a tip already here marks it shallow and ends its history there."""
+    clone = _shallow_clone(deep_repo, tmp_path)
+    _git(deep_repo, "config", "receive.denyCurrentBranch", "ignore")
+    tip = _task_branch(clone, "mm/task-1", "one", "two")
+
+    assert repos.fetch_branch(clone, "origin", "mm/task-1") == (tip, "")
+    assert _git(clone, "rev-list", "--count", tip) == "3"
+    assert repos.shallow_roots(clone) == {_git(clone, "rev-parse", f"{tip}~2")}
+
+
+def test_a_stack_parent_that_moved_stays_joined_to_the_child(deep_repo, tmp_path) -> None:
+    clone = _shallow_clone(deep_repo, tmp_path)
+    _git(deep_repo, "config", "receive.denyCurrentBranch", "ignore")
+    parent = _task_branch(clone, "mm/parent", "p1", "p2")
+    _git(clone, "checkout", "-qb", "mm/child")
+    _advance(clone, "child")
+
+    other = tmp_path / "other"
+    subprocess.run(
+        ["git", "clone", "-q", "-b", "mm/parent", f"file://{deep_repo}", str(other)],
+        check=True,
+        capture_output=True,
+    )
+    moved = _advance(str(other), "p3")
+    _git(other, "push", "-q", "origin", "HEAD:mm/parent")
+
+    assert repos.fetch_branch(clone, "origin", "mm/parent") == (moved, "")
+    assert _git(clone, "merge-base", "mm/child", moved) == parent
+    assert _git(clone, "rev-list", "--count", f"{parent}..{moved}") == "1"
+
+
+def test_a_branch_forked_below_the_boundary_is_not_fetched_whole(deep_repo, tmp_path) -> None:
+    clone = _shallow_clone(deep_repo, tmp_path)
+    _git(deep_repo, "checkout", "-qb", "old-fork", "HEAD~2")
+    fork = _advance(deep_repo, "fork")
+    _git(deep_repo, "checkout", "-q", "main")
+    for n in range(repos.CONNECT_DEPTHS[0] + 4):
+        _git(deep_repo, "commit", "-q", "--allow-empty", "-m", f"history {n}")
+
+    assert repos.fetch_branch(clone, "origin", "old-fork") == (fork, "")
+    # Its own commit and the two below it that the shallow clone never had, at most.
+    assert int(_git(clone, "rev-list", "--count", fork)) <= repos.CONNECT_DEPTHS[0]
+
+
+def test_a_full_clone_fetches_a_branch_plainly(deep_repo, tmp_path) -> None:
+    clone = tmp_path / "full"
+    subprocess.run(
+        ["git", "clone", "-q", f"file://{deep_repo}", str(clone)], check=True, capture_output=True
+    )
+    head = _git(deep_repo, "rev-parse", "HEAD")
+    assert repos.fetch_branch(str(clone), "origin", "main") == (head, "")
+    assert repos.fetch_branch(str(clone), "origin", "nope")[0] is None
+
+
+def test_reconnect_clears_only_marks_whose_parents_are_here(deep_repo, tmp_path) -> None:
+    clone = _shallow_clone(deep_repo, tmp_path)
+    root = _git(clone, "rev-parse", "HEAD")
+    tip = _advance(clone, "local")
+    shallow_file = __import__("pathlib").Path(clone) / ".git" / "shallow"
+    shallow_file.write_text(f"{root}\n{tip}\n")
+
+    assert repos.reconnect_shallow(clone) == [tip]
+    assert repos.shallow_roots(clone) == {root}
+    assert _git(clone, "rev-list", "--count", tip) == "2"
