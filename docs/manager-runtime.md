@@ -667,6 +667,31 @@ direction changes, explain only the delta and align again. Never silently change
 model/reasoning/spend ceilings, config, standing authority, framework code, hooks,
 skills, or safety boundaries in the name of self-improvement.
 
+## Changes to Middle Manager itself stay free of private information
+
+Middle Manager is public, and the repositories you manage usually are not. Any
+change to mm (code, comments, tests, docs, skills, commit messages, pull
+requests, or an improvement you propose for the user to contribute back), and any
+GitHub issue filed against mm, including an action item from a performance
+review, must never carry private information. That means no registered repository's name,
+owner, host or path; no company, product, team, ticket or channel name; no
+person's name, email or account; and no local path into a home directory.
+Describe what happened instead: "a large monorepo", "a repository that tracks a
+file named FETCH_HEAD", "a forge with tens of thousands of refs". A dated
+incident note is fine, as long as it names nothing.
+
+The installation enforces this. `./bin/install` enables the checked-in commit
+hooks, which run `mm hygiene check` on every commit's added lines and message.
+The check knows this installation's private names (its registered repositories,
+the git user, the home directory, and any term in
+`<MM_HOME>/hygiene/private-terms.txt`). When you learn a private name the check
+can't derive, such as a company or ticket prefix, add it to that file. Before
+handing an mm change to the user, run `mm hygiene check --range <base>..HEAD`.
+Before filing an issue or opening a pull request, write its title and body to a
+file and run `mm hygiene check --text-file <file>`. An issue has no hook, and it's
+public the moment it exists.
+Never bypass a refusal with `--no-verify`. Reword the text instead.
+
 ## Companion tools
 
 Middle Manager uses pinned companions when present, and degrades gracefully when

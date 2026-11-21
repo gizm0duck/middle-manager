@@ -51,6 +51,13 @@ credentials.
 
 ## Operating discipline
 
+- **Opening a pull request:** follow the `improve-middle-manager` skill. Maintainers
+  apply the same list before merging, and a pull request that misses a rule is
+  rejected. `make contribution-check BASE=origin/main` is its mechanical gate.
+- **Prerequisite: gitleaks.** Contributing requires
+  [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`). The
+  `pre-commit` hook refuses every commit without it, and it scans each commit for
+  secrets.
 - Run `make lint`, `make fmt`, and `make test` before marking work complete.
 - Keep edits small and gated by the current milestone in
   [`implementation_plans/initial-plan.md`](implementation_plans/initial-plan.md).
@@ -60,6 +67,16 @@ credentials.
   file conflict every time. The record of a change is its commit message and pull
   request body — write the *why* there. Machine-local state stays under `.mm/`
   and `.lavish/`, both gitignored.
+- **This repository is public; installations work on private code.** Never put
+  private information in code, comments, docstrings, tests, docs, skills or commit
+  messages: no names of the repositories an installation manages, or their owners
+  or hosts; no company, product, team, ticket or channel names; no people, emails
+  or accounts; no paths into a home directory. Describe the situation generically
+  ("a large monorepo"). `./bin/install` enables `.githooks/`, whose `pre-commit` and
+  `commit-msg` hooks run `mm hygiene check` and refuse a commit that leaks; don't
+  bypass them with `--no-verify`. Issues and pull request descriptions have no
+  hook: check their text with `mm hygiene check --text-file <file>` before posting. Check a whole branch with
+  `mm hygiene check --range main..HEAD` before opening a pull request.
 - Use `uv` for all Python commands.
 - **Skills:** author every skill under `.agents/skills/<name>/SKILL.md` (Codex
   reads that natively) and add a relative symlink `.claude/skills/<name> ->

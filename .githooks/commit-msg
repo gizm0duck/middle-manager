@@ -1,0 +1,10 @@
+#!/bin/sh
+# Refuse a commit message that carries private information: Middle Manager is public.
+
+ROOT="$(git rev-parse --show-toplevel)"
+# Use the lockfile as it is: a commit hook must never rewrite a tracked file.
+export UV_FROZEN=1
+if ! "$ROOT/bin/mm" hygiene check --message-file "$1" --quiet; then
+    echo "commit-msg: commit refused (private information in the message). See the lines above." >&2
+    exit 1
+fi
