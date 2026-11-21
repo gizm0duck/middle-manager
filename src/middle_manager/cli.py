@@ -696,6 +696,9 @@ def _cmd_worktree(args: argparse.Namespace) -> int:
     res = prune(args.repo, dry_run=args.dry_run)
     verb = "would remove" if res["dry_run"] else "removed"
     for r in res["removed"]:
+        if r.get("kept_on_disk"):
+            print(f"  released {r['path']} — not reclaimed: {r['kept_on_disk']}")
+            continue
         print(f"  {verb} {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
     for r in res["skipped"]:
         print(f"  kept {r['path']} ({human_bytes(r['size_bytes'])}) — {r['reason']}")
