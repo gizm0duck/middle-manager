@@ -48,6 +48,38 @@ def effective_allowed_tools() -> tuple[list[str], str]:
         return list(default_claude_allowed_tools()), "built-in default profile"
 
 
+def worker_permission_mode() -> str:
+    """The `--permission-mode` Claude workers launch with (`claude.permission_mode`).
+
+    Without a readable config the answer is the default, acceptEdits: a different
+    mode is something a user chose, never something a broken config file implies.
+    """
+    try:
+        return load_config().claude.permission_mode
+    except ConfigError:
+        return "acceptEdits"
+
+
+#: Added to the command rules for an auto-mode worker. Auto mode is the answer to a
+#: managed policy that ignores the allowlist, and such a policy can also keep Claude
+#: Code's sandbox on whatever mm asks. The sandbox then blocks what a worker's job
+#: needs (the SSH agent for a push, writes to the base clone's shared git objects
+#: and to MM_HOME). A command it blocked is rerun once outside it, and the auto-mode
+#: reviewer approves or refuses that run like any other.
+AUTO_MODE_RULES = """\
+## Sandbox and approvals (auto mode)
+
+An auto-mode reviewer approves or refuses each command you run. Claude Code's
+sandbox may also be on. It blocks network credentials such as the SSH agent, writes
+outside your worktree (the base clone's git objects, `MM_HOME`) and some system
+calls. When a command fails because the sandbox blocked it, rerun that same command
+once with `dangerouslyDisableSandbox: true`, and the reviewer judges that run too.
+Typical signs are "Operation not permitted" and "Permission denied (publickey)".
+Never disable the sandbox for a command that has not failed in it. If the reviewer
+refuses the rerun, record it under "Flagged, not done" as for any denied command.
+"""
+
+
 class ClaudeAdapter(ProviderAdapter):
     name = "claude"
 
@@ -62,6 +94,8 @@ class ClaudeAdapter(ProviderAdapter):
         every time.
         """
         rules = command_rules(self.name, spec.branch, environment=spec.environment)
+        if worker_permission_mode() == "auto":
+            rules = f"{rules}\n{AUTO_MODE_RULES}"
         return f"{rules}\n---\n\n{super().worker_prompt(spec)}"
 
     def _common(self, argv: list[str], spec: TaskSpec) -> list[str]:
@@ -69,8 +103,9 @@ class ClaudeAdapter(ProviderAdapter):
             argv += ["--model", spec.model]
         if spec.reasoning:
             argv += ["--effort", spec.reasoning]
-        # acceptEdits auto-accepts file edits without a full permission bypass.
-        argv += ["--permission-mode", "acceptEdits"]
+        # acceptEdits auto-accepts file edits without a full permission bypass; auto
+        # hands each command to Claude Code's auto-mode reviewer. Never a bypass mode.
+        argv += ["--permission-mode", worker_permission_mode()]
         allowed, _source = effective_allowed_tools()
         if allowed:
             argv += ["--allowedTools", ",".join(allowed)]
