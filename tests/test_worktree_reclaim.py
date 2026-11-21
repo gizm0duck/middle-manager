@@ -592,3 +592,44 @@ def test_prune_never_takes_a_slot_a_resumable_task_still_names(repo):
     store.set_task_status(init_db(), task_id, "closed")
     res = prune()
     assert [r["path"] for r in res["removed"]] == [lease.worktree_path]
+
+
+# --------------------------------------------------------------------------- #
+# A release that leaves the slot on disk (issue #110)
+# --------------------------------------------------------------------------- #
+
+
+def _release_keeping_the_directory(monkeypatch):
+    """Release the way `treehouse return` does: the lease ends, the pool keeps the slot."""
+
+    def release(self, lease, *, repo_path, remove_branch=True):
+        store.release_lease(init_db(), lease.id)
+
+    monkeypatch.setattr(LeaseManager, "release", release)
+
+
+def test_one_prune_deletes_a_slot_its_release_left_behind(repo, monkeypatch, capsys):
+    task_id, lease = _lease_a_task(repo, status="delivered")
+    _release_keeping_the_directory(monkeypatch)
+
+    res = prune()
+
+    assert [r["task_id"] for r in res["removed"]] == [task_id]
+    assert not Path(lease.worktree_path).exists(), "a second prune must not be needed"
+    assert res["reclaimed_bytes"] > 0
+    assert prune()["removed"] == []
+
+
+def test_a_slot_that_stays_on_disk_is_not_counted_as_reclaimed(repo, monkeypatch, capsys):
+    task_id, lease = _lease_a_task(repo, status="delivered")
+    _release_keeping_the_directory(monkeypatch)
+    monkeypatch.setattr(
+        "middle_manager.worktree.reclaim.remove_orphan_slot",
+        lambda entry: (_ for _ in ()).throw(OSError("busy")),
+    )
+
+    assert main(["worktree", "prune"]) == 0
+    out = capsys.readouterr().out
+    assert Path(lease.worktree_path).exists()
+    assert "not reclaimed" in out and "busy" in out
+    assert "0 B reclaimed" in out

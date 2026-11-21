@@ -487,6 +487,9 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
             record["reason"] = f"could not remove: {exc}"
             skipped.append(record)
             continue
+        kept = _sweep_returned_slot(entry, conn)
+        if kept:
+            record["kept_on_disk"] = kept
         removed.append(record)
         task = store.get_task(conn, entry.task_id) if entry.task_id else None
         store.append_event(
@@ -509,9 +512,43 @@ def prune(repo: str | None = None, *, dry_run: bool = False) -> dict:
         "removed": removed,
         "skipped": skipped,
         "compose": stacks,
-        "reclaimed_bytes": sum(r["size_bytes"] for r in removed),
+        # Only what actually left the disk. A dry run reports what would.
+        "reclaimed_bytes": sum(r["size_bytes"] for r in removed if not r.get("kept_on_disk")),
         "held_bytes": sum(r["size_bytes"] for r in skipped),
     }
+
+
+def _sweep_returned_slot(entry: WorktreeEntry, conn: sqlite3.Connection) -> str | None:
+    """Delete a slot its lease's release left on disk. Returns why it stayed, or None.
+
+    A treehouse ``return`` hands the slot back to its pool, and the pool keeps the
+    directory for the next lease. Prune exists to free disk, so before this a pass
+    released the lease, counted the slot's bytes as reclaimed, and left the
+    directory, which the next pass found as an orphan and only then deleted
+    (issue #110). The slot now goes in the same pass, through
+    :func:`remove_orphan_slot`. It is inspected afresh and has to meet the same
+    rules any orphan meets (managed by this instance, clean, every commit on a
+    remote).
+    """
+    if not Path(entry.path).exists():
+        return None
+    leftover = next(
+        (
+            orphan
+            for orphan in orphan_slots(entry.repo, conn=conn)
+            if entry.path in (orphan.path, orphan.checkout)
+        ),
+        None,
+    )
+    if leftover is None:
+        return "the lease was released but its directory is still on disk"
+    if not leftover.reclaimable:
+        return f"the lease was released; the directory stays: {leftover.reason}"
+    try:
+        remove_orphan_slot(leftover)
+    except (LeaseError, OSError) as exc:
+        return f"the lease was released but the directory could not be removed: {exc}"
+    return None
 
 
 def human_bytes(n: int) -> str:
