@@ -1,8 +1,20 @@
 #!/bin/sh
-# Refuse a commit whose staged changes contain a secret. Enable with `make hooks`.
+# Refuse a commit whose staged changes carry private information or a secret.
+# `./bin/install` enables these hooks (`git config core.hooksPath .githooks`); so does `make hooks`.
 
+ROOT="$(git rev-parse --show-toplevel)"
+# Use the lockfile as it is: a commit hook must never rewrite a tracked file.
+export UV_FROZEN=1
+
+# Middle Manager is public: no private repository names, people, emails or home paths.
+if ! "$ROOT/bin/mm" hygiene check --staged --quiet; then
+    echo "pre-commit: commit refused (private information). See the lines above." >&2
+    exit 1
+fi
+
+# gitleaks is a prerequisite for contributing to Middle Manager.
 if ! command -v gitleaks >/dev/null 2>&1; then
-    echo "pre-commit: gitleaks is not installed; run 'brew install gitleaks' (see https://github.com/gitleaks/gitleaks#installing)." >&2
+    echo "pre-commit: commit refused: gitleaks is required to contribute to Middle Manager. Install it with 'brew install gitleaks' (see https://github.com/gitleaks/gitleaks#installing), then commit again." >&2
     exit 1
 fi
 

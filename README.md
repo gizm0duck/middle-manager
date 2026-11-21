@@ -276,14 +276,30 @@ make test-live   # opt-in: spawn real Claude/Codex probes
 make probe       # re-run the provider capability matrix
 ```
 
-### Secret scanning on commit
+### Before you contribute
 
-Run `make hooks` once per checkout. It points git at `.githooks/`, whose
-`pre-commit` hook runs [gitleaks](https://github.com/gitleaks/gitleaks) over the
-staged changes and refuses any commit that adds a secret, naming the file, line
-and rule (install it with `brew install gitleaks`). A false positive belongs in
-`.gitleaks.toml`, with a comment saying why it is safe. `git commit --no-verify`
-skips the hook deliberately; use it only when you are sure.
+Contributing needs [gitleaks](https://github.com/gitleaks/gitleaks), the secret
+scanner: install it with `brew install gitleaks` (or see its install guide). The
+commit hooks refuse every commit while it's missing.
+
+`./bin/install` points git at `.githooks/` (so does `make hooks`). On every commit:
+
+- `pre-commit` runs gitleaks over the staged changes and refuses a commit that adds
+  a secret, naming the file, line and rule. A false positive belongs in
+  `.gitleaks.toml`, with a comment saying why it is safe.
+- `pre-commit` and `commit-msg` run `mm hygiene check`. Middle Manager is public,
+  and the repositories you manage with it usually aren't, so a commit that names
+  one of them, its owner or host, a person, an email, or a path into your home
+  directory is refused. Describe the situation instead ("a large monorepo"). Add
+  your own private terms (a company name, a ticket prefix) to
+  `.mm/hygiene/private-terms.txt`, one per line. That file never leaves your machine.
+
+Don't skip the hooks with `git commit --no-verify`. Fix what they found instead.
+
+Before opening a pull request, run `make contribution-check BASE=origin/main` and
+follow the [`improve-middle-manager`](.agents/skills/improve-middle-manager/SKILL.md)
+skill. Maintainers check every pull request against that same list before merging,
+and one that misses a rule is sent back.
 
 ---
 

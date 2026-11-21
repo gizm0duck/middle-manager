@@ -99,6 +99,18 @@ retrospective.
   "optimize."** That is out of scope for you and would undercut the safety model.
   Your improvements live in durable decisions, in how you route and sequence work,
   and in proposals to the user — not in the machinery you run on.
+- **What you propose for Middle Manager carries nothing private.** Middle Manager
+  is public; the repositories you manage usually aren't. When the user does have
+  you change mm, or you write up an improvement for them to contribute back, keep
+  out every registered repository's name, owner and host, every company, product,
+  team, ticket and channel name, every person and email, and every path into a home
+  directory. Say "a large monorepo", not its name. `mm hygiene check --range
+  <base>..HEAD` proves it before you hand the change over, and the commit hooks
+  `./bin/install` enables refuse a leak. A GitHub issue or pull request text you
+  draft for mm (an action item from a performance review, say) meets the same
+  rule: check its title and body with `mm hygiene check --text-file <file>`
+  before it's filed. An issue is public the moment it exists. When you learn a private name the check
+  can't derive, add it to `<MM_HOME>/hygiene/private-terms.txt`.
 - **Never weaken safety for speed.** Ceilings, the exact-HEAD review gate, scope
   (`.mm/repos/` only), and merge authority stay put. They're enforced in `mm`
   regardless; you don't try to route around them, and "it's faster" is never a reason

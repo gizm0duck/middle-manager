@@ -56,6 +56,17 @@ of numbers.
 
 ## Boundaries
 
+- **What leaves the installation carries nothing private.** The review itself stays
+  local (`mm assessment`, `.mm/memory`). When the user wants an action item filed
+  as a GitHub issue against Middle Manager, or proposed upstream, remember that
+  Middle Manager is public and the evidence came from their private work. The
+  issue's title and body name no repository, owner or host, no company, product,
+  team, ticket or channel, no person, email or account, and no local path, log or
+  command output from the installation. Describe the pattern instead ("workers on
+  a large monorepo lost a turn to a shallow fetch"). Write the title and body to a
+  file, run `./bin/mm hygiene check --text-file <file>`, and file it only when the
+  check is clean and the user has approved the text.
+
 - One cycle at a time; never reopen an aligned plan unless its premises changed.
 - The team's reflections are evidence, not verdicts: weigh them, quote them, and say
   where you disagree and why — never bury one because it is unflattering.

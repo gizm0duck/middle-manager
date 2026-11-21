@@ -1,11 +1,12 @@
 # Middle Manager control-plane developer targets.
 # All Python runs go through uv, respecting versions pinned by pyproject/uv.lock.
 
-.PHONY: help hooks fmt lint test test-live probe clean
+.PHONY: help hooks fmt lint test test-live probe clean contribution-check
 
 help:
 	@echo "Targets:"
-	@echo "  make hooks      Enable the checked-in git hooks (gitleaks secret scan on commit)"
+	@echo "  make hooks      Enable the checked-in git hooks (gitleaks secret scan and mm hygiene check on commit; needs gitleaks)"
+	@echo "  make contribution-check BASE=origin/main  The gate a pull request to mm must pass"
 	@echo "  make fmt        Format with ruff"
 	@echo "  make lint       Lint with ruff"
 	@echo "  make test       Run hermetic tests (no provider spawning)"
@@ -14,6 +15,19 @@ help:
 
 hooks:
 	git config core.hooksPath .githooks
+
+# The gate every pull request to Middle Manager passes, run by authors before opening
+# one and by maintainers before merging (see .agents/skills/improve-middle-manager).
+BASE ?= origin/main
+contribution-check:
+	@command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks is required to contribute (brew install gitleaks)"; exit 1; }
+	uv run ruff check .
+	uv run ruff format --check .
+	uv run pytest --collect-only -q >/dev/null
+	uv run pytest
+	./bin/mm hygiene check --range $(BASE)..HEAD
+	gitleaks git --log-opts="$(BASE)..HEAD" --redact --no-banner
+	@echo "contribution-check: passed for $$(git rev-parse --short HEAD) against $(BASE)"
 
 fmt:
 	uv run ruff format .

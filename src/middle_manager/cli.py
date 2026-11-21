@@ -23,6 +23,33 @@ def _cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hygiene_check(args: argparse.Namespace) -> int:
+    from middle_manager import hygiene
+
+    staged = args.staged or not (args.range or args.message_file or args.text_file)
+    findings = hygiene.check(
+        staged=staged,
+        revision_range=args.range,
+        message_file=args.message_file,
+        text_files=args.text_file,
+    )
+    if not findings:
+        if not args.quiet:
+            print("hygiene: no private information found")
+        return 0
+    print("hygiene: private information would leave this installation:", file=sys.stderr)
+    for finding in findings:
+        print(f"  {finding.render()}", file=sys.stderr)
+    print(
+        "Middle Manager is public: describe the situation without the name, path or "
+        'address (for example "a large monorepo"). A line that must keep it carries '
+        "`hygiene: allow`. Private terms of your own go in "
+        "<MM_HOME>/hygiene/private-terms.txt.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from middle_manager.setup.doctor import run_doctor
 
@@ -1905,6 +1932,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
+
+    hygiene_p = sub.add_parser(
+        "hygiene", help="keep private names out of changes contributed to Middle Manager"
+    )
+    hygiene_sub = hygiene_p.add_subparsers(dest="hygiene_cmd", required=True)
+    hcheck = hygiene_sub.add_parser(
+        "check",
+        help=(
+            "scan added lines, commit messages, issues and pull request text for private "
+            "names, emails and home paths"
+        ),
+    )
+    hcheck.add_argument("--staged", action="store_true", help="the staged diff (the default)")
+    hcheck.add_argument("--range", help="a revision range: its added lines and commit messages")
+    hcheck.add_argument("--message-file", help="a commit message file (the commit-msg hook)")
+    hcheck.add_argument(
+        "--text-file",
+        action="append",
+        help="a whole file, every line: an issue's title and body, a pull request description",
+    )
+    hcheck.add_argument("--quiet", action="store_true", help="print nothing when clean")
+    hcheck.set_defaults(func=_cmd_hygiene_check)
 
     doctor = sub.add_parser("doctor", help="environment and config diagnostics")
     doctor.add_argument("--json", action="store_true", help="machine-readable output")

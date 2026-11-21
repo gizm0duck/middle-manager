@@ -29,6 +29,8 @@ fi
 # Node and gh are needed for companion tools (provisioned by `mm setup`) and delivery.
 command -v node >/dev/null 2>&1 || warn "node not found — needed for companion tools (Node 22+)"
 command -v gh >/dev/null 2>&1 || warn "gh not found — needed for GitHub delivery"
+# Only contributors need gitleaks: the commit hooks refuse commits to this checkout without it.
+command -v gitleaks >/dev/null 2>&1 || warn "gitleaks not found — required to contribute to Middle Manager (brew install gitleaks); using mm doesn't need it"
 
 if [ "$MISSING" -ne 0 ]; then
     warn "install the missing prerequisites above, then rerun ./bin/install"
@@ -37,6 +39,20 @@ fi
 
 say "provisioning the local Python environment with uv"
 uv sync
+
+# Middle Manager is public, and an installation works on private repositories.
+# The checked-in hooks refuse a commit to this checkout that carries a private
+# repository name, a person, an email, a home path or a secret, so an improvement
+# can be contributed back without leaking where it came from.
+hooks_path="$(git config --get core.hooksPath || true)"
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    warn "not a git checkout, so the commit hooks were not enabled"
+elif [ -z "$hooks_path" ]; then
+    git config core.hooksPath .githooks
+    say "enabled the commit hooks that keep private information out of Middle Manager"
+elif [ "$hooks_path" != ".githooks" ]; then
+    warn "core.hooksPath is '$hooks_path', so Middle Manager's commit hooks are not active; run them from your hooks, or 'git config core.hooksPath .githooks'"
+fi
 
 say "environment ready"
 say "next: ./bin/mm start   (talk to the manager; it configures itself and drives the rest)"
