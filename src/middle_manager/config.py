@@ -137,10 +137,6 @@ class ClaudeProfile:
     permission_mode: str = "acceptEdits"
 
 
-def _claude_profile(raw: dict) -> ClaudeProfile:
-    return ClaudeProfile(**raw)
-
-
 @dataclass
 class HealthPolicy:
     """How long a worker may stay silent before it is flagged as possibly stuck."""
@@ -308,7 +304,7 @@ def _from_dict(data: dict) -> MMConfig:
         assessments=AssessmentPolicy(**data.get("assessments", {})),
         health=HealthPolicy(**data.get("health", {})),
         usage=UsagePolicy(**data.get("usage", {})),
-        claude=_claude_profile(data.get("claude", {})),
+        claude=ClaudeProfile(**data.get("claude", {})),
         forge=ForgePolicy(**data.get("forge", {})),
     )
     return cfg

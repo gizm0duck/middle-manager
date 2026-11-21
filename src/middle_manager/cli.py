@@ -1974,10 +1974,12 @@ def build_parser() -> argparse.ArgumentParser:
     claude_cfg.add_argument(
         "--reset", action="store_true", help="restore the documented default profile"
     )
+    from middle_manager.config import CLAUDE_PERMISSION_MODES
+
     claude_cfg.add_argument(
         "--permission-mode",
         dest="permission_mode",
-        choices=("acceptEdits", "auto"),
+        choices=CLAUDE_PERMISSION_MODES,
         default=None,
         help="how a Claude worker's commands are approved (default acceptEdits, which relies "
         "on the allowlist). auto hands each command to Claude Code's auto-mode reviewer; use "

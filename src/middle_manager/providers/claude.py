@@ -60,21 +60,23 @@ def worker_permission_mode() -> str:
         return "acceptEdits"
 
 
-#: Added to the command rules for an auto-mode worker. Commands still run in Claude
-#: Code's sandbox, which blocks the SSH agent, writes outside the worktree (the
-#: base clone's git objects, MM_HOME) and the macOS lookup uv makes at startup.
-#: Each command that needs them is rerun outside the sandbox, one at a time, and the
-#: auto-mode reviewer approves or refuses it.
+#: Added to the command rules for an auto-mode worker. Auto mode is the answer to a
+#: managed policy that ignores the allowlist, and such a policy can also keep Claude
+#: Code's sandbox on whatever mm asks. The sandbox then blocks what a worker's job
+#: needs (the SSH agent for a push, writes to the base clone's shared git objects
+#: and to MM_HOME). A command it blocked is rerun once outside it, and the auto-mode
+#: reviewer approves or refuses that run like any other.
 AUTO_MODE_RULES = """\
-## Sandbox (auto mode)
+## Sandbox and approvals (auto mode)
 
-Commands run in Claude Code's sandbox and an auto-mode reviewer approves each one.
-The sandbox blocks the SSH agent, writes outside your worktree, and some macOS
-system calls. When a command fails because of it, rerun that same command once with
-`dangerouslyDisableSandbox: true`. Typical signs are "Operation not permitted",
-"Permission denied (publickey)", or a uv panic in system-configuration. Expect this
-for `git fetch`, `git push`, `git commit`, `mm progress` and `uv`. If the reviewer
-refuses it, record it under "Flagged, not done" as for any denied command.
+An auto-mode reviewer approves or refuses each command you run. Claude Code's
+sandbox may also be on. It blocks network credentials such as the SSH agent, writes
+outside your worktree (the base clone's git objects, `MM_HOME`) and some system
+calls. When a command fails because the sandbox blocked it, rerun that same command
+once with `dangerouslyDisableSandbox: true`, and the reviewer judges that run too.
+Typical signs are "Operation not permitted" and "Permission denied (publickey)".
+Never disable the sandbox for a command that has not failed in it. If the reviewer
+refuses the rerun, record it under "Flagged, not done" as for any denied command.
 """
 
 
