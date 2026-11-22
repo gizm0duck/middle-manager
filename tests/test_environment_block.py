@@ -198,17 +198,19 @@ def test_the_block_renders_one_exact_gate_with_urls_sandbox_and_source_ceiling(m
         compose_project="task_12",
         db_port=55012,
     )
-    gate = (
-        f"COMPOSE_PROJECT_NAME=task_12 PAPAYA_DB_PORT=55012 "
-        "DATABASE_URL=postgresql://localhost:55012/backend_12 "
-        "TEST_DATABASE_URL=postgresql://localhost:55012/backend_12_test "
-        f"UV_CACHE_DIR={environment.uv_cache_dir()} "
-        f"RUFF_CACHE_DIR={environment.task_cache_dir(12) / 'ruff'} "
-        f"MYPY_CACHE_DIR={environment.task_cache_dir(12) / 'mypy'} make test"
-    )
-    assert text.count(f"**Exact local gate:** `{gate}`") == 1
+    gate_line = next(line for line in text.splitlines() if "**Exact local gate:**" in line)
+    assert gate_line.startswith("- **Exact local gate:** `make test`. Already set in your")
+    for value in (
+        f"`{env.db_port_variable}=55012`",
+        "`DATABASE_URL=postgresql://localhost:55012/backend_12`",
+        "`TEST_DATABASE_URL=postgresql://localhost:55012/backend_12_test`",
+        "`COMPOSE_PROJECT_NAME=task_12`",
+        f"`MYPY_CACHE_DIR={environment.task_cache_dir(12) / 'mypy'}`",
+    ):
+        assert value in gate_line
     assert "localhost database access and Git object writes may require" in text
-    assert "no source file may exceed 1000 lines" in text
+    assert "may end above 1000 lines" in text
+    assert "harness check" not in text
     assert "Receipts are `.txt` files" in text
 
 
@@ -580,3 +582,14 @@ def test_review_show_lists_the_evidence_directory_even_when_the_report_did_not(
     assert "captures and receipts named in the worker's reports:" in out
     assert f"{receipts} — directory, 1 item(s)" in out
     assert "gate.log" in out
+
+
+def test_a_chained_gate_is_one_command_per_step(mm_home) -> None:
+    """A Claude worker's rules deny `&&` and inline assignments: the line has neither."""
+    env = environment.RepoEnvironment(repo="backend", local_gate="uv run pytest -q && make lint")
+    text = environment.render(env, task_id=3, evidence_path="/wt/3/.mm-evidence")
+
+    gate_line = next(line for line in text.splitlines() if "**Exact local gate:**" in line)
+    assert "1. `uv run pytest -q` 2. `make lint`" in gate_line
+    assert "&&" not in gate_line
+    assert "` UV_CACHE_DIR=" not in gate_line and "`UV_CACHE_DIR=" in gate_line
