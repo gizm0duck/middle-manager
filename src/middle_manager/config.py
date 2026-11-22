@@ -48,7 +48,13 @@ class WorkerCeiling:
     # ceiling fields.
     default_model: str | None = None
     default_reasoning: str | None = None
-    max_concurrent: int = 2
+    max_concurrent: int = 4
+
+
+# The cap a config saved before ``max_concurrent`` existed ran with. Such a config
+# keeps it on load, so raising the new-installation default never changes how many
+# workers an existing installation runs at once.
+LEGACY_MAX_CONCURRENT = 2
 
 
 @dataclass
@@ -295,6 +301,7 @@ def _from_dict(data: dict) -> MMConfig:
     # custom-model configs loadable and deterministic without guessing a rank.
     worker.setdefault("default_model", worker.get("max_model", WorkerCeiling.max_model))
     worker.setdefault("default_reasoning", worker.get("max_reasoning", WorkerCeiling.max_reasoning))
+    worker.setdefault("max_concurrent", LEGACY_MAX_CONCURRENT)
     cfg = MMConfig(
         manager=ManagerProfile(**data.get("manager", {})),
         worker=WorkerCeiling(**worker),

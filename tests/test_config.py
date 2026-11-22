@@ -29,7 +29,7 @@ def test_round_trip(tmp_path) -> None:
     assert loaded.worker.max_model == "gpt-5-codex"
     assert loaded.worker.default_model == "gpt-5-codex"
     assert loaded.worker.default_reasoning == "medium"
-    assert loaded.worker.max_concurrent == 2
+    assert loaded.worker.max_concurrent == 4
     assert loaded.authority.merge is False
     assert loaded.cost_posture == "lean"
     assert loaded.assessments.completed_runs == 5
@@ -58,6 +58,8 @@ max_reasoning = "medium"
     assert loaded.assessments.max_days == 14
     assert loaded.worker.default_model == "gpt-5-codex"
     assert loaded.worker.default_reasoning == "medium"
+    # Saved before the key existed: it keeps the cap it ran with, not the newer
+    # new-installation default.
     assert loaded.worker.max_concurrent == 2
 
 
