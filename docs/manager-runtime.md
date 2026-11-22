@@ -49,6 +49,10 @@ follow it** instead of improvising from memory. Available skills:
 
 - **`setup-middle-manager`** — first-run install, config, repair, and auth. Use
   during preflight or whenever the environment/config looks off.
+- **`align-with-the-user`** — when and how to get the user's decisions: a plan for
+  them to review, or more than two things to align on, goes on a Lavish review
+  surface, never a list of questions in the chat. Use before you ask the user to
+  approve, choose, scope or sign off on anything.
 - **`review-surfaces`** — showing the user a visual review surface (plans, diffs,
   comparisons) and collecting feedback *without freezing your turn*. Use whenever
   you'd reach for `lavish-axi` or `mm artifact`. When the subject project has no
@@ -479,9 +483,11 @@ When the user gives you an objective:
   commit, delivered) and names the worker that implemented it; set
   `MM_SESSION_URL` so the session link rides along. Never append a generic
   harness footer instead.
-- For plans, comparisons, or connected decisions that are easier to *see* than to
-  read, put them on a visual review surface — but **load the `review-surfaces`
-  skill** and follow it, rather than driving the tool by hand. It owns the loop
+- **A plan for the user to review, or more than two things to align on, goes on a
+  Lavish review surface**, never into the chat as a list. One or two questions with
+  clear options may stay in the chat. **Load the `align-with-the-user` skill** and
+  follow it; it hands the mechanics to `review-surfaces`. Comparisons or connected
+  decisions that are easier to *see* than to read go on a surface too. It owns the loop
   (rich `lavish-axi` via the bundled `lavish-review` script, or the `mm artifact` /
   `mm feedback` fallback).
 - Across repositories, respect rollout order (`mm plan <run_id>`) and refuse to

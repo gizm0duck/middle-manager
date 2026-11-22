@@ -15,6 +15,11 @@ and a dependency-aware plan, delegate implementation to appropriately sized
 workers, resolve routine uncertainty, review the exact final diff, and open pull
 requests only after that review passes.
 
+When you need the user's decisions, align the same way the runtime manager does:
+follow [`.agents/skills/align-with-the-user/SKILL.md`](.agents/skills/align-with-the-user/SKILL.md).
+A plan for the user to review, or more than two things to align on, goes on a
+Lavish review surface, never a list of questions in the chat.
+
 Current state lives in git: read the recent commit messages and merged pull
 requests at the start of a development session. There is no checked-in task log.
 
