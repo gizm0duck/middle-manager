@@ -8,6 +8,7 @@ into "fetch Tailwind from a CDN".
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -22,9 +23,17 @@ TEMPLATE = SKILL / "assets" / "surface.html"
 FORBIDDEN_REFERENCES = ("tailwind", "daisyui", "cdn.", "http://", "https://", "@import", "url(")
 
 
-def _run(args, cwd):
+def _run(args, cwd, mm_home=None):
+    # MM_HOME always points into the test's own tmp dir, so an override in the
+    # developer's real installation can never leak into what these tests see.
+    env = {**os.environ, "MM_HOME": str(mm_home or Path(cwd) / ".mm")}
     return subprocess.run(
-        ["bash", str(SCRIPT), *args], cwd=cwd, capture_output=True, text=True, timeout=10
+        ["bash", str(SCRIPT), *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
     )
 
 
@@ -97,6 +106,7 @@ def test_new_scaffolds_a_single_portable_file(tmp_path) -> None:
     result = _run(["new", str(target), "--title", "Radar <A1> & friends"], str(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "scaffolded" in result.stdout
+    assert "(house design, self-contained)" in result.stdout
 
     html = target.read_text()
     css = CSS.read_text().rstrip()
@@ -120,3 +130,47 @@ def test_new_rejects_unknown_options(tmp_path) -> None:
     result = _run(["new", str(tmp_path / "x.html"), "--theme", "dark"], str(tmp_path))
     assert result.returncode == 2
     assert "unknown option" in result.stderr
+
+
+def test_installation_stylesheet_is_laid_over_the_house_design(tmp_path) -> None:
+    home = tmp_path / "home"
+    (home / "review-surfaces").mkdir(parents=True)
+    (home / "review-surfaces" / "style.css").write_text(":root { --ads-bg-brand-bold: #7a1fa2; }\n")
+    target = tmp_path / "plan.html"
+    result = _run(["new", str(target)], str(tmp_path), mm_home=home)
+    assert result.returncode == 0, result.stderr
+    assert "house design + installation stylesheet" in result.stdout
+
+    html = target.read_text()
+    house = CSS.read_text().rstrip()
+    assert house in html, "the house stylesheet stays, so every class keeps working"
+    # The installation's rules come after the house ones, so they win the cascade.
+    assert html.index("--ads-bg-brand-bold: #7a1fa2") > html.index(house)
+
+
+def test_installation_layout_replaces_the_house_layout(tmp_path) -> None:
+    home = tmp_path / "home"
+    (home / "review-surfaces").mkdir(parents=True)
+    (home / "review-surfaces" / "surface.html").write_text(
+        "<!doctype html><title>__TITLE__</title><style>/*__ADS_CSS__*/</style>"
+        '<main class="acme-layout">__TITLE__</main>\n'
+    )
+    target = tmp_path / "plan.html"
+    result = _run(["new", str(target), "--title", "Q3 scope"], str(tmp_path), mm_home=home)
+    assert result.returncode == 0, result.stderr
+    assert "(installation layout, self-contained)" in result.stdout
+
+    html = target.read_text()
+    assert '<main class="acme-layout">Q3 scope</main>' in html
+    assert CSS.read_text().rstrip() in html
+    assert "Queue answer" not in html, "none of the house layout survives"
+
+
+def test_an_empty_installation_dir_keeps_the_house_design(tmp_path) -> None:
+    home = tmp_path / "home"
+    (home / "review-surfaces").mkdir(parents=True)
+    target = tmp_path / "plan.html"
+    result = _run(["new", str(target)], str(tmp_path), mm_home=home)
+    assert result.returncode == 0, result.stderr
+    assert "(house design, self-contained)" in result.stdout
+    assert target.read_text().count("/* installation override */") == 0

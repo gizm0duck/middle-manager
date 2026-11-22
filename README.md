@@ -193,6 +193,10 @@ All my working state lives under `.mm/` (gitignored — it's my desk, not the re
   events, usage, reviews, and self-assessment cycles).
 - `repos/` — read-only base clones. The only repositories that exist to me.
 - `runs/` — per-run plans, task packets, results, and append-only event logs.
+- `review-surfaces/` (optional) — your installation's look for the plans and
+  decisions I put in front of you. Without it they use the house design; a
+  `style.css` here is laid over the house stylesheet, and a `surface.html` replaces
+  the house layout.
 - `memory/` — durable, human-readable notes in two tiers: per-instance/manager
   (`preferences.md`, `relationships.md`, `tasks.md` — the manager's work board — and
   `improvements.md` — aligned performance experiments)

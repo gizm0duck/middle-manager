@@ -11,10 +11,16 @@
 #   lavish-review drain <file>   # print feedback collected so far (non-blocking)
 #   lavish-review stop  <file>   # stop the background poller
 #
-# `new` writes a single self-contained HTML file: the Atlassian-style default
-# stylesheet (assets/ads.css) is inlined, so the artifact renders identically with
-# or without lavish-axi running and needs no CDN. Use it whenever the subject
-# project has no design system of its own to match.
+# `new` writes a single self-contained HTML file in the installation's design: the
+# house stylesheet (assets/ads.css) inlined into the house layout
+# (assets/surface.html), so the artifact renders identically with or without
+# lavish-axi running and needs no CDN. An installation overrides the house design
+# in <MM_HOME>/review-surfaces/:
+#   style.css     appended after the house stylesheet, so it can restyle tokens or
+#                 replace any rule while keeping the classes surfaces rely on
+#   surface.html  replaces the house layout; it places the stylesheet with
+#                 /*__ADS_CSS__*/ and the title with __TITLE__
+# MM_HOME defaults to this checkout's .mm/, as bin/mm does.
 #
 # Sidecars live next to <file> as .<name>.feedback (notes) and .<name>.pid (poller).
 set -euo pipefail
@@ -26,7 +32,7 @@ if [ -z "$cmd" ] || [ -z "$file" ]; then
   exit 2
 fi
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 assets="$here/../assets"
 script="$here/$(basename "${BASH_SOURCE[0]}")"
 
@@ -137,17 +143,32 @@ case "$cmd" in
       exit 1
     fi
     mkdir -p "$(dirname "$file")"
-    LR_TEMPLATE="$assets/surface.html" LR_CSS="$assets/ads.css" LR_OUT="$file" LR_TITLE="$title" \
-      python3 - <<'PY'
+    install_dir="${MM_HOME:-$here/../../../../.mm}/review-surfaces"
+    template="$assets/surface.html"
+    override_css=""
+    design="house design"
+    if [ -f "$install_dir/surface.html" ]; then
+      template="$install_dir/surface.html"
+      design="installation layout"
+    fi
+    if [ -f "$install_dir/style.css" ]; then
+      override_css="$install_dir/style.css"
+      design="$design + installation stylesheet"
+    fi
+    LR_TEMPLATE="$template" LR_CSS="$assets/ads.css" LR_OVERRIDE_CSS="$override_css" \
+      LR_OUT="$file" LR_TITLE="$title" python3 - <<'PY'
 import html, os
 from pathlib import Path
 tpl = Path(os.environ["LR_TEMPLATE"]).read_text()
 css = Path(os.environ["LR_CSS"]).read_text().rstrip()
+override = os.environ["LR_OVERRIDE_CSS"]
+if override:
+    css += "\n\n/* installation override */\n" + Path(override).read_text().rstrip()
 title = html.escape(os.environ["LR_TITLE"])
 out = tpl.replace("/*__ADS_CSS__*/", css).replace("__TITLE__", title)
 Path(os.environ["LR_OUT"]).write_text(out)
 PY
-    echo "scaffolded $file (Atlassian-style default, self-contained); edit it, then 'lavish-review open \"$file\"'"
+    echo "scaffolded $file ($design, self-contained); edit it, then 'lavish-review open \"$file\"'"
     ;;
   open)
     if [ -z "$bin" ]; then
