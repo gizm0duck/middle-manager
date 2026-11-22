@@ -3,8 +3,9 @@ name: review-surfaces
 description: >-
   How Middle Manager gives the user a visual review surface (plans, diffs,
   comparisons, connected decisions) and collects their feedback without freezing
-  the conversation. Use when you want to show the user something richer than prose
-  and get annotations back. Mechanics live in the bundled `lavish-review` script and
+  the conversation. Use for every alignment the `align-with-the-user` skill sends
+  here (a plan for review, or more than two things to align on), and whenever you
+  want to show the user something richer than prose and get annotations back. Mechanics live in the bundled `lavish-review` script and
   in `mm`; this skill owns the judgment — when to use a surface and how to run the
   loop.
 user-invocable: false
@@ -12,8 +13,11 @@ user-invocable: false
 
 # review-surfaces
 
-When a plan, comparison, or set of connected decisions is easier to *see* than to
-read, put it on a review surface and hand control back to the user. The cardinal
+A plan for the user to review, or more than two things to align on, always goes on
+a review surface: the `align-with-the-user` skill owns that rule and the shape of
+an alignment surface, and this skill owns the mechanics. Beyond that, use a surface
+whenever a comparison or set of connected decisions is easier to *see* than to
+read. Either way, put it on the surface and hand control back to the user. The cardinal
 rule: **never hold your turn open waiting for their feedback.** A review is a
 hand-off — you open the surface, step back, and pick up their notes later.
 
