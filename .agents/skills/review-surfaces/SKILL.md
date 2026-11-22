@@ -42,23 +42,31 @@ hand-off — you open the surface, step back, and pick up their notes later.
 
 ## Pick the design
 
-Decide in this order and say which one you used when you hand the surface over:
+Every surface uses the installation's design unless the user asks for another
+look. Say which one you used when you hand the surface over.
 
-1. **The user named a look or a design system** — use that.
-2. **The subject project has a design system** — the product the surface is *about*,
-   which may not be the repo you are in: its Tailwind/theme config, CSS tokens,
-   component library, brand assets, or existing styled pages. A surface that
-   previews or proposes that product's UI is rendered in that product's system.
-3. **Otherwise, the shipped default: `lavish-review new`.** It writes one
-   self-contained file with Middle Manager's Atlassian-style stylesheet
-   (`assets/ads.css`: ADS-named tokens, light and dark, lozenges, section
+1. **The user named a look or a design system for this surface** — use that.
+2. **Otherwise, the installation's design: `lavish-review new`.** By default that
+   is Middle Manager's house design, the same for every installation: one
+   self-contained file with the house stylesheet (`assets/ads.css`, an
+   Atlassian-style system: ADS-named tokens, light and dark, lozenges, section
    messages, dynamic tables, stat tiles, cards, native-control forms, disclosures)
-   inlined, and a starter layout (`assets/surface.html`: header → key numbers →
+   inlined into the house layout (`assets/surface.html`: header → key numbers →
    verdict → one card per decision with its own *Queue answer* form → evidence
    table → folded reference). Replace the placeholder content; keep the classes.
-   Do **not** fall back to the Tailwind/DaisyUI CDN snippet that `lavish-axi
-   design` suggests — the default exists so surfaces from this manager look like
-   one product, render offline, and never depend on a CDN.
+   An installation that wants its own look puts it in `<MM_HOME>/review-surfaces/`:
+   `style.css` is appended after the house stylesheet (restyle the tokens, or
+   replace any rule), and `surface.html` replaces the house layout (it places the
+   stylesheet with `/*__ADS_CSS__*/` and the title with `__TITLE__`). The script
+   picks them up and says which design it used.
+3. **A mock of a specific product's UI** — a proposed screen, a before and after —
+   renders *that product's* design system (its theme config, CSS tokens, component
+   library, existing styled pages), shown inside the installation-styled surface.
+   The surface around it stays in the installation's design.
+
+Never fall back to the Tailwind/DaisyUI CDN snippet that `lavish-axi design`
+suggests: the house design exists so surfaces from this manager look like one
+product, render offline, and never depend on a CDN.
 
   Whichever source: no horizontal overflow at any nesting level (tables go inside
   `.ads-table-wrap`), native controls for choices, one queued prompt per decision
