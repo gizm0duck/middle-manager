@@ -69,6 +69,8 @@ def test_unconfigured_seed_walks_through_setup() -> None:
     assert "mm setup" in launch.seed_prompt
     # Preflight self-bootstrap is seeded for the unconfigured path.
     assert "./bin/install" in launch.seed_prompt
+    # Onboarding recommends from the signed-in harnesses: Opus manager, Sonnet workers.
+    assert "Claude Opus as manager and Claude Sonnet for workers" in launch.seed_prompt
 
 
 def test_configured_seed_runs_preflight() -> None:

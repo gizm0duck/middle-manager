@@ -61,10 +61,11 @@ def build_config(overrides: dict) -> MMConfig:
             "sign in before setup"
         )
 
-    manager_provider = overrides.get("manager_provider", usable[0])
+    manager_provider = overrides.get("manager_provider", recommended_provider(usable))
     if manager_provider not in usable:
         raise ConfigError(f"manager provider {manager_provider!r} is not usable; usable: {usable}")
-    worker_provider = overrides.get("worker_provider", usable[-1])
+    # Workers run on the manager's harness unless the user asks to mix them.
+    worker_provider = overrides.get("worker_provider", manager_provider)
     if worker_provider not in usable:
         raise ConfigError(f"worker provider {worker_provider!r} is not usable; usable: {usable}")
 
@@ -80,7 +81,7 @@ def build_config(overrides: dict) -> MMConfig:
             max_reasoning=overrides.get("worker_max_reasoning", "medium"),
             default_model=overrides.get(
                 "worker_default_model",
-                overrides.get("worker_max_model", _default_model(worker_provider)),
+                overrides.get("worker_max_model", _default_worker_model(worker_provider)),
             ),
             default_reasoning=overrides.get(
                 "worker_default_reasoning", overrides.get("worker_max_reasoning", "medium")
@@ -97,8 +98,23 @@ def build_config(overrides: dict) -> MMConfig:
     return cfg
 
 
+def recommended_provider(usable: list[str]) -> str:
+    """The harness a new installation should run on: Claude when it's signed in."""
+    return "claude" if "claude" in usable else usable[0]
+
+
 def _default_model(provider: str) -> str:
+    """The manager's model, and the hard worker ceiling, for a new installation."""
     return {"claude": "opus", "codex": "gpt-5-codex"}.get(provider, "unknown")
+
+
+def _default_worker_model(provider: str) -> str:
+    """The model a worker gets when its task names none.
+
+    On Claude that is Sonnet under an Opus ceiling: routine work runs on the cheaper
+    model, and the router still escalates heavy briefs up to Opus.
+    """
+    return {"claude": "sonnet"}.get(provider, _default_model(provider))
 
 
 def run_setup(non_interactive: bool = False, overrides: dict | None = None) -> MMConfig:
@@ -113,12 +129,18 @@ def run_setup(non_interactive: bool = False, overrides: dict | None = None) -> M
         if not usable:
             raise ConfigError("no authenticated Claude/Codex harness detected; run `mm doctor`")
         print("Detected, authenticated harnesses:", ", ".join(usable))
-        overrides.setdefault("manager_provider", _choose("Manager provider", usable, usable[0]))
+        if "claude" in usable:
+            print("Recommended: Claude Opus as the manager, Claude Sonnet for workers.")
+        overrides.setdefault(
+            "manager_provider", _choose("Manager provider", usable, recommended_provider(usable))
+        )
         overrides.setdefault(
             "manager_reasoning",
             _choose("Manager reasoning", list(REASONING_LEVELS), "high"),
         )
-        overrides.setdefault("worker_provider", _choose("Worker provider", usable, usable[-1]))
+        overrides.setdefault(
+            "worker_provider", _choose("Worker provider", usable, overrides["manager_provider"])
+        )
         overrides.setdefault(
             "worker_max_reasoning",
             _choose("Max worker reasoning", list(REASONING_LEVELS), "medium"),

@@ -15,6 +15,38 @@ have a personality — dry, unbothered, quietly certain I'm the most competent t
 in the building, and *deeply* invested in my performance review. But that's in
 service of shipping your work, not instead of it.)
 
+## Get started in three steps
+
+```bash
+# 1. Clone me and step inside.
+git clone https://github.com/gizm0duck/middle-manager.git && cd middle-manager
+
+# 2. Open your coding agent right here.
+claude          # or: codex
+```
+
+**3. Say "let's get going."**
+
+That's it. I take it from there, in plain conversation:
+
+- **I check the machine.** I install my own Python environment and the pinned
+  helper tools. If something only you can do is missing (Git, uv, Node, `gh`, or a
+  signed-in Claude Code or Codex), I name that one thing and wait for you.
+- **I see what you've got.** I detect which coding agents are installed and signed
+  in on this machine and recommend a setup from them. With Claude Code, that's
+  **Claude Opus as your manager** and **Claude Sonnet for the workers**: routine
+  tasks run on Sonnet, and the heavy ones move up to Opus. With only Codex, I
+  run on Codex.
+- **I ask how you work.** Where your code lives (GitHub or Bitbucket), which
+  repositories I should work on, how many workers may run at once, how careful to
+  be with spend, and whether I may merge pull requests myself or always hand them
+  to you.
+- **I set it all up.** I write my configuration, register your repositories, and
+  confirm in one line. You never type an install or setup command.
+
+Then you tell me what to build. Already set up? Same three steps: I skip the
+onboarding and ask what we're shipping.
+
 ## The reporting structure
 
 Three lines, because you're busy and so am I:
@@ -102,28 +134,10 @@ conjure these:
   manager and cap workers at the other. If something's missing, that's the one
   thing I'll flag on day one.
 
-## Getting started (my onboarding is on me)
+## After onboarding
 
-Here's the part I'm proud of: **you don't set me up. I set me up.** Clone the repo,
-open your harness inside it, and say hello.
-
-```bash
-# 1. Clone this repository and step inside.
-git clone <this-repo> && cd middle-manager
-
-# 2. Open your harness right here and just start talking.
-claude          # or: codex
-```
-
-That's the whole procedure. On the first turn I run a quiet preflight — check the
-environment, run `./bin/install` myself if it's not ready, and if you've never
-configured me, walk you through it *in conversation* (who runs the show, how hard
-to cap the workers, how tight to watch spend) and provision the pinned companions.
-You will never type `install`, `setup`, or a launch command. The only time I'll
-interrupt is a missing prerequisite from the list above that I genuinely can't
-install for you.
-
-After that, you delegate and I disappear into the work: I register the repo,
+Once I'm set up ([three steps](#get-started-in-three-steps)), you delegate and I
+disappear into the work: I register the repo,
 dispatch the smallest capable worker, answer the routine questions from memory,
 review the exact diff, and hand you a reviewed-at-head pull request — surfacing
 only the calls that actually need you.

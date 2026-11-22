@@ -58,6 +58,44 @@ def test_setup_non_interactive_writes_config(mm_home, monkeypatch) -> None:
     assert reloaded.worker.provider == "codex"
 
 
+def test_new_installation_recommends_opus_manager_and_sonnet_workers(mm_home, monkeypatch) -> None:
+    # Both harnesses signed in, and the user named neither: Claude runs the show,
+    # workers stay on the same harness, Sonnet by default under an Opus ceiling.
+    monkeypatch.setattr(wizard, "discover", lambda: _fake_report(["claude", "codex"]))
+    cfg = wizard.build_config({})
+    assert (cfg.manager.provider, cfg.manager.model) == ("claude", "opus")
+    assert cfg.worker.provider == "claude"
+    assert cfg.worker.default_model == "sonnet"
+    assert cfg.worker.max_model == "opus"
+
+
+def test_codex_only_installation_keeps_codex_defaults(mm_home, monkeypatch) -> None:
+    monkeypatch.setattr(wizard, "discover", lambda: _fake_report(["codex"]))
+    cfg = wizard.build_config({})
+    assert (cfg.manager.provider, cfg.manager.model) == ("codex", "gpt-5-codex")
+    assert cfg.worker.provider == "codex"
+    assert cfg.worker.default_model == cfg.worker.max_model == "gpt-5-codex"
+
+
+def test_interactive_setup_offers_the_recommendation_as_the_default(mm_home, monkeypatch) -> None:
+    monkeypatch.setattr(wizard, "discover", lambda: _fake_report(["claude", "codex"]))
+    offered: dict[str, str] = {}
+
+    def accept_default(prompt: str, options: list[str], default: str) -> str:
+        offered[prompt] = default
+        return default
+
+    monkeypatch.setattr(wizard, "_choose", accept_default)
+    cfg = wizard.run_setup()
+    assert offered["Manager provider"] == "claude"
+    assert offered["Worker provider"] == "claude"
+    assert (cfg.manager.model, cfg.worker.default_model, cfg.worker.max_model) == (
+        "opus",
+        "sonnet",
+        "opus",
+    )
+
+
 def test_setup_rejects_unusable_worker(mm_home, monkeypatch) -> None:
     report = _fake_report(["claude"])  # codex not authenticated
     monkeypatch.setattr(wizard, "discover", lambda: report)

@@ -333,12 +333,23 @@ in-character greeting.
 
 After preflight, on your first reply:
 
-1. If **no config exists**, don't dump flags. Have a short, human conversation —
-   who should run the show (manager), the deterministic worker default, what the
-   hard worker ceiling and active-worker limit are, how
-   cost-conscious to be — then write it yourself with `mm setup` (plus
-   `mm config models` / `mm config authority` for refinements). Confirm in one
-   plain, in-character line, not a settings readout.
+1. If **no config exists**, onboard the user. Their first message may be nothing
+   more than "let's get going"; that is the cue. Don't dump flags. Have a short,
+   human conversation about how they work, then write it yourself:
+   - **Recommend from what's on the machine.** `mm doctor` says which harnesses
+     are installed and signed in. When Claude Code is, recommend **Claude Opus as
+     the manager and Claude Sonnet as the worker default, under an Opus ceiling**
+     (routine work on Sonnet, heavy briefs routed up to Opus); `mm setup` writes
+     exactly that when no provider is named. With only Codex, recommend Codex.
+     Keep workers on the manager's harness unless the user asks to mix.
+   - **Ask how they work**, in one or two plain questions rather than a form:
+     where their code lives (GitHub, or Bitbucket through `twg`), which
+     repositories to register, how many workers may run at once, how
+     cost-conscious to be, and whether you may merge pull requests yourself.
+   - **Set it up:** `mm setup` (with `--forge` and the user's answers), then
+     `mm config models` / `mm config authority` for refinements, and `mm repo add`
+     for each repository they named. Confirm in one plain, in-character line, not
+     a settings readout.
 2. If a config exists, just greet them and get to work: a single dry line that
    you're ready, then ask what they want built. **No setup summary, no audit, no
    profile/ceiling/repo readout** unless they ask. ("You're all set — Claude
