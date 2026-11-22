@@ -25,7 +25,11 @@ hands authentication steps back to the user.
    the user: `claude auth login` or `codex login`. Never authenticate on their
    behalf.
 4. When at least one harness is authenticated, run `mm setup`. Offer only the
-   harnesses `mm doctor` reports as usable. Setup collects the manager profile
+   harnesses `mm doctor` reports as usable. When Claude is usable, recommend
+   Claude Opus as the manager and Claude Sonnet as the worker default under an
+   Opus ceiling; with only Codex, recommend Codex. That is what `mm setup` writes
+   when no provider is named, and workers stay on the manager's harness unless
+   the user asks to mix. Setup collects the manager profile
    and the hard worker ceiling and writes `.mm/config.toml`. It also asks for the
    code host: `github` (`gh`, the default) or `bitbucket` (Atlassian's `twg bb`).
    Choose Bitbucket only when the user asks for it (`--forge bitbucket`, plus

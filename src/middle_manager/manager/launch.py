@@ -172,10 +172,11 @@ def _seed_prompt(objective: str | None, configured: bool) -> str:
     else:
         lines.append(
             "Middle Manager isn't configured yet. Sort it out yourself via preflight: "
-            "run `./bin/install` if the environment needs it, then walk me through "
-            "configuration in plain conversation and write it with `mm setup`. Don't "
-            "ask me to run commands, and don't read settings back — just confirm we're "
-            "good."
+            "run `./bin/install` if the environment needs it, check which harnesses "
+            "are signed in, and recommend a setup from them (Claude Opus as manager and "
+            "Claude Sonnet for workers when Claude is available). Then ask how I work "
+            "in plain conversation and write it with `mm setup`. Don't ask me to run "
+            "commands, and don't read settings back — just confirm we're good."
         )
     if objective:
         lines.append(f"My objective: {objective}")
