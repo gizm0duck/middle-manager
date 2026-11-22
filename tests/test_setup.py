@@ -53,9 +53,12 @@ def test_setup_non_interactive_writes_config(mm_home, monkeypatch) -> None:
     )
     assert cfg.manager.provider == "claude"
     assert cfg.worker.provider == "codex"
+    # A new installation runs four workers at once unless told otherwise.
+    assert cfg.worker.max_concurrent == 4
     # Persisted and reloadable.
     reloaded = load_config()
     assert reloaded.worker.provider == "codex"
+    assert reloaded.worker.max_concurrent == 4
 
 
 def test_new_installation_recommends_opus_manager_and_sonnet_workers(mm_home, monkeypatch) -> None:

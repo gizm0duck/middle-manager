@@ -229,7 +229,8 @@ lower-cost task profiles are allowed below the ceiling, but Middle Manager never
 automatically selects a more expensive profile.
 
 For the small Codex team profile — a future manager session on Astra/xhigh, workers
-defaulting to Sol/high, a Sol/xhigh hard ceiling, and two active workers — configure:
+defaulting to Sol/high, a Sol/xhigh hard ceiling, and two active workers (a new installation
+allows four) — configure:
 
 ```sh
 mm config models \
